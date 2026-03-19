@@ -3,6 +3,8 @@
 import { redirect } from 'next/navigation'
 
 import { createClient } from '@/lib/supabase/server'
+import { expandSyllabus } from '@/lib/engine/syllabus-expander'
+import type { TemplateData, SyllabusSelection } from '@/lib/types/feis-listing'
 
 export async function createDraftListing(formData: FormData) {
   const supabase = await createClient()
@@ -245,4 +247,49 @@ export async function createEmptyDraftAndRedirect(): Promise<void> {
   }
 
   redirect(`/organiser/feiseanna/${data.id}/setup`)
+}
+
+export async function expandAndSaveSyllabus(
+  listingId: string,
+  templateId: string,
+  templateData: TemplateData,
+  selection: SyllabusSelection,
+  syllabusSnapshot: TemplateData
+) {
+  const supabase = await createClient()
+
+  // 1. Update listing with template reference and frozen snapshot
+  const { error: listingError } = await supabase
+    .from('feis_listings')
+    .update({
+      syllabus_template_id: templateId,
+      syllabus_snapshot: syllabusSnapshot,
+    })
+    .eq('id', listingId)
+
+  if (listingError) return { error: listingError.message }
+
+  // 2. Delete existing competitions for this listing (delete-and-reinsert pattern)
+  const { error: deleteError } = await supabase
+    .from('feis_competitions')
+    .delete()
+    .eq('feis_listing_id', listingId)
+
+  if (deleteError) return { error: deleteError.message }
+
+  // 3. Expand and insert new competitions
+  const expanded = expandSyllabus(templateData, selection)
+  if (expanded.length === 0) return { success: true as const, count: 0 }
+
+  const rows = expanded.map((comp) => ({
+    feis_listing_id: listingId,
+    ...comp,
+  }))
+
+  const { error: insertError } = await supabase
+    .from('feis_competitions')
+    .insert(rows)
+
+  if (insertError) return { error: insertError.message }
+  return { success: true as const, count: expanded.length }
 }

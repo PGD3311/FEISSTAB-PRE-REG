@@ -5,6 +5,7 @@ import Link from 'next/link'
 
 import type { FeisListing, FeeSchedule } from '@/lib/types/feis-listing'
 import { FeisWizardStep1 } from '@/components/organiser/feis-wizard-step1'
+import { FeisWizardStep2 } from '@/components/organiser/feis-wizard-step2'
 
 const STEPS = [
   { number: 1, label: 'Details' },
@@ -130,7 +131,14 @@ export function FeisWizard({
           <FeisWizardStep1 listing={listing} onNext={handleNext} />
         )}
         {currentStep === 2 && (
-          <PlaceholderStep step={2} label="Syllabus" />
+          <FeisWizardStep2
+            listingId={listing.id}
+            existingTemplateId={listing.syllabus_template_id}
+            existingSnapshot={listing.syllabus_snapshot}
+            existingCompetitionsCount={competitionsCount}
+            onNext={handleNext}
+            onBack={handleBack}
+          />
         )}
         {currentStep === 3 && (
           <PlaceholderStep step={3} label="Fees" />
