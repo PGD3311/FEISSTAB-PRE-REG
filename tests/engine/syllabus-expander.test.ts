@@ -49,14 +49,14 @@ describe('expandSyllabus', () => {
     expect(result.every((r) => r.competition_type === 'solo')).toBe(true)
   })
 
-  it('display name: U8 + BG + reel → "Under 8 Beginner Reel"', () => {
+  it('display name: U8 + BG + reel → "U8 Beginner Reel"', () => {
     const selection = fullSelection()
     selection.enabled_age_groups = ['U8']
     selection.enabled_levels = ['BG']
     selection.enabled_dances = ['reel']
     const result = expandSyllabus(TEMPLATE, selection)
     expect(result).toHaveLength(1)
-    expect(result[0].display_name).toBe('Under 8 Beginner Reel')
+    expect(result[0].display_name).toBe('U8 Beginner Reel')
   })
 
   it('frozen eligibility: all fields set correctly for solo', () => {
@@ -101,7 +101,7 @@ describe('expandSyllabus', () => {
     expect(row.dance_key).toBeNull()
     expect(row.dance_label).toBeNull()
     expect(row.fee_category).toBe('prelim_champ')
-    expect(row.display_name).toBe('Under 10 Preliminary Championship')
+    expect(row.display_name).toBe('U10 Preliminary Championship')
     expect(row.age_group_key).toBe('U10')
     expect(row.age_group_label).toBe('Under 10')
     expect(row.age_max_jan1).toBe(9)

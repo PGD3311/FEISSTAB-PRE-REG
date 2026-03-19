@@ -52,7 +52,7 @@ export function expandSyllabus(
           competition_type: 'solo',
           championship_key: null,
           fee_category: 'solo',
-          display_name: `${age.label} ${level.label} ${dance.label}`,
+          display_name: `${age.key} ${level.label} ${dance.label}`,
           sort_order: sortOrder++
         })
       }
@@ -87,7 +87,7 @@ export function expandSyllabus(
         competition_type: 'championship',
         championship_key: config.key,
         fee_category: champType.fee_category as FeeCategoryType,
-        display_name: `${age.label} ${champType.label}`,
+        display_name: `${age.key} ${champType.label}`,
         sort_order: sortOrder++
       })
     }
