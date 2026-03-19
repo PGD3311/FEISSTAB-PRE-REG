@@ -424,6 +424,38 @@ export async function saveDeadlines(
   return { success: true as const }
 }
 
+export async function deleteDraftListing(listingId: string) {
+  const supabase = await createClient()
+
+  // Verify the listing exists and is a draft
+  const { data: listing, error: fetchError } = await supabase
+    .from('feis_listings')
+    .select('status')
+    .eq('id', listingId)
+    .single()
+
+  if (fetchError || !listing) {
+    console.error('Failed to fetch listing:', fetchError)
+    return { error: 'Listing not found' }
+  }
+
+  if (listing.status !== 'draft') {
+    return { error: 'Only draft listings can be deleted' }
+  }
+
+  const { error: deleteError } = await supabase
+    .from('feis_listings')
+    .delete()
+    .eq('id', listingId)
+
+  if (deleteError) {
+    console.error('Failed to delete listing:', deleteError)
+    return { error: 'Failed to delete listing' }
+  }
+
+  return { success: true as const }
+}
+
 export async function transitionListingStatus(
   listingId: string,
   to: string
