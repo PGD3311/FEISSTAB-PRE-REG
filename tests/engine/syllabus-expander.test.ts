@@ -186,3 +186,48 @@ describe('expandSyllabus', () => {
     expect(result).toHaveLength(0)
   })
 })
+
+describe('freezing behavior', () => {
+  it('returns new objects not referencing input template', () => {
+    const template = structuredClone(TEMPLATE)
+    const selection: SyllabusSelection = {
+      enabled_age_groups: ['U8'],
+      enabled_levels: ['BG'],
+      enabled_dances: ['reel'],
+      enable_prelim: false,
+      prelim_age_groups: [],
+      enable_open: false,
+      open_age_groups: [],
+      enable_specials: []
+    }
+    const result = expandSyllabus(template, selection)
+
+    // Mutate the original template
+    template.age_groups[0].label = 'MUTATED'
+    template.levels[0].label = 'MUTATED'
+
+    // Result should be unaffected
+    expect(result[0].age_group_label).toBe('Under 8')
+    expect(result[0].level_label).toBe('Beginner')
+  })
+
+  it('produces independent results on repeated calls', () => {
+    const selection: SyllabusSelection = {
+      enabled_age_groups: ['U8'],
+      enabled_levels: ['BG'],
+      enabled_dances: ['reel'],
+      enable_prelim: false,
+      prelim_age_groups: [],
+      enable_open: false,
+      open_age_groups: [],
+      enable_specials: []
+    }
+    const result1 = expandSyllabus(TEMPLATE, selection)
+    const result2 = expandSyllabus(TEMPLATE, selection)
+
+    // Results should be equal but not the same reference
+    expect(result1).toEqual(result2)
+    expect(result1).not.toBe(result2)
+    expect(result1[0]).not.toBe(result2[0])
+  })
+})
