@@ -4,7 +4,18 @@ import { redirect } from 'next/navigation'
 
 import { createClient } from '@/lib/supabase/server'
 import { expandSyllabus } from '@/lib/engine/syllabus-expander'
-import type { TemplateData, SyllabusSelection } from '@/lib/types/feis-listing'
+import {
+  canTransitionListing,
+  getListingTransitionBlockReasons,
+} from '@/lib/feis-listing-states'
+import type {
+  TemplateData,
+  SyllabusSelection,
+  FeisListing,
+  FeeSchedule,
+  ListingStatus,
+  ListingTransitionContext,
+} from '@/lib/types/feis-listing'
 
 export async function createDraftListing(formData: FormData) {
   const supabase = await createClient()
@@ -292,4 +303,195 @@ export async function expandAndSaveSyllabus(
 
   if (insertError) return { error: insertError.message }
   return { success: true as const, count: expanded.length }
+}
+
+export async function saveFeeSchedule(
+  listingId: string,
+  formData: FormData
+) {
+  const supabase = await createClient()
+
+  function toCents(key: string): number {
+    const raw = formData.get(key) as string | null
+    if (!raw || raw.trim() === '') return 0
+    return Math.round(parseFloat(raw) * 100)
+  }
+
+  function toCentsOrNull(key: string): number | null {
+    const raw = formData.get(key) as string | null
+    if (!raw || raw.trim() === '') return null
+    return Math.round(parseFloat(raw) * 100)
+  }
+
+  const event_fee_cents = toCents('event_fee')
+  const solo_fee_cents = toCents('solo_fee')
+  const prelim_champ_fee_cents = toCents('prelim_champ_fee')
+  const open_champ_fee_cents = toCents('open_champ_fee')
+  const family_cap_cents = toCentsOrNull('family_cap')
+  const late_fee_cents = toCents('late_fee')
+  const day_of_surcharge_cents = toCents('day_of_surcharge')
+
+  // Check if fee schedule already exists
+  const { data: existing } = await supabase
+    .from('fee_schedules')
+    .select('id')
+    .eq('feis_listing_id', listingId)
+    .single()
+
+  if (existing) {
+    const { error } = await supabase
+      .from('fee_schedules')
+      .update({
+        event_fee_cents,
+        solo_fee_cents,
+        prelim_champ_fee_cents,
+        open_champ_fee_cents,
+        family_cap_cents,
+        late_fee_cents,
+        day_of_surcharge_cents,
+      })
+      .eq('feis_listing_id', listingId)
+
+    if (error) {
+      console.error('Failed to update fee schedule:', error)
+      return { error: 'Failed to save fee schedule' }
+    }
+  } else {
+    const { error } = await supabase.from('fee_schedules').insert({
+      feis_listing_id: listingId,
+      event_fee_cents,
+      solo_fee_cents,
+      prelim_champ_fee_cents,
+      open_champ_fee_cents,
+      family_cap_cents,
+      late_fee_cents,
+      day_of_surcharge_cents,
+    })
+
+    if (error) {
+      console.error('Failed to create fee schedule:', error)
+      return { error: 'Failed to save fee schedule' }
+    }
+  }
+
+  return { success: true as const }
+}
+
+export async function saveDeadlines(
+  listingId: string,
+  formData: FormData
+) {
+  const supabase = await createClient()
+
+  const reg_opens_at_raw = formData.get('reg_opens_at') as string | null
+  const reg_closes_at_raw = formData.get('reg_closes_at') as string | null
+  const late_reg_closes_at_raw = formData.get(
+    'late_reg_closes_at'
+  ) as string | null
+  const dancer_cap_raw = formData.get('dancer_cap') as string | null
+
+  if (!reg_opens_at_raw || !reg_closes_at_raw) {
+    return { error: 'Registration open and close dates are required' }
+  }
+
+  // Store dates as end-of-day timestamps
+  const reg_opens_at = `${reg_opens_at_raw}T23:59:59`
+  const reg_closes_at = `${reg_closes_at_raw}T23:59:59`
+  const late_reg_closes_at =
+    late_reg_closes_at_raw && late_reg_closes_at_raw.trim() !== ''
+      ? `${late_reg_closes_at_raw}T23:59:59`
+      : null
+  const dancer_cap =
+    dancer_cap_raw && dancer_cap_raw.trim() !== ''
+      ? parseInt(dancer_cap_raw, 10)
+      : null
+
+  const { error } = await supabase
+    .from('feis_listings')
+    .update({
+      reg_opens_at,
+      reg_closes_at,
+      late_reg_closes_at,
+      dancer_cap,
+    })
+    .eq('id', listingId)
+
+  if (error) {
+    console.error('Failed to save deadlines:', error)
+    return { error: 'Failed to save deadlines' }
+  }
+
+  return { success: true as const }
+}
+
+export async function transitionListingStatus(
+  listingId: string,
+  to: string
+) {
+  const supabase = await createClient()
+
+  // Fetch listing
+  const { data: listing, error: listingError } = await supabase
+    .from('feis_listings')
+    .select('*')
+    .eq('id', listingId)
+    .single()
+
+  if (listingError || !listing) {
+    console.error('Failed to fetch listing:', listingError)
+    return { error: 'Failed to fetch listing' }
+  }
+
+  const typedListing = listing as FeisListing
+  const toStatus = to as ListingStatus
+
+  // Validate transition is allowed
+  if (!canTransitionListing(typedListing.status, toStatus)) {
+    return {
+      error: `Cannot transition from ${typedListing.status} to ${toStatus}`,
+      blocks: [`Invalid transition: ${typedListing.status} -> ${toStatus}`],
+    }
+  }
+
+  // Fetch fee schedule
+  const { data: feeSchedule } = await supabase
+    .from('fee_schedules')
+    .select('*')
+    .eq('feis_listing_id', listingId)
+    .single()
+
+  // Fetch enabled competitions
+  const { data: competitions } = await supabase
+    .from('feis_competitions')
+    .select('competition_type, championship_key, fee_category')
+    .eq('feis_listing_id', listingId)
+
+  const context: ListingTransitionContext = {
+    listing: typedListing,
+    feeSchedule: (feeSchedule as FeeSchedule) ?? null,
+    enabledCompetitions: competitions ?? [],
+  }
+
+  const { blocks, warnings } = getListingTransitionBlockReasons(
+    typedListing.status,
+    toStatus,
+    context
+  )
+
+  if (blocks.length > 0) {
+    return { error: 'Cannot publish: prerequisites not met', blocks }
+  }
+
+  // Perform the transition
+  const { error: updateError } = await supabase
+    .from('feis_listings')
+    .update({ status: toStatus })
+    .eq('id', listingId)
+
+  if (updateError) {
+    console.error('Failed to update listing status:', updateError)
+    return { error: 'Failed to update listing status' }
+  }
+
+  return { success: true as const, warnings }
 }

@@ -6,6 +6,9 @@ import Link from 'next/link'
 import type { FeisListing, FeeSchedule } from '@/lib/types/feis-listing'
 import { FeisWizardStep1 } from '@/components/organiser/feis-wizard-step1'
 import { FeisWizardStep2 } from '@/components/organiser/feis-wizard-step2'
+import { FeisWizardStep3 } from '@/components/organiser/feis-wizard-step3'
+import { FeisWizardStep4 } from '@/components/organiser/feis-wizard-step4'
+import { FeisWizardStep5 } from '@/components/organiser/feis-wizard-step5'
 
 const STEPS = [
   { number: 1, label: 'Details' },
@@ -141,13 +144,27 @@ export function FeisWizard({
           />
         )}
         {currentStep === 3 && (
-          <PlaceholderStep step={3} label="Fees" />
+          <FeisWizardStep3
+            listingId={listing.id}
+            feeSchedule={feeSchedule}
+            onNext={handleNext}
+            onBack={handleBack}
+          />
         )}
         {currentStep === 4 && (
-          <PlaceholderStep step={4} label="Deadlines" />
+          <FeisWizardStep4
+            listing={listing}
+            onNext={handleNext}
+            onBack={handleBack}
+          />
         )}
         {currentStep === 5 && (
-          <PlaceholderStep step={5} label="Review" />
+          <FeisWizardStep5
+            listing={listing}
+            feeSchedule={feeSchedule}
+            competitionsCount={competitionsCount}
+            onBack={handleBack}
+          />
         )}
       </div>
 
@@ -176,16 +193,3 @@ export function FeisWizard({
   )
 }
 
-function PlaceholderStep({
-  step,
-  label,
-}: {
-  step: number
-  label: string
-}) {
-  return (
-    <div className="feis-card flex items-center justify-center px-6 py-16 text-center text-muted-foreground">
-      Step {step}: {label} — coming soon
-    </div>
-  )
-}
