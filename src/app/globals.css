@@ -1,3 +1,5 @@
+/* Copied from feistab/src/app/globals.css on 2026-03-19.
+   If updating, sync changes to both repos. */
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
@@ -7,9 +9,9 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-sans);
+  --font-sans: var(--font-body);
+  --font-serif: var(--font-body); /* unified — no decorative serif */
   --font-mono: var(--font-geist-mono);
-  --font-heading: var(--font-sans);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -46,75 +48,58 @@
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
+
+  /* FeisTab — precision palette */
+  --color-feis-green: #0B4D2C;
+  --color-feis-green-600: #0E6B3A;
+  --color-feis-green-700: #0A3F24;
+  --color-feis-green-light: #EBF4EF;
+  --color-feis-cream: #F7F8FA;
+  --color-feis-cream-dark: #EFF1F3;
+  --color-feis-orange: #D4652A;
+  --color-feis-orange-light: #FEF3EC;
+  --color-feis-gold: #C59D5F;
+  --color-feis-charcoal: #1A1D23;
 }
 
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
-}
+  /* FeisTab — Professional competition software */
+  --background: #F7F8FA;
+  --foreground: #1A1D23;
+  --card: #FFFFFF;
+  --card-foreground: #1A1D23;
+  --popover: #FFFFFF;
+  --popover-foreground: #1A1D23;
+  --primary: #0B4D2C;
+  --primary-foreground: #FFFFFF;
+  --secondary: #EBF4EF;
+  --secondary-foreground: #0B4D2C;
+  --muted: #EFF1F3;
+  --muted-foreground: #636C76;
+  --accent: #EBF4EF;
+  --accent-foreground: #0B4D2C;
+  --destructive: #B91C1C;
+  --border: #D1D5DB;
+  --input: #D1D5DB;
+  --ring: #0B4D2C;
+  --chart-1: #0B4D2C;
+  --chart-2: #0E6B3A;
+  --chart-3: #D4652A;
+  --chart-4: #C59D5F;
+  --chart-5: #1A1D23;
+  --radius: 0.375rem;
+  --sidebar: #0B4D2C;
+  --sidebar-foreground: #FFFFFF;
+  --sidebar-primary: #EBF4EF;
+  --sidebar-primary-foreground: #0B4D2C;
+  --sidebar-accent: #0A3F24;
+  --sidebar-accent-foreground: #FFFFFF;
+  --sidebar-border: #0A3F24;
+  --sidebar-ring: #C59D5F;
 
-.dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  /* Single font system */
+  --font-display: 'Outfit', system-ui, -apple-system, sans-serif;
+  --font-body: 'Outfit', system-ui, -apple-system, sans-serif;
 }
 
 @layer base {
@@ -123,8 +108,150 @@
   }
   body {
     @apply bg-background text-foreground;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   }
   html {
     @apply font-sans;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Clean headings — same font, weight does the work */
+  h1, h2 {
+    font-family: var(--font-body);
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    color: var(--foreground);
+  }
+  h1 { font-weight: 700; }
+}
+
+@layer components {
+  /* Nav — clean bottom border, no decoration */
+  .feis-nav-accent {
+    position: relative;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  /* Flat panel — 1px border, no shadow. Software, not app. */
+  .feis-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    transition: border-color 0.15s ease;
+  }
+  .feis-card:hover {
+    border-color: #B0B5BC;
+  }
+
+  /* Left accent border for featured panels */
+  .feis-accent-left {
+    border-left: 3px solid #0B4D2C;
+  }
+
+  /* Orange accent for action-needed states */
+  .feis-accent-orange {
+    border-left: 3px solid #D4652A;
+  }
+
+  /* Clean background — no texture */
+  .feis-bg-texture {
+    background-color: var(--background);
+  }
+
+  /* Competitor number — monospace, tabular */
+  .feis-number {
+    font-family: ui-monospace, 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+    font-weight: 700;
+    color: #0B4D2C;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Placement styling */
+  .feis-place-1 { color: #C59D5F; font-weight: 800; }
+  .feis-place-2 { color: #8A8A8A; font-weight: 700; }
+  .feis-place-3 { color: #A0674B; font-weight: 700; }
+
+  /* Table header — dense, functional */
+  .feis-thead {
+    background-color: #0B4D2C;
+    color: #FFFFFF;
+  }
+  .feis-thead th {
+    font-family: var(--font-body);
+    font-weight: 500;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 0.625rem 1rem;
+  }
+
+  /* Table rows — cool alternation */
+  .feis-tbody tr:nth-child(even) {
+    background-color: var(--muted);
+  }
+  .feis-tbody tr {
+    transition: background-color 0.1s ease;
+  }
+  .feis-tbody tr:hover {
+    background-color: var(--color-feis-green-light);
+  }
+
+  /* Stat — monospace number, not serif */
+  .feis-stat {
+    font-family: ui-monospace, 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+    font-weight: 700;
+    font-size: 1.75rem;
+    line-height: 1;
+    color: #0B4D2C;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Tab bar — underline style, not pill */
+  .feis-segmented-bar {
+    display: flex;
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    max-width: 100vw;
+    width: 100%;
+    gap: 0;
+    flex-shrink: 0;
+  }
+
+  .feis-segmented-bar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .feis-segmented-tab {
+    padding: 10px 16px;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--muted-foreground);
+    transition: color 0.15s ease;
+    text-decoration: none;
+    white-space: nowrap;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+  }
+
+  .feis-segmented-tab:hover {
+    color: var(--foreground);
+  }
+
+  .feis-segmented-tab-active {
+    color: var(--color-feis-green);
+    font-weight: 600;
+    border-bottom-color: var(--color-feis-green);
+  }
+
+  /* Context card — tight, functional */
+  .feis-context-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px 14px;
   }
 }
