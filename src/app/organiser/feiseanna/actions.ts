@@ -211,12 +211,8 @@ export async function cloneFeis(sourceId: string) {
 
   if (competitions && competitions.length > 0 && !compError) {
     const clonedCompetitions = competitions.map(
-      ({
-        id: _id,
-        feis_listing_id: _flis,
-        created_at: _ca,
-        ...rest
-      }) => ({
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      ({ id, feis_listing_id, created_at, ...rest }) => ({
         ...rest,
         feis_listing_id: cloned.id,
       })

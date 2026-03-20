@@ -60,7 +60,7 @@ export function FeisWizardStep2({
   existingSnapshot,
   existingCompetitionsCount,
   onNext,
-  onBack,
+  onBack: _onBack,
 }: FeisWizardStep2Props) {
   const router = useRouter()
   const supabase = useSupabase()
@@ -78,14 +78,12 @@ export function FeisWizardStep2({
   const [templateData, setTemplateData] = useState<TemplateData | null>(
     existingSnapshot
   )
-  const [selection, setSelection] = useState<SyllabusSelection | null>(null)
-
-  // If we already have a snapshot, build selection from it
-  useEffect(() => {
-    if (existingSnapshot && existingTemplateId && !selection) {
-      setSelection(buildDefaultSelection(existingSnapshot))
+  const [selection, setSelection] = useState<SyllabusSelection | null>(() => {
+    if (existingSnapshot && existingTemplateId) {
+      return buildDefaultSelection(existingSnapshot)
     }
-  }, [existingSnapshot, existingTemplateId, selection])
+    return null
+  })
 
   // Fetch templates on mount
   useEffect(() => {
