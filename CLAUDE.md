@@ -377,9 +377,9 @@ Email last year's registrants with personalized link that pre-fills dancer profi
 > Full reference: `docs/research/architecture-patterns.md`
 
 ### Separate Supabase Projects (Current Decision)
-Pre-reg (`vwfrmhbczwpvqonlpfzs`) is a separate Supabase project from FeisTab Phase 1 (`acxyvouzwgvobtbmvoej`). This isolates auth, migrations, and data sensitivity classes. The trade-off: "Launch Feis Day" (bridge) becomes a cross-project data transfer, not a SQL transaction.
+Pre-reg (`vwfrmhbczwpvqonlpfzs`) is a separate Supabase project from FeisTab Phase 1 (`acxyvouzwgvobtbmvoej`). This isolates auth, migrations, and data sensitivity classes. All tables live in the `public` schema — isolation is at the project level, not the schema level.
 
-**Bridge implications:** Sub-project 3 will likely use a Supabase Edge Function or API route with service_role keys for both projects. Must handle partial failure gracefully. Cannot use database transactions across the boundary.
+**Bridge:** The `launchFeisDay` server action uses Phase 1's service_role key to write across projects. Handles partial failure via `import_status` on the Phase 1 event. Uses upsert on external ID columns (`prereg_*`) for idempotent retries. Cannot use database transactions across the boundary.
 
 ### Wizard Routing
 Single page at `/organiser/feiseanna/[id]/setup` with client-side step state. Draft row created on step 1, enriched through steps 2-5. Each step saves to DB — no client-only persistence needed.
