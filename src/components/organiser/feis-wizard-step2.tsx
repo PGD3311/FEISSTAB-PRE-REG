@@ -245,7 +245,7 @@ export function FeisWizardStep2({
       />
 
       {/* Save button */}
-      <div className="mt-8">
+      <div className="mt-8 flex items-center gap-3">
         <button
           type="button"
           onClick={handleSave}
@@ -256,12 +256,22 @@ export function FeisWizardStep2({
         </button>
 
         {existingCompetitionsCount > 0 && (
-          <p className="mt-2 text-xs text-muted-foreground">
-            Saving will replace the existing {existingCompetitionsCount}{' '}
-            competitions.
-          </p>
+          <button
+            type="button"
+            onClick={onNext}
+            className="rounded-md bg-secondary px-4 py-2 text-sm font-medium text-secondary-foreground hover:bg-muted"
+          >
+            Keep Existing & Continue
+          </button>
         )}
       </div>
+      {existingCompetitionsCount > 0 && (
+        <p className="mt-2 text-xs text-muted-foreground">
+          You have {existingCompetitionsCount} existing competitions.
+          &quot;Save &amp; Continue&quot; will replace them.
+          &quot;Keep Existing &amp; Continue&quot; will preserve them as-is.
+        </p>
+      )}
     </div>
   )
 }

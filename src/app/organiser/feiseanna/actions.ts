@@ -32,6 +32,8 @@ export async function createDraftListing(formData: FormData) {
   const description =
     (formData.get('description') as string | null) || null
   const timezone = formData.get('timezone') as string | null
+  const privacy_policy_url =
+    (formData.get('privacy_policy_url') as string | null) || null
 
   if (!name || !feis_date || !venue_name || !contact_email || !timezone) {
     return { error: 'Missing required fields' }
@@ -53,6 +55,7 @@ export async function createDraftListing(formData: FormData) {
       contact_phone,
       description,
       timezone,
+      privacy_policy_url,
       age_cutoff_date,
       season_year,
       status: 'draft',
@@ -86,6 +89,8 @@ export async function updateListingDetails(
   const description =
     (formData.get('description') as string | null) || null
   const timezone = formData.get('timezone') as string | null
+  const privacy_policy_url =
+    (formData.get('privacy_policy_url') as string | null) || null
 
   if (!name || !feis_date || !venue_name || !contact_email || !timezone) {
     return { error: 'Missing required fields' }
@@ -107,6 +112,7 @@ export async function updateListingDetails(
       contact_phone,
       description,
       timezone,
+      privacy_policy_url,
       age_cutoff_date,
       season_year,
     })
@@ -212,7 +218,7 @@ export async function cloneFeis(sourceId: string) {
   if (competitions && competitions.length > 0 && !compError) {
     const clonedCompetitions = competitions.map(
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      ({ id, feis_listing_id, created_at, ...rest }) => ({
+      ({ id, feis_listing_id, created_at, updated_at, ...rest }) => ({
         ...rest,
         feis_listing_id: cloned.id,
       })

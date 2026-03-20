@@ -4,10 +4,7 @@ import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 
 import type { FeisListing } from '@/lib/types/feis-listing'
-import {
-  createDraftListing,
-  updateListingDetails,
-} from '@/app/organiser/feiseanna/actions'
+import { updateListingDetails } from '@/app/organiser/feiseanna/actions'
 
 const TIMEZONES = [
   { value: 'America/New_York', label: 'Eastern (New York)' },
@@ -43,7 +40,7 @@ export function FeisWizardStep1({ listing, onNext }: FeisWizardStep1Props) {
   const [error, setError] = useState<string | null>(null)
   const [isMultiDay, setIsMultiDay] = useState(!!listing.end_date)
 
-  const isExisting = !!listing.name
+  const isExisting = !!listing.id
 
   const defaultTimezone =
     listing.timezone || detectTimezone()
@@ -61,22 +58,13 @@ export function FeisWizardStep1({ listing, onNext }: FeisWizardStep1Props) {
     }
 
     startTransition(async () => {
-      if (isExisting) {
-        const result = await updateListingDetails(listing.id, formData)
-        if ('error' in result) {
-          setError(result.error as string)
-          return
-        }
-        router.refresh()
-        onNext()
-      } else {
-        const result = await createDraftListing(formData)
-        if ('error' in result) {
-          setError(result.error as string)
-          return
-        }
-        router.replace(`/organiser/feiseanna/${result.id}/setup`)
+      const result = await updateListingDetails(listing.id, formData)
+      if ('error' in result) {
+        setError(result.error as string)
+        return
       }
+      router.refresh()
+      onNext()
     })
   }
 
@@ -282,6 +270,27 @@ export function FeisWizardStep1({ listing, onNext }: FeisWizardStep1Props) {
             placeholder="Brief description shown to parents (optional)"
             className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
           />
+        </div>
+
+        {/* Privacy Policy URL */}
+        <div>
+          <label
+            htmlFor="privacy_policy_url"
+            className="mb-1.5 block text-sm font-medium"
+          >
+            Privacy Policy URL
+          </label>
+          <input
+            id="privacy_policy_url"
+            name="privacy_policy_url"
+            type="url"
+            defaultValue={listing.privacy_policy_url ?? ''}
+            placeholder="https://example.com/privacy"
+            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+          />
+          <p className="mt-1 text-xs text-muted-foreground">
+            Required for publishing. Link to your privacy policy.
+          </p>
         </div>
       </div>
 

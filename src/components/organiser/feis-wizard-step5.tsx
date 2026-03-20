@@ -135,6 +135,7 @@ export function FeisWizardStep5({
       return
     }
     setStripeSimulated(true)
+    router.refresh()
   }
 
   function handlePublish() {
@@ -148,9 +149,7 @@ export function FeisWizardStep5({
           setError(result.error as string)
           return
         }
-        alert('Feis published successfully! Registration is now open.')
-        router.push(`/organiser/feiseanna/${listing.id}`)
-        router.refresh()
+        window.location.href = `/organiser/feiseanna/${listing.id}`
       } catch (err) {
         console.error('Failed to publish:', err)
         setError('An unexpected error occurred while publishing.')
