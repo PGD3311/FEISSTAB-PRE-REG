@@ -1,6 +1,5 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
-import { IntentPicker } from '@/components/auth/intent-picker'
 
 export const dynamic = 'force-dynamic'
 
@@ -38,5 +37,17 @@ export default async function OnboardingPage() {
     redirect('/organiser/feiseanna')
   }
 
-  return <IntentPicker />
+  // New user — create household automatically and send to add dancer
+  const { data: newHousehold, error } = await supabase
+    .from('households')
+    .insert({ user_id: user.id })
+    .select('id')
+    .single()
+
+  if (error || !newHousehold) {
+    // Household might already exist (race condition) — just redirect
+    redirect('/dashboard')
+  }
+
+  redirect('/dashboard/dancers/new')
 }
