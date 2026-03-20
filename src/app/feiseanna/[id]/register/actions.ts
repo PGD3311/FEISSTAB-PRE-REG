@@ -117,10 +117,47 @@ export async function createDraftRegistration(input: CreateDraftInput) {
 
   if (!listing) return { error: 'Feis listing not found' }
 
+  // Validate registration window is open
   const now = new Date()
+  if (listing.reg_closes_at) {
+    const regCloses = new Date(listing.reg_closes_at)
+    if (listing.late_reg_closes_at) {
+      const lateCloses = new Date(listing.late_reg_closes_at)
+      if (now > lateCloses) {
+        return { error: 'Registration for this feis has closed.' }
+      }
+    } else if (now > regCloses) {
+      return { error: 'Registration for this feis has closed.' }
+    }
+  }
+
+  // Validate all dancers belong to this household
+  const dancerIds = [...new Set(input.entries.map(e => e.dancerId))]
+  const { data: validDancers } = await supabase
+    .from('dancers')
+    .select('id')
+    .eq('household_id', household.id)
+    .in('id', dancerIds)
+
+  if (!validDancers || validDancers.length !== dancerIds.length) {
+    return { error: 'One or more dancers do not belong to your family.' }
+  }
+
+  // Validate all competitions belong to this feis and are enabled
+  const compIds = [...new Set(input.entries.map(e => e.competitionId))]
+  const { data: validComps } = await supabase
+    .from('feis_competitions')
+    .select('id')
+    .eq('feis_listing_id', input.feisListingId)
+    .eq('enabled', true)
+    .in('id', compIds)
+
+  if (!validComps || validComps.length !== compIds.length) {
+    return { error: 'One or more competitions are not available.' }
+  }
+
   const isLate = listing.reg_closes_at ? now > new Date(listing.reg_closes_at) : false
 
-  const compIds = input.entries.map(e => e.competitionId)
   const { data: competitions } = await supabase
     .from('feis_competitions')
     .select('id, fee_category')

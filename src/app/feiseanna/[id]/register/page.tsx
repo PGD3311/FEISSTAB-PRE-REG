@@ -1,17 +1,23 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useSupabase } from '@/hooks/use-supabase'
-import { getExistingRegistration } from './actions'
+import { getExistingRegistration, createDraftRegistration, createCheckoutSession, cancelRegistration } from './actions'
+import { calculateFees } from '@/lib/engine/fee-calculator'
 import { Step1Dancers } from '@/components/registration/step1-dancers'
+import { Step2Cart } from '@/components/registration/step2-cart'
+import { Step3Review } from '@/components/registration/step3-review'
 import type {
   FeisListing,
   FeeSchedule,
+  FeeEntry,
+  FeeBreakdown,
   FeisCompetition,
   Dancer,
   DancerDanceLevel,
+  Level,
   Registration,
   RegistrationEntry,
 } from '@/lib/types/feis-listing'
@@ -124,6 +130,10 @@ export default function RegisterPage() {
   const [loadState, setLoadState] = useState<LoadState>({ status: 'loading' })
   const [step, setStep] = useState(1)
   const [selectedDancerIds, setSelectedDancerIds] = useState<string[]>([])
+  const [cart, setCart] = useState<Record<string, string[]>>({})
+  const [registrationId, setRegistrationId] = useState<string | null>(null)
+  const [holdExpiresAt, setHoldExpiresAt] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
 
   useEffect(() => {
     async function load() {
@@ -206,7 +216,7 @@ export default function RegisterPage() {
   if (loadState.status === 'unauthenticated') return <UnauthenticatedScreen feisId={feisId} />
   if (loadState.status === 'error') return <ErrorScreen message={loadState.message} />
 
-  const { listing, dancers, expiredHold } =
+  const { listing, feeSchedule, competitions, dancers, existingRegistration, expiredHold } =
     loadState.data
 
   const ageCutoffDate = listing.age_cutoff_date
@@ -215,9 +225,116 @@ export default function RegisterPage() {
       ? new Date(listing.feis_date + 'T00:00:00')
       : new Date()
 
+  // Get levels from syllabus snapshot
+  const levels: Level[] = listing.syllabus_snapshot?.levels ?? []
+
+  // Determine if registration is in late period
+  const isLate = listing.reg_closes_at ? new Date() > new Date(listing.reg_closes_at) : false
+
+  // Get selected dancers with their dance levels
+  const selectedDancers = dancers.filter(d => selectedDancerIds.includes(d.id))
+
+  // Compute fee breakdown for the current cart
+  const feeBreakdown: FeeBreakdown = useMemo(() => {
+    if (!feeSchedule || Object.keys(cart).length === 0) {
+      return {
+        line_items: [],
+        event_fee_cents: 0,
+        subtotal_per_dancer: {},
+        subtotal_before_cap_cents: 0,
+        family_cap_applied: false,
+        grand_total_cents: 0
+      }
+    }
+    const entries: FeeEntry[] = []
+    for (const [dancerId, compIds] of Object.entries(cart)) {
+      for (const compId of compIds) {
+        const comp = competitions.find(c => c.id === compId)
+        if (comp) {
+          entries.push({
+            dancer_id: dancerId,
+            fee_category: comp.fee_category,
+            is_late: isLate,
+            is_day_of: false
+          })
+        }
+      }
+    }
+    return calculateFees(feeSchedule, entries)
+  }, [cart, competitions, feeSchedule, isLate])
+
   function handleStep1Next(ids: string[]) {
     setSelectedDancerIds(ids)
     setStep(2)
+  }
+
+  function handleStep2Next(newCart: Record<string, string[]>) {
+    setCart(newCart)
+    setStep(3)
+  }
+
+  async function handleCreateDraft() {
+    if (!feeSchedule) return
+    setLoading(true)
+    try {
+      const entries: { dancerId: string; competitionId: string }[] = []
+      for (const [dancerId, compIds] of Object.entries(cart)) {
+        for (const compId of compIds) {
+          entries.push({ dancerId, competitionId: compId })
+        }
+      }
+
+      const result = await createDraftRegistration({
+        feisListingId: feisId,
+        entries,
+        consentAcceptedAt: new Date().toISOString(),
+        consentIp: '0.0.0.0' // Server will capture real IP
+      })
+
+      if ('error' in result) {
+        alert(result.error)
+        return
+      }
+
+      setRegistrationId(result.registrationId)
+      setHoldExpiresAt(result.holdExpiresAt)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function handlePay() {
+    if (!registrationId) return
+    setLoading(true)
+    try {
+      const result = await createCheckoutSession(registrationId)
+
+      if ('error' in result) {
+        alert(result.error)
+        return
+      }
+
+      if (result.url) {
+        window.location.href = result.url
+      }
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function handleCancel() {
+    if (!registrationId) return
+    if (!confirm('Cancel this registration? You can start over.')) return
+    setLoading(true)
+    try {
+      await cancelRegistration(registrationId)
+      setRegistrationId(null)
+      setHoldExpiresAt(null)
+      setCart({})
+      setStep(1)
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (
@@ -256,52 +373,34 @@ export default function RegisterPage() {
             />
           )}
 
-          {step === 2 && (
-            <div>
-              <h2 className="mb-1 text-xl font-semibold">Choose Competitions</h2>
-              <p className="mb-6 text-sm text-muted-foreground">
-                {selectedDancerIds.length === 1
-                  ? 'Select competitions for your dancer.'
-                  : `Select competitions for your ${selectedDancerIds.length} dancers.`}
-              </p>
-              <p className="text-sm text-muted-foreground">
-                Competition selection coming in the next step.
-              </p>
-              <div className="mt-8 flex justify-between">
-                <button
-                  onClick={() => setStep(1)}
-                  className="rounded-md border border-border px-4 py-2 text-sm font-medium text-foreground hover:bg-muted"
-                >
-                  Back
-                </button>
-                <button
-                  onClick={() => setStep(3)}
-                  className="rounded-md bg-primary px-6 py-2.5 text-sm font-medium text-primary-foreground hover:bg-[var(--color-feis-green-600)]"
-                >
-                  Next: Review &amp; Pay
-                </button>
-              </div>
-            </div>
+          {step === 2 && feeSchedule && (
+            <Step2Cart
+              selectedDancers={selectedDancers}
+              competitions={competitions}
+              feeSchedule={feeSchedule}
+              ageCutoffDate={ageCutoffDate}
+              levels={levels}
+              isLate={isLate}
+              onNext={handleStep2Next}
+              onBack={() => setStep(1)}
+            />
           )}
 
           {step === 3 && (
-            <div>
-              <h2 className="mb-1 text-xl font-semibold">Review &amp; Pay</h2>
-              <p className="mb-6 text-sm text-muted-foreground">
-                Review your selections before proceeding to payment.
-              </p>
-              <p className="text-sm text-muted-foreground">
-                Payment flow coming in the next step.
-              </p>
-              <div className="mt-8 flex justify-between">
-                <button
-                  onClick={() => setStep(2)}
-                  className="rounded-md border border-border px-4 py-2 text-sm font-medium text-foreground hover:bg-muted"
-                >
-                  Back
-                </button>
-              </div>
-            </div>
+            <Step3Review
+              feis={listing}
+              dancers={selectedDancers}
+              cart={cart}
+              competitions={competitions}
+              feeBreakdown={feeBreakdown}
+              registrationId={registrationId}
+              holdExpiresAt={holdExpiresAt}
+              onCreateDraft={handleCreateDraft}
+              onPay={handlePay}
+              onCancel={handleCancel}
+              onBack={() => setStep(2)}
+              loading={loading}
+            />
           )}
         </div>
       </div>
