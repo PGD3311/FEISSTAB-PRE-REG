@@ -90,16 +90,27 @@ export async function POST(request: Request) {
     let confirmationNumber: string | null = null
     for (let attempt = 0; attempt < 5; attempt++) {
       const candidate = generateConfirmationNumber()
-      const { data: existing } = await supabase
+      const { data: existing, error: checkErr } = await supabase
         .from('registrations')
         .select('id')
         .eq('confirmation_number', candidate)
         .single()
 
+      // PGRST116 = "no rows found" = candidate is available
+      if (checkErr && checkErr.code !== 'PGRST116') {
+        console.error(`Confirmation number check failed (attempt ${attempt + 1}):`, checkErr)
+        continue
+      }
+
       if (!existing) {
         confirmationNumber = candidate
         break
       }
+    }
+
+    if (!confirmationNumber) {
+      console.error(`CRITICAL: Failed to generate unique confirmation number after 5 attempts for registration ${registrationId}`)
+      confirmationNumber = `FT-${Date.now()}`
     }
 
     // Update registration to paid
@@ -121,7 +132,7 @@ export async function POST(request: Request) {
     }
 
     // Create registration snapshot
-    const { data: fullReg } = await supabase
+    const { data: fullReg, error: snapFetchError } = await supabase
       .from('registrations')
       .select(
         '*, registration_entries(*, dancers(first_name, last_name, date_of_birth, championship_status), feis_competitions(display_name, age_group_key, level_key, dance_key, competition_type)), feis_listings(name, feis_date)'
@@ -129,13 +140,19 @@ export async function POST(request: Request) {
       .eq('id', registrationId)
       .single()
 
-    if (fullReg) {
-      await supabase
+    if (snapFetchError) {
+      console.error(`Failed to fetch registration ${registrationId} for snapshot:`, snapFetchError)
+    } else if (fullReg) {
+      const { error: snapInsertError } = await supabase
         .from('registration_snapshots')
         .insert({
           registration_id: registrationId,
           snapshot_data: fullReg,
         })
+
+      if (snapInsertError) {
+        console.error(`Failed to create snapshot for registration ${registrationId}:`, snapInsertError)
+      }
     }
 
     // Send confirmation email (async, don't block webhook response)

@@ -208,10 +208,16 @@ export async function executeBridge(data: PreRegData): Promise<BridgeResult> {
 
       if (found) {
         // Stamp the prereg_dancer_id on the existing row for future idempotency
-        await phase1
+        const { error: stampErr } = await phase1
           .from('dancers')
           .update({ prereg_dancer_id: dancer.prereg_dancer_id })
           .eq('id', found.id)
+
+        if (stampErr) {
+          throw new Error(
+            `Failed to stamp prereg_dancer_id on existing dancer ${found.id}: ${stampErr.message}`
+          )
+        }
         dancerMap.set(dancer.prereg_dancer_id, found.id)
       } else {
         // Insert new dancer (without upsert — the prereg_dancer_id conflict
@@ -277,10 +283,14 @@ export async function executeBridge(data: PreRegData): Promise<BridgeResult> {
     }
 
     // Mark import as complete
-    await phase1
+    const { error: readyError } = await phase1
       .from('events')
       .update({ import_status: 'ready', import_error: null })
       .eq('id', event.id)
+
+    if (readyError) {
+      throw new Error(`Failed to mark event as ready: ${readyError.message}`)
+    }
 
     return {
       eventId: event.id,
@@ -291,10 +301,17 @@ export async function executeBridge(data: PreRegData): Promise<BridgeResult> {
   } catch (err) {
     // Mark import as failed on the event (if it was created)
     const errorMessage = err instanceof Error ? err.message : 'unknown error'
-    await phase1
+    const { error: markError } = await phase1
       .from('events')
       .update({ import_status: 'partial_failed', import_error: errorMessage })
       .eq('id', event.id)
+
+    if (markError) {
+      console.error(
+        `[BRIDGE] DOUBLE FAULT: original error: ${errorMessage}, ` +
+        `AND failed to mark event ${event.id} as partial_failed: ${markError.message}`
+      )
+    }
     throw err
   }
 }
