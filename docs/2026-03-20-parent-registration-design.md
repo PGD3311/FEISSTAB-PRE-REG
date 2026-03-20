@@ -242,7 +242,7 @@ Enforced by `canTransitionRegistration(from, to)` in `src/lib/registration-state
 
 ### Capacity Counting
 
-Available spots for a competition = `capacity_cap` - (count of `registration_entries` where `registration.status IN ('draft', 'pending_payment', 'paid')` and `feis_competition_id` matches). This query is the source of truth. No separate counter column needed — the count is derived from the registrations table.
+Available spots for a competition = `capacity_cap` - (count of `registration_entries` where `registration.status IN ('draft', 'pending_payment', 'paid')` and `feis_competition_id` matches and `(hold_expires_at IS NULL OR hold_expires_at > now())`). The `hold_expires_at` filter ensures expired holds are not counted against capacity. This query is the source of truth. No separate counter column needed — the count is derived from the registrations table.
 
 ---
 
@@ -264,7 +264,7 @@ interface DancerProfile {
   danceLevels: DanceLevelMap
 }
 
-interface FiesCompetition {
+interface FeisCompetition {
   id: string
   age_group_key: string | null
   age_max_jan1: number | null
@@ -280,14 +280,14 @@ interface FiesCompetition {
 }
 
 interface EligibleCompetition {
-  competition: FiesCompetition
+  competition: FeisCompetition
   eligible: boolean
   reason: string  // e.g., "Age and level match", "Championship status insufficient"
 }
 
 function getEligibleCompetitions(
   dancer: DancerProfile,
-  competitions: FiesCompetition[],
+  competitions: FeisCompetition[],
   ageCutoffDate: Date
 ): EligibleCompetition[]
 ```
@@ -1058,11 +1058,13 @@ export interface EligibleCompetition {
 
 ## Migration
 
-### Migration file: `017_parent_registration.sql`
+### Migration file: `002_parent_registration.sql`
 
-(Numbering continues from sub-project 1's `016_feis_setup.sql`.)
+(Numbering continues from sub-project 1's `001_feis_setup.sql`.)
 
 ```sql
+SET search_path TO pre_registration, public;
+
 -- ─── households ───
 CREATE TABLE households (
   id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -1090,7 +1092,7 @@ CREATE TABLE dancers (
 
 CREATE INDEX idx_dancers_household_id ON dancers(household_id);
 CREATE TRIGGER set_dancers_updated_at BEFORE UPDATE ON dancers
-  FOR EACH ROW EXECUTE FUNCTION trigger_set_updated_at();
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
 -- ─── dancer_dance_levels ───
 CREATE TABLE dancer_dance_levels (
@@ -1105,7 +1107,7 @@ CREATE TABLE dancer_dance_levels (
 
 CREATE INDEX idx_dancer_dance_levels_dancer_id ON dancer_dance_levels(dancer_id);
 CREATE TRIGGER set_dancer_dance_levels_updated_at BEFORE UPDATE ON dancer_dance_levels
-  FOR EACH ROW EXECUTE FUNCTION trigger_set_updated_at();
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
 -- ─── registrations ───
 CREATE TABLE registrations (
@@ -1142,7 +1144,7 @@ CREATE INDEX idx_registrations_hold_expires ON registrations(hold_expires_at)
   WHERE status IN ('draft', 'pending_payment') AND hold_expires_at IS NOT NULL;
 
 CREATE TRIGGER set_registrations_updated_at BEFORE UPDATE ON registrations
-  FOR EACH ROW EXECUTE FUNCTION trigger_set_updated_at();
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
 -- ─── registration_entries ───
 CREATE TABLE registration_entries (
