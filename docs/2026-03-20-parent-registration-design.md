@@ -86,6 +86,7 @@ Child profiles within a household. Children never have login credentials (COPPA 
 | `school_name` | text | NULL | Dance school name (freetext for MVP, dropdown later) |
 | `tcrg_name` | text | NULL | Teacher name |
 | `championship_status` | text | NOT NULL DEFAULT `'none'`, CHECK IN (`'none'`, `'prelim'`, `'open'`) | For championship eligibility filtering |
+| `is_active` | boolean | NOT NULL DEFAULT `true` | `false` = archived (hidden from new registrations, history preserved) |
 | `created_at` | timestamptz | NOT NULL, default `now()` | |
 | `updated_at` | timestamptz | NOT NULL, default `now()` | Auto-trigger |
 
@@ -126,7 +127,8 @@ One registration per household per feis. Contains the state machine, payment ref
 | `event_fee_cents` | integer | NOT NULL DEFAULT 0, CHECK >= 0 | Family event fee component |
 | `is_late` | boolean | NOT NULL DEFAULT false | Was this a late registration? Late-ness is determined at registration time based on whether `now()` is after `reg_closes_at`. All entries in a registration share the same late status. The `late_fee_cents` on individual `registration_entries` is per-dancer (charged once per dancer, not per entry), computed by the fee calculator. |
 | `consent_accepted_at` | timestamptz | NULL | When terms were accepted |
-| `consent_version` | text | NULL | Which version of terms |
+| `consent_version` | text | NULL | Which version of organiser terms |
+| `platform_terms_version` | text | NULL | Which version of FeisTab platform terms accepted |
 | `consent_ip` | text | NULL | IP address at consent time |
 | `hold_expires_at` | timestamptz | NULL | When capacity hold expires |
 | `created_at` | timestamptz | NOT NULL, default `now()` | |
@@ -412,6 +414,11 @@ Expandable to show itemized breakdown by dancer:
 
 The running total updates in real time as competitions are added/removed. It calls `calculateFees()` (the existing pure function from sub-project 1) on every change.
 
+**Fee categories for specials and custom competitions:**
+
+- **Specials** (ceili, figure choreography) use `fee_category = 'solo'` and are priced at `solo_fee_cents`. Specials are priced as solo dances. If organisers need different pricing for specials in the future, a `special_fee_cents` column can be added to `fee_schedules`.
+- **Custom competitions** default to `fee_category = 'solo'` unless the organiser specified a different fee category when creating the custom competition. The `feis_competitions.fee_category` field already supports this — the fee calculator reads the `fee_category` from the `feis_competitions` row and maps it to the corresponding rate in `fee_schedules`.
+
 **Validation:** At least one competition must be selected across all dancers to proceed.
 
 ### Step 3: Review & Pay
@@ -431,9 +438,11 @@ Summary screen with all selections, full fee breakdown, and payment initiation.
 
 **Legal consent checkbox (required before payment):**
 
-> I agree to the [Terms of Service] and [Privacy Policy] and confirm I am the parent/legal guardian of the dancers listed above.
+> I agree to the [FeisTab Terms of Service] and [FeisTab Privacy Policy], and the event-specific [Privacy Policy] from the organiser. I confirm I am the parent/legal guardian of the dancers listed above.
 
-On check: record `consent_accepted_at`, `consent_version`, `consent_ip`, and `user_id`.
+(If the organiser also set `terms_url`, append: "and the organiser's [Terms]".)
+
+On check: record `consent_accepted_at`, `consent_version`, `platform_terms_version`, `consent_ip`, and `user_id`.
 
 **"Pay $XX.XX" button:**
 - Disabled until consent checkbox is checked
@@ -535,7 +544,7 @@ async function createCheckoutSession(registrationId: string): Promise<string> {
     metadata: {
       registration_id: registrationId,
     },
-    expires_after: 1800,  // 30 minutes — generous, covers hold window
+    expires_at: Math.floor(Date.now() / 1000) + 1800, // 30 minutes from now
   }, {
     stripeAccount: connectedAccountId,  // Direct Charge on organiser's account
     idempotencyKey: `checkout_${registrationId}`,
@@ -630,7 +639,7 @@ This page does NOT change registration status. The webhook does.
 Capacity holds prevent overselling during the checkout window. They are a UX tool — not a hard database lock.
 
 1. **When:** Hold is created when the registration row is created at `draft` status (parent enters Step 3).
-2. **Duration:** 30 minutes from creation. `hold_expires_at = now() + interval '30 minutes'`. This matches the Stripe Checkout session expiry (`expires_after: 1800`) and prevents the edge case where a hold expires while the parent is still paying.
+2. **Duration:** 30 minutes from creation. `hold_expires_at = now() + interval '30 minutes'`. This matches the Stripe Checkout session expiry (`expires_at`, set to 30 minutes from creation) and prevents the edge case where a hold expires while the parent is still paying.
 3. **Scope:** The hold applies to all `registration_entries` in the registration. Each entry "holds" one spot in its competition.
 4. **Counting:** Available spots = `capacity_cap` - count of entries where registration status is `draft`, `pending_payment`, or `paid`.
 5. **Race condition safety:** When creating the draft registration and entries:
@@ -705,7 +714,7 @@ The parent's home base. Shows a chronological feed of registrations across all f
 
 Manage dancer profiles.
 
-**List view:** All dancers in the household with name, age, current default level, school. Edit and delete actions.
+**List view:** Active dancers in the household with name, age, current default level, school. Edit and archive actions. Archived dancers appear in a collapsed "Archived" section at the bottom of the page.
 
 ### Route: `/dashboard/dancers/new`
 
@@ -723,7 +732,9 @@ Add a new dancer. Form fields:
 Edit dancer profile. Same form as creation, plus:
 - Level adjustment UI: each dance shown with current level, editable
 - "Update all to [level]" bulk action
-- Delete dancer (with confirmation: "This will remove [name] and all their registration history. Are you sure?")
+- Archive dancer (with confirmation: "This will hide [name] from future registrations. Their existing registration history will be preserved.") — sets `is_active = false`
+
+Hard deletion of dancer profiles is not supported in MVP. Archiving preserves registration history and prevents FK violations on `registration_entries.dancer_id`.
 
 ---
 
@@ -732,6 +743,8 @@ Edit dancer profile. Same form as creation, plus:
 ### Route: `/organiser/feiseanna/[id]` — New "Entries" Tab
 
 Added to the existing organiser feis management page. Read-only for MVP.
+
+**Data access:** Organiser entries view is served via a server-side query (Server Action or API route with `service_role`), not a direct client-side Supabase query. This prevents organisers from accessing full dancer profiles (DOB, gender, championship status, household data). The server query returns only: dancer name, school, competitions entered, payment status, registration date.
 
 **Summary header:**
 - Total dancers registered
@@ -799,15 +812,21 @@ These are all valuable but deferred to post-MVP.
 
 At Step 3 (Review & Pay), before the payment button is enabled:
 
-> [ ] I agree to the [Terms of Service] and [Privacy Policy] and confirm I am the parent/legal guardian of the dancers listed above.
+> [ ] I agree to the [FeisTab Terms of Service](https://feistab.com/terms) and [FeisTab Privacy Policy](https://feistab.com/privacy), and the event-specific [Privacy Policy] from the organiser. I confirm I am the parent/legal guardian of the dancers listed above.
 
-Links open in new tabs to the organiser's `terms_url` and `privacy_policy_url` (set on the feis listing in sub-project 1). If `terms_url` is null on the feis listing, the consent checkbox shows only the privacy policy link. `terms_url` is not a publish prerequisite -- organisers may use their own terms outside the platform.
+- **FeisTab Terms of Service** and **FeisTab Privacy Policy** are platform-level links (hardcoded URLs: `feistab.com/terms`, `feistab.com/privacy`). These are always shown.
+- The organiser's `privacy_policy_url` is the event-specific link. Always shown (it is a publish prerequisite from sub-project 1).
+- If the organiser's `terms_url` is also set, include it: "and the organiser's [Terms]".
+- `terms_url` is not a publish prerequisite — organisers may use their own terms outside the platform.
+
+FeisTab is not a neutral conduit — the platform authenticates users, stores child data, processes registration data, and takes an application fee. Platform-level legal consent is required alongside any organiser-specific terms.
 
 ### Consent Record
 
 On checkbox check, we record:
 - `consent_accepted_at`: timestamp
-- `consent_version`: string (e.g., `"tos-v1-2026-03-01"`)
+- `consent_version`: string (e.g., `"tos-v1-2026-03-01"`) — organiser terms version
+- `platform_terms_version`: string (e.g., `"platform-v1-2026-03-01"`) — FeisTab platform terms version
 - `consent_ip`: IP address from request headers
 - `user_id`: from auth session (implicit via `household_id`)
 
@@ -838,13 +857,8 @@ CREATE POLICY "Users manage own dancers" ON dancers
     )
   );
 
--- Organisers can read dancer names for dancers registered at their feiseanna
-CREATE POLICY "Organisers read dancers at their feiseanna" ON dancers FOR SELECT
-  USING (id IN (
-    SELECT re.dancer_id FROM registration_entries re
-    JOIN registrations r ON re.registration_id = r.id
-    WHERE r.feis_listing_id IN (SELECT id FROM feis_listings WHERE created_by = auth.uid())
-  ));
+-- Organiser access to dancer data is handled server-side (service_role)
+-- to limit exposure to only name + school. No client-side RLS policy needed.
 
 -- ─── dancer_dance_levels ───
 ALTER TABLE dancer_dance_levels ENABLE ROW LEVEL SECURITY;
@@ -1011,6 +1025,7 @@ export interface Dancer {
   school_name: string | null
   tcrg_name: string | null
   championship_status: ChampionshipStatus
+  is_active: boolean
   created_at: string
   updated_at: string
 }
@@ -1040,6 +1055,7 @@ export interface Registration {
   is_late: boolean
   consent_accepted_at: string | null
   consent_version: string | null
+  platform_terms_version: string | null
   consent_ip: string | null
   hold_expires_at: string | null
   created_at: string
@@ -1112,6 +1128,7 @@ CREATE TABLE dancers (
   tcrg_name text,
   championship_status text NOT NULL DEFAULT 'none'
     CHECK (championship_status IN ('none', 'prelim', 'open')),
+  is_active boolean NOT NULL DEFAULT true,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -1155,6 +1172,7 @@ CREATE TABLE registrations (
   is_late boolean NOT NULL DEFAULT false,
   consent_accepted_at timestamptz,
   consent_version text,
+  platform_terms_version text,
   consent_ip text,
   hold_expires_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
@@ -1220,13 +1238,8 @@ CREATE POLICY "Users manage own dancers" ON dancers
     household_id IN (SELECT id FROM households WHERE user_id = auth.uid())
   );
 
--- Organisers can read dancer names for dancers registered at their feiseanna
-CREATE POLICY "Organisers read dancers at their feiseanna" ON dancers FOR SELECT
-  USING (id IN (
-    SELECT re.dancer_id FROM registration_entries re
-    JOIN registrations r ON re.registration_id = r.id
-    WHERE r.feis_listing_id IN (SELECT id FROM feis_listings WHERE created_by = auth.uid())
-  ));
+-- Organiser access to dancer data is handled server-side (service_role)
+-- to limit exposure to only name + school. No client-side RLS policy needed.
 
 -- dancer_dance_levels
 CREATE POLICY "Levels follow dancer access" ON dancer_dance_levels
