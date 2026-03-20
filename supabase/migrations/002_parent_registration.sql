@@ -2,9 +2,12 @@
 -- Pre-registration: parent registration portal tables
 -- Builds on 001_feis_setup.sql — requires feis_listings, feis_competitions tables
 
+-- Target the pre_registration schema (same as 001_feis_setup.sql)
+SET search_path TO pre_registration, public;
+
 -- ─── households ───
 CREATE TABLE households (
-  id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid NOT NULL UNIQUE REFERENCES auth.users(id),
   created_at timestamptz NOT NULL DEFAULT now()
 );
@@ -16,7 +19,7 @@ CREATE INDEX idx_households_user_id ON households(user_id);
 -- These are separate tables in separate schemas. The bridge (Sub-project 3)
 -- maps between them.
 CREATE TABLE dancers (
-  id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   household_id uuid NOT NULL REFERENCES households(id) ON DELETE CASCADE,
   first_name text NOT NULL,
   last_name text NOT NULL,
@@ -37,7 +40,7 @@ CREATE TRIGGER set_dancers_updated_at BEFORE UPDATE ON dancers
 
 -- ─── dancer_dance_levels ───
 CREATE TABLE dancer_dance_levels (
-  id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   dancer_id uuid NOT NULL REFERENCES dancers(id) ON DELETE CASCADE,
   dance_key text NOT NULL,
   level_key text NOT NULL,
@@ -55,7 +58,7 @@ CREATE TRIGGER set_dancer_dance_levels_updated_at BEFORE UPDATE ON dancer_dance_
 -- These are separate tables in separate schemas. The bridge (Sub-project 3)
 -- maps between them.
 CREATE TABLE registrations (
-  id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   feis_listing_id uuid NOT NULL REFERENCES feis_listings(id),
   household_id uuid NOT NULL REFERENCES households(id),
   status text NOT NULL DEFAULT 'draft'
@@ -93,7 +96,7 @@ CREATE TRIGGER set_registrations_updated_at BEFORE UPDATE ON registrations
 
 -- ─── registration_entries ───
 CREATE TABLE registration_entries (
-  id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   registration_id uuid NOT NULL REFERENCES registrations(id) ON DELETE CASCADE,
   dancer_id uuid NOT NULL REFERENCES dancers(id),
   feis_competition_id uuid NOT NULL REFERENCES feis_competitions(id),
@@ -110,7 +113,7 @@ CREATE INDEX idx_registration_entries_feis_competition_id ON registration_entrie
 
 -- ─── registration_snapshots ───
 CREATE TABLE registration_snapshots (
-  id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   registration_id uuid NOT NULL REFERENCES registrations(id),
   snapshot_data jsonb NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now()
