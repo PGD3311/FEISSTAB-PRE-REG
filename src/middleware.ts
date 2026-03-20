@@ -36,10 +36,29 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(url)
   }
 
-  // Redirect authenticated users away from auth pages
-  if (user && request.nextUrl.pathname.startsWith('/auth')) {
+  // Protect dashboard routes
+  if (!user && request.nextUrl.pathname.startsWith('/dashboard')) {
     const url = request.nextUrl.clone()
-    url.pathname = '/organiser/feiseanna'
+    url.pathname = '/auth/login'
+    return NextResponse.redirect(url)
+  }
+
+  // Protect registration routes (require auth)
+  if (!user && request.nextUrl.pathname.includes('/register')) {
+    const url = request.nextUrl.clone()
+    url.pathname = '/auth/login'
+    return NextResponse.redirect(url)
+  }
+
+  // Redirect authenticated users away from auth pages to onboarding
+  if (
+    user &&
+    request.nextUrl.pathname.startsWith('/auth') &&
+    !request.nextUrl.pathname.startsWith('/auth/callback') &&
+    !request.nextUrl.pathname.startsWith('/auth/onboarding')
+  ) {
+    const url = request.nextUrl.clone()
+    url.pathname = '/auth/onboarding'
     return NextResponse.redirect(url)
   }
 
@@ -47,5 +66,10 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/organiser/:path*', '/auth/:path*'],
+  matcher: [
+    '/organiser/:path*',
+    '/dashboard/:path*',
+    '/auth/:path*',
+    '/feiseanna/:path*/register/:path*',
+  ],
 }
