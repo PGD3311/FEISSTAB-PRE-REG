@@ -627,6 +627,8 @@ export async function launchFeisDay(feisListingId: string) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { error: 'Not authenticated' }
 
+  console.log(`[BRIDGE] Launch requested for feis ${feisListingId} by user ${user.id}`)
+
   // 1. Fetch listing and verify ownership
   const { data: listing, error: listingError } = await supabase
     .from('feis_listings')
@@ -639,6 +641,7 @@ export async function launchFeisDay(feisListingId: string) {
 
   // Idempotency: already launched
   if (listing.status === 'launched') {
+    console.log(`[BRIDGE] Already launched — returning existing event ${listing.launched_event_id}`)
     return { eventId: listing.launched_event_id, alreadyLaunched: true }
   }
 
@@ -667,7 +670,6 @@ export async function launchFeisDay(feisListingId: string) {
     .select('id')
     .eq('feis_listing_id', feisListingId)
     .eq('status', 'paid')
-    .limit(1)
 
   if (paidError || !paidRegs || paidRegs.length === 0) {
     return { error: 'No paid registrations found. Nothing to launch.' }
@@ -683,6 +685,7 @@ export async function launchFeisDay(feisListingId: string) {
   const { data: entries } = await supabase
     .from('registration_entries')
     .select(`
+      id,
       dancer_id,
       feis_competition_id,
       dancers(first_name, last_name, date_of_birth, school_name),
@@ -694,6 +697,8 @@ export async function launchFeisDay(feisListingId: string) {
   if (!competitions || !entries) {
     return { error: 'Failed to fetch registration data' }
   }
+
+  console.log(`[BRIDGE] Prerequisites passed: ${paidRegs.length} paid registrations, ${competitions.length} competitions`)
 
   // 4. Execute bridge
   const { executeBridge } = await import('@/lib/bridge')
@@ -712,6 +717,7 @@ export async function launchFeisDay(feisListingId: string) {
       entries: (entries ?? []).map((e: Record<string, unknown>) => {
         const dancer = e.dancers as Record<string, string | null>
         return {
+          id: e.id as string,
           dancer_id: e.dancer_id as string,
           feis_competition_id: e.feis_competition_id as string,
           dancer_first_name: dancer?.first_name ?? '',
@@ -733,9 +739,12 @@ export async function launchFeisDay(feisListingId: string) {
       .eq('id', feisListingId)
 
     if (updateError) {
-      console.error('Failed to mark listing as launched:', updateError)
+      console.error('[BRIDGE] Failed to mark listing as launched:', updateError)
       return { error: 'Bridge succeeded but failed to update listing status' }
     }
+
+    console.log(`[BRIDGE] Phase 1 event created: ${result.eventId}`)
+    console.log(`[BRIDGE] Bridge complete: ${result.competitionsCreated} competitions, ${result.dancersCreated} dancers, ${result.registrationsCreated} registrations`)
 
     return {
       eventId: result.eventId,
@@ -744,7 +753,7 @@ export async function launchFeisDay(feisListingId: string) {
       registrationsCreated: result.registrationsCreated,
     }
   } catch (err) {
-    console.error('Bridge execution failed:', err)
+    console.error(`[BRIDGE] Launch failed for feis ${feisListingId}:`, err)
     return { error: `Bridge failed: ${err instanceof Error ? err.message : 'unknown error'}` }
   }
 }
