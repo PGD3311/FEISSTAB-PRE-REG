@@ -82,8 +82,6 @@ function UnauthenticatedScreen({ feisId }: { feisId: string }) {
   )
 }
 
-const STEP_LABELS = ['Who&apos;s Dancing?', 'Choose Competitions', 'Review & Pay']
-
 function StepIndicator({ current }: { current: number }) {
   return (
     <div className="mb-8 flex items-center gap-2">
@@ -208,7 +206,7 @@ export default function RegisterPage() {
   if (loadState.status === 'unauthenticated') return <UnauthenticatedScreen feisId={feisId} />
   if (loadState.status === 'error') return <ErrorScreen message={loadState.message} />
 
-  const { listing, feeSchedule: _feeSchedule, competitions: _competitions, dancers, expiredHold } =
+  const { listing, dancers, expiredHold } =
     loadState.data
 
   const ageCutoffDate = listing.age_cutoff_date

@@ -82,18 +82,23 @@ npx vitest run tests/engine/  # engine tests only
 
 ## 2. Scope
 
-**Sub-project 1 is the current scope:** Organiser feis setup wizard.
+**Sub-project 2 is the current scope:** Parent registration portal.
 
-**Do not build yet:** parent registration portal, family accounts, Stripe Checkout, bridge to FeisTab, number cards, PDFs. These are sub-projects 2 and 3.
+**Do not build yet:** bridge to FeisTab, number cards, PDFs. These are sub-project 3.
 
-**Spec:** `docs/2026-03-19-organiser-feis-setup-design.md`
-**Plan:** `docs/2026-03-19-organiser-feis-setup.md`
+**Specs:**
+- Sub-project 1: `docs/2026-03-19-organiser-feis-setup-design.md`
+- Sub-project 2: `docs/2026-03-20-parent-registration-design.md`
+
+**Plans:**
+- Sub-project 1: `docs/2026-03-19-organiser-feis-setup.md`
+- Sub-project 2: `docs/2026-03-20-parent-registration.md`
 
 ---
 
 ## 3. Forbidden Actions
 
-- Don't bypass the state machine — every status change goes through `canTransitionListing()`
+- Don't bypass the state machines — listing changes go through `canTransitionListing()`, registration changes go through `canTransitionRegistration()`
 - Don't put Supabase calls in engine code
 - Don't put database queries in components — queries go in pages/route handlers
 - Don't add features not in the current sub-project spec
@@ -101,6 +106,8 @@ npx vitest run tests/engine/  # engine tests only
 - Don't commit `any` types in new code or dead code
 - Don't modify FeisTab Phase 1 tables or schema
 - Don't let template edits mutate existing listings — frozen snapshots are immutable
+- Webhook handler is authoritative for payment status — success page is cosmetic
+- Eligibility engine is pure — no Supabase, no side effects
 
 ---
 
@@ -408,5 +415,11 @@ Copy-paste with convention for now (globals.css, font setup, shadcn components f
 | `docs/research/architecture-patterns.md` | Supabase patterns, batch operations, design system |
 | `src/lib/types/feis-listing.ts` | All shared TypeScript types |
 | `src/lib/feis-listing-states.ts` | Listing state machine |
+| `src/lib/registration-states.ts` | Registration state machine |
 | `src/lib/engine/fee-calculator.ts` | Fee calculation (pure, integer math) |
 | `src/lib/engine/syllabus-expander.ts` | Template → competitions expansion |
+| `src/lib/engine/eligibility.ts` | Eligibility filtering (pure, per-dance levels) |
+| `src/app/feiseanna/[id]/register/actions.ts` | Registration server actions (draft, checkout, cancel) |
+| `src/app/api/webhooks/stripe/route.ts` | Stripe webhook — authoritative payment confirmation |
+| `src/lib/email/send-confirmation.ts` | Resend confirmation email |
+| `src/lib/stripe.ts` | Stripe client singleton |
