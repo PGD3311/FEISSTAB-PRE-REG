@@ -277,6 +277,51 @@ export function FeisWizardStep1({ listing, onNext }: FeisWizardStep1Props) {
           </div>
         </div>
 
+        {/* Website & Logo */}
+        <div className="space-y-4">
+          <h2 className="text-lg font-semibold">Public Listing</h2>
+
+          <div>
+            <label
+              htmlFor="website_url"
+              className="mb-1.5 block text-sm font-medium"
+            >
+              Feis Website
+            </label>
+            <input
+              id="website_url"
+              name="website_url"
+              type="url"
+              defaultValue={listing.website_url ?? ''}
+              placeholder="https://yourfeis.com"
+              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+            <p className="mt-1 text-xs text-muted-foreground">
+              Shown on the public listing so parents can find more info
+            </p>
+          </div>
+
+          <div>
+            <label
+              htmlFor="logo_url"
+              className="mb-1.5 block text-sm font-medium"
+            >
+              Feis Logo URL
+            </label>
+            <input
+              id="logo_url"
+              name="logo_url"
+              type="url"
+              defaultValue={listing.logo_url ?? ''}
+              placeholder="https://yourfeis.com/logo.png"
+              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+            <p className="mt-1 text-xs text-muted-foreground">
+              Displayed next to your feis on the homepage. Square image works best.
+            </p>
+          </div>
+        </div>
+
         {/* Description */}
         <div>
           <label

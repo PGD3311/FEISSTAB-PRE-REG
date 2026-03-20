@@ -34,6 +34,10 @@ export async function createDraftListing(formData: FormData) {
   const timezone = formData.get('timezone') as string | null
   const privacy_policy_url =
     (formData.get('privacy_policy_url') as string | null) || null
+  const website_url =
+    (formData.get('website_url') as string | null) || null
+  const logo_url =
+    (formData.get('logo_url') as string | null) || null
 
   if (!name || !feis_date || !venue_name || !contact_email || !timezone) {
     return { error: 'Missing required fields' }
@@ -60,6 +64,8 @@ export async function createDraftListing(formData: FormData) {
       description,
       timezone,
       privacy_policy_url,
+      website_url,
+      logo_url,
       age_cutoff_date,
       season_year,
       status: 'draft',
@@ -96,6 +102,10 @@ export async function updateListingDetails(
   const timezone = formData.get('timezone') as string | null
   const privacy_policy_url =
     (formData.get('privacy_policy_url') as string | null) || null
+  const website_url =
+    (formData.get('website_url') as string | null) || null
+  const logo_url =
+    (formData.get('logo_url') as string | null) || null
 
   if (!name || !feis_date || !venue_name || !contact_email || !timezone) {
     return { error: 'Missing required fields' }
@@ -118,6 +128,8 @@ export async function updateListingDetails(
       description,
       timezone,
       privacy_policy_url,
+      website_url,
+      logo_url,
       age_cutoff_date,
       season_year,
     })
