@@ -1,11 +1,14 @@
 'use client'
 
-import { useState, type FormEvent } from 'react'
+import { Suspense, useState, type FormEvent } from 'react'
+import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { useSupabase } from '@/hooks/use-supabase'
 
-export default function SignupPage() {
+function SignupForm() {
   const supabase = useSupabase()
+  const searchParams = useSearchParams()
+  const redirectTo = searchParams.get('redirect')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
@@ -69,7 +72,7 @@ export default function SignupPage() {
             the link to activate your account.
           </p>
           <Link
-            href="/auth/login"
+            href={redirectTo ? `/auth/login?redirect=${encodeURIComponent(redirectTo)}` : '/auth/login'}
             className="mt-6 inline-block text-sm font-medium text-primary hover:underline"
           >
             Back to login
@@ -164,7 +167,7 @@ export default function SignupPage() {
         <p className="mt-6 text-center text-sm text-muted-foreground">
           Already have an account?{' '}
           <Link
-            href="/auth/login"
+            href={redirectTo ? `/auth/login?redirect=${encodeURIComponent(redirectTo)}` : '/auth/login'}
             className="font-medium text-primary hover:underline"
           >
             Log in
@@ -172,5 +175,13 @@ export default function SignupPage() {
         </p>
       </div>
     </div>
+  )
+}
+
+export default function SignupPage() {
+  return (
+    <Suspense>
+      <SignupForm />
+    </Suspense>
   )
 }

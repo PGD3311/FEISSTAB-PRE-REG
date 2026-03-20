@@ -148,22 +148,23 @@ export async function updateListingDetails(
 
 export async function cloneFeis(sourceId: string) {
   const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return { error: 'Not authenticated' }
 
-  // Fetch the source listing
+  // Fetch the source listing — only if owned by this user
   const { data: source, error: sourceError } = await supabase
     .from('feis_listings')
     .select('*')
     .eq('id', sourceId)
+    .eq('created_by', user.id)
     .single()
 
   if (sourceError || !source) {
     console.error('Failed to fetch source listing:', sourceError)
     return { error: 'Failed to fetch source listing' }
   }
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
 
   // Year-bump the name: replace any 4-digit year with next year
   const nextYear = new Date().getFullYear() + 1

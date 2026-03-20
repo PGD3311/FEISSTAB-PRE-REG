@@ -46,6 +46,13 @@ export async function POST(request: Request) {
 
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object as Stripe.Checkout.Session
+
+    // Verify payment was actually collected
+    if (session.payment_status !== 'paid') {
+      console.log(`Checkout session ${session.id} completed but payment_status is ${session.payment_status} — skipping`)
+      return NextResponse.json({ received: true, skipped: true })
+    }
+
     const registrationId = session.metadata?.registration_id
 
     if (!registrationId) {

@@ -1,13 +1,15 @@
 'use client'
 
-import { useState, type FormEvent } from 'react'
-import { useRouter } from 'next/navigation'
+import { Suspense, useState, type FormEvent } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { useSupabase } from '@/hooks/use-supabase'
 
-export default function LoginPage() {
+function LoginForm() {
   const supabase = useSupabase()
   const router = useRouter()
+  const searchParams = useSearchParams()
+  const redirectTo = searchParams.get('redirect')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -33,7 +35,7 @@ export default function LoginPage() {
         return
       }
 
-      router.push('/auth/onboarding')
+      router.push(redirectTo || '/auth/onboarding')
       router.refresh()
     } catch {
       setError('An unexpected error occurred')
@@ -107,7 +109,7 @@ export default function LoginPage() {
         <p className="mt-6 text-center text-sm text-muted-foreground">
           Don&apos;t have an account?{' '}
           <Link
-            href="/auth/signup"
+            href={redirectTo ? `/auth/signup?redirect=${encodeURIComponent(redirectTo)}` : '/auth/signup'}
             className="font-medium text-primary hover:underline"
           >
             Sign up
@@ -115,5 +117,13 @@ export default function LoginPage() {
         </p>
       </div>
     </div>
+  )
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense>
+      <LoginForm />
+    </Suspense>
   )
 }

@@ -10,5 +10,5 @@ export async function GET(request: Request) {
     await supabase.auth.exchangeCodeForSession(code)
   }
 
-  return NextResponse.redirect(`${origin}/organiser/feiseanna`)
+  return NextResponse.redirect(`${origin}/auth/onboarding`)
 }
