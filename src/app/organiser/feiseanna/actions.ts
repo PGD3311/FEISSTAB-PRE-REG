@@ -39,6 +39,10 @@ export async function createDraftListing(formData: FormData) {
     return { error: 'Missing required fields' }
   }
 
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+
   const feisYear = new Date(feis_date + 'T00:00:00').getFullYear()
   const age_cutoff_date = `${feisYear}-01-01`
   const season_year = feisYear
@@ -59,6 +63,7 @@ export async function createDraftListing(formData: FormData) {
       age_cutoff_date,
       season_year,
       status: 'draft',
+      created_by: user?.id ?? null,
     })
     .select('id')
     .single()
@@ -141,6 +146,10 @@ export async function cloneFeis(sourceId: string) {
     return { error: 'Failed to fetch source listing' }
   }
 
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+
   // Year-bump the name: replace any 4-digit year with next year
   const nextYear = new Date().getFullYear() + 1
   const clonedName = source.name
@@ -174,6 +183,7 @@ export async function cloneFeis(sourceId: string) {
       late_reg_closes_at: null,
       cloned_from: sourceId,
       status: 'draft',
+      created_by: user?.id ?? null,
     })
     .select('id')
     .single()
@@ -247,9 +257,13 @@ export async function cloneFeisAndRedirect(sourceId: string) {
 export async function createEmptyDraftAndRedirect(): Promise<void> {
   const supabase = await createClient()
 
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+
   const { data, error } = await supabase
     .from('feis_listings')
-    .insert({ status: 'draft' })
+    .insert({ status: 'draft', created_by: user?.id ?? null })
     .select('id')
     .single()
 
