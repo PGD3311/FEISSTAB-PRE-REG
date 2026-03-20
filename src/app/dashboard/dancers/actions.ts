@@ -136,17 +136,7 @@ export async function updateDancer(dancerId: string, input: UpdateDancerInput) {
     return { error: 'Failed to update dancer' }
   }
 
-  // Upsert dance levels (delete-and-reinsert for simplicity)
-  const { error: deleteError } = await supabase
-    .from('dancer_dance_levels')
-    .delete()
-    .eq('dancer_id', dancerId)
-
-  if (deleteError) {
-    console.error('Failed to clear dance levels:', deleteError)
-    return { error: 'Failed to update dance levels' }
-  }
-
+  // Upsert dance levels (safer than delete-and-reinsert — if upsert fails, old data preserved)
   const levelRows = Object.entries(input.levels).map(([dance_key, level_key]) => ({
     dancer_id: dancerId,
     dance_key,
@@ -155,11 +145,39 @@ export async function updateDancer(dancerId: string, input: UpdateDancerInput) {
   }))
 
   if (levelRows.length > 0) {
-    const { error: levelsError } = await supabase.from('dancer_dance_levels').insert(levelRows)
+    const { error: levelsError } = await supabase
+      .from('dancer_dance_levels')
+      .upsert(levelRows, { onConflict: 'dancer_id,dance_key' })
 
     if (levelsError) {
-      console.error('Failed to insert dance levels:', levelsError)
+      console.error('Failed to update dance levels:', levelsError)
       return { error: 'Failed to update dance levels' }
+    }
+  }
+
+  // Delete levels for dances no longer in the list
+  const currentDanceKeys = Object.keys(input.levels)
+  if (currentDanceKeys.length > 0) {
+    const { error: cleanupError } = await supabase
+      .from('dancer_dance_levels')
+      .delete()
+      .eq('dancer_id', dancerId)
+      .filter('dance_key', 'not.in', `(${currentDanceKeys.join(',')})`)
+
+    if (cleanupError) {
+      console.error('Failed to clean up removed dance levels:', cleanupError)
+      // Non-fatal — extra levels are harmless
+    }
+  } else {
+    // No levels at all — delete everything
+    const { error: deleteError } = await supabase
+      .from('dancer_dance_levels')
+      .delete()
+      .eq('dancer_id', dancerId)
+
+    if (deleteError) {
+      console.error('Failed to clear dance levels:', deleteError)
+      return { error: 'Failed to clear dance levels' }
     }
   }
 

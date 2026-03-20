@@ -126,7 +126,7 @@ export async function executeBridge(data: PreRegData): Promise<BridgeResult> {
     for (const entry of data.entries) {
       // Normalize: null school_name and '' school_name are equivalent
       const normalizedSchool = entry.dancer_school_name || ''
-      const key = `${entry.dancer_first_name}|${entry.dancer_last_name}|${normalizedSchool}`
+      const key = `${entry.dancer_first_name}|${entry.dancer_last_name}|${normalizedSchool}|${entry.dancer_date_of_birth ?? ''}`
       if (!uniqueDancers.has(key)) {
         uniqueDancers.set(key, {
           first_name: entry.dancer_first_name,
@@ -207,6 +207,22 @@ export async function executeBridge(data: PreRegData): Promise<BridgeResult> {
       }
 
       if (found) {
+        // Check DOB mismatch — could be different people with same name/school
+        if (dancer.date_of_birth) {
+          const { data: existingDancer } = await phase1
+            .from('dancers')
+            .select('date_of_birth')
+            .eq('id', found.id)
+            .single()
+
+          if (existingDancer?.date_of_birth && existingDancer.date_of_birth !== dancer.date_of_birth) {
+            console.warn(
+              `[BRIDGE] DOB mismatch for dancer ${dancer.first_name} ${dancer.last_name} at ${dancer.school_name ?? 'no school'}: ` +
+              `existing=${existingDancer.date_of_birth}, prereg=${dancer.date_of_birth}. Using existing Phase 1 record.`
+            )
+          }
+        }
+
         // Stamp the prereg_dancer_id on the existing row for future idempotency
         const { error: stampErr } = await phase1
           .from('dancers')
@@ -248,7 +264,7 @@ export async function executeBridge(data: PreRegData): Promise<BridgeResult> {
     for (const entry of data.entries) {
       if (!dancerMap.has(entry.dancer_id)) {
         const normalizedSchool = entry.dancer_school_name || ''
-        const key = `${entry.dancer_first_name}|${entry.dancer_last_name}|${normalizedSchool}`
+        const key = `${entry.dancer_first_name}|${entry.dancer_last_name}|${normalizedSchool}|${entry.dancer_date_of_birth ?? ''}`
         const canonical = uniqueDancers.get(key)
         if (canonical && dancerMap.has(canonical.prereg_dancer_id)) {
           dancerMap.set(entry.dancer_id, dancerMap.get(canonical.prereg_dancer_id)!)

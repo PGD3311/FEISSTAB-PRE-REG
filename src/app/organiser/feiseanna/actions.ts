@@ -324,28 +324,48 @@ export async function expandAndSaveSyllabus(
 
   if (listingError) return { error: listingError.message }
 
-  // 2. Delete existing competitions for this listing (delete-and-reinsert pattern)
-  const { error: deleteError } = await supabase
-    .from('feis_competitions')
-    .delete()
-    .eq('feis_listing_id', listingId)
-
-  if (deleteError) return { error: deleteError.message }
-
-  // 3. Expand and insert new competitions
+  // 2. Expand new competitions
   const expanded = expandSyllabus(templateData, selection)
-  if (expanded.length === 0) return { success: true as const, count: 0 }
+
+  if (expanded.length === 0) {
+    // No competitions selected — safe to delete all existing
+    const { error: deleteError } = await supabase
+      .from('feis_competitions')
+      .delete()
+      .eq('feis_listing_id', listingId)
+
+    if (deleteError) return { error: deleteError.message }
+    return { success: true as const, count: 0 }
+  }
 
   const rows = expanded.map((comp) => ({
     feis_listing_id: listingId,
     ...comp,
   }))
 
-  const { error: insertError } = await supabase
+  // 3. Insert new competitions first (if this fails, old data is preserved)
+  const { data: inserted, error: insertError } = await supabase
     .from('feis_competitions')
     .insert(rows)
+    .select('id')
 
   if (insertError) return { error: insertError.message }
+
+  // 4. Only now delete old competitions that were replaced
+  const newIds = (inserted ?? []).map((r: { id: string }) => r.id)
+  if (newIds.length > 0) {
+    const { error: cleanupError } = await supabase
+      .from('feis_competitions')
+      .delete()
+      .eq('feis_listing_id', listingId)
+      .filter('id', 'not.in', `(${newIds.join(',')})`)
+
+    if (cleanupError) {
+      console.error('Failed to clean up old competitions:', cleanupError)
+      // Non-fatal — duplicates are less harmful than data loss
+    }
+  }
+
   return { success: true as const, count: expanded.length }
 }
 
