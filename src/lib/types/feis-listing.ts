@@ -175,3 +175,108 @@ export interface ListingTransitionContext {
     fee_category: FeeCategoryType
   }[]
 }
+
+// ─── Registration status ───
+export type RegistrationStatus = 'draft' | 'pending_payment' | 'paid' | 'expired' | 'cancelled'
+
+// ─── Championship status ───
+export type ChampionshipStatus = 'none' | 'prelim' | 'open'
+
+// ─── Dancer types ───
+export interface Dancer {
+  id: string
+  household_id: string
+  first_name: string
+  last_name: string
+  date_of_birth: string  // ISO date
+  gender: 'female' | 'male'
+  school_name: string | null
+  tcrg_name: string | null
+  championship_status: ChampionshipStatus
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface DancerDanceLevel {
+  id: string
+  dancer_id: string
+  dance_key: string
+  level_key: string
+  source: 'parent' | 'teacher'
+  updated_at: string
+}
+
+// ─── Registration types ───
+export interface Registration {
+  id: string
+  feis_listing_id: string
+  household_id: string
+  status: RegistrationStatus
+  confirmation_number: string | null
+  stripe_checkout_session_id: string | null
+  stripe_payment_intent_id: string | null
+  stripe_charge_id: string | null
+  total_cents: number
+  application_fee_cents: number
+  event_fee_cents: number
+  is_late: boolean
+  consent_accepted_at: string | null
+  consent_version: string | null
+  platform_terms_version: string | null
+  consent_ip: string | null
+  hold_expires_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface RegistrationEntry {
+  id: string
+  registration_id: string
+  dancer_id: string
+  feis_competition_id: string
+  fee_category: FeeCategoryType
+  base_fee_cents: number
+  late_fee_cents: number
+  day_of_surcharge_cents: number
+  created_at: string
+}
+
+// ─── Eligibility types ───
+export interface DanceLevelMap {
+  [danceKey: string]: string  // e.g., { reel: 'NOV', slip_jig: 'AB' }
+}
+
+export interface DancerProfile {
+  dob: Date
+  gender: string
+  championshipStatus: ChampionshipStatus
+  danceLevels: DanceLevelMap
+}
+
+// Represents a feis_competitions database row — the canonical shape for
+// eligibility filtering, cart building, and capacity checks.
+export interface FeisCompetition {
+  id: string
+  feis_listing_id: string
+  age_group_key: string | null
+  age_group_label: string | null
+  age_max_jan1: number | null
+  age_min_jan1: number | null
+  level_key: string | null
+  level_label: string | null
+  dance_key: string | null
+  dance_label: string | null
+  competition_type: CompetitionType
+  championship_key: ChampionshipKey | null
+  fee_category: FeeCategoryType
+  display_name: string
+  capacity_cap: number | null
+  enabled: boolean
+}
+
+export interface EligibleCompetition {
+  competition: FeisCompetition
+  eligible: boolean
+  reason: string  // e.g., "Age and level match", "Championship status insufficient"
+}
