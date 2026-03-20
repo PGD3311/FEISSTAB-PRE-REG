@@ -25,11 +25,15 @@ export default function LoginPage() {
       })
 
       if (authError) {
-        setError(authError.message)
+        if (authError.status === 429 || authError.message.toLowerCase().includes('rate limit')) {
+          setError('Too many login attempts. Please try again in a few minutes.')
+        } else {
+          setError(authError.message)
+        }
         return
       }
 
-      router.push('/organiser/feiseanna')
+      router.push('/auth/onboarding')
       router.refresh()
     } catch {
       setError('An unexpected error occurred')

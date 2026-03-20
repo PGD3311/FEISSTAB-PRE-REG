@@ -36,7 +36,14 @@ export default function SignupPage() {
       })
 
       if (authError) {
-        setError(authError.message)
+        // Supabase returns misleading messages on rate limits
+        if (authError.status === 429 || authError.message.toLowerCase().includes('rate limit')) {
+          setError('Too many signup attempts. Please try again in a few minutes.')
+        } else if (authError.message.toLowerCase().includes('already registered')) {
+          setError('An account with this email already exists. Try logging in instead.')
+        } else {
+          setError(authError.message)
+        }
         return
       }
 
