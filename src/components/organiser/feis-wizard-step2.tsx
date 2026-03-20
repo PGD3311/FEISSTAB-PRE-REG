@@ -67,18 +67,22 @@ export function FeisWizardStep2({
   const [isPending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
 
+  // When competitions already exist, default to summary view
+  const [showReconfigure, setShowReconfigure] = useState(false)
+
   // Template picker state
   const [templates, setTemplates] = useState<SyllabusTemplate[]>([])
   const [loadingTemplates, setLoadingTemplates] = useState(true)
 
-  // Selected template + editor state
+  // Selected template + editor state — do NOT auto-init selection when competitions exist
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(
-    existingTemplateId
+    existingCompetitionsCount > 0 ? null : existingTemplateId
   )
   const [templateData, setTemplateData] = useState<TemplateData | null>(
-    existingSnapshot
+    existingCompetitionsCount > 0 ? null : existingSnapshot
   )
   const [selection, setSelection] = useState<SyllabusSelection | null>(() => {
+    if (existingCompetitionsCount > 0) return null
     if (existingSnapshot && existingTemplateId) {
       return buildDefaultSelection(existingSnapshot)
     }
@@ -156,6 +160,36 @@ export function FeisWizardStep2({
     return (
       <div className="feis-card flex items-center justify-center px-6 py-16 text-center text-muted-foreground">
         Loading syllabus templates...
+      </div>
+    )
+  }
+
+  // Show summary view when competitions already exist and user hasn't clicked "Reconfigure"
+  if (existingCompetitionsCount > 0 && !showReconfigure) {
+    return (
+      <div>
+        <div className="feis-card px-6 py-8 text-center">
+          <h2 className="text-lg font-semibold">Syllabus Configured</h2>
+          <p className="mt-2 text-sm text-muted-foreground">
+            You have {existingCompetitionsCount} competitions configured.
+          </p>
+          <div className="mt-6 flex flex-col items-center gap-3 sm:flex-row sm:justify-center">
+            <button
+              type="button"
+              onClick={onNext}
+              className="rounded-md bg-primary px-6 py-2.5 text-sm font-medium text-primary-foreground hover:bg-feis-green-600"
+            >
+              Keep &amp; Continue
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowReconfigure(true)}
+              className="rounded-md bg-secondary px-4 py-2 text-sm font-medium text-secondary-foreground hover:bg-muted"
+            >
+              Reconfigure Syllabus
+            </button>
+          </div>
+        </div>
       </div>
     )
   }

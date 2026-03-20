@@ -9,6 +9,7 @@ import type {
   ListingTransitionContext,
 } from '@/lib/types/feis-listing'
 import { getListingTransitionBlockReasons } from '@/lib/feis-listing-states'
+import { formatTimezone } from '@/lib/format'
 import { useSupabase } from '@/hooks/use-supabase'
 import { transitionListingStatus } from '@/app/organiser/feiseanna/actions'
 import { PublishChecklist } from '@/components/organiser/publish-checklist'
@@ -124,6 +125,21 @@ export function FeisWizardStep5({
     return getListingTransitionBlockReasons('draft', 'open', context)
   }, [effectiveListing, feeSchedule, enabledCompetitions])
 
+  // Compute positive checks for the checklist
+  const passed = useMemo(() => {
+    const items: string[] = []
+    if (listing.name) items.push('Feis name set')
+    if (listing.feis_date) items.push('Feis date set')
+    if (listing.venue_name) items.push('Venue set')
+    if (competitionSummary.total > 0) items.push('Syllabus configured')
+    if (feeSchedule) items.push('Fees configured')
+    if (listing.reg_opens_at && listing.reg_closes_at)
+      items.push('Deadlines set')
+    if (stripeSimulated) items.push('Stripe connected')
+    if (listing.privacy_policy_url) items.push('Privacy policy set')
+    return items
+  }, [listing, feeSchedule, competitionSummary.total, stripeSimulated])
+
   async function handleSimulateStripe() {
     const { error: updateError } = await supabase
       .from('feis_listings')
@@ -200,7 +216,7 @@ export function FeisWizardStep5({
             <div>
               <dt className="text-muted-foreground">Timezone</dt>
               <dd className="font-medium">
-                {listing.timezone || 'Not set'}
+                {listing.timezone ? formatTimezone(listing.timezone) : 'Not set'}
               </dd>
             </div>
             <div>
@@ -376,7 +392,7 @@ export function FeisWizardStep5({
           <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
             Publish Checklist
           </h3>
-          <PublishChecklist blocks={blocks} warnings={warnings} />
+          <PublishChecklist blocks={blocks} warnings={warnings} passed={passed} />
         </div>
       </div>
 
@@ -389,14 +405,29 @@ export function FeisWizardStep5({
         >
           Back
         </button>
-        <button
-          type="button"
-          onClick={handlePublish}
-          disabled={isPending || blocks.length > 0}
-          className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-feis-green-600 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          {isPending ? 'Publishing...' : 'Publish Feis'}
-        </button>
+        <div className="flex flex-col items-start gap-1">
+          {blocks.length > 0 && (
+            <p className="text-sm font-medium text-destructive">
+              Fix the items above before publishing.
+            </p>
+          )}
+          <button
+            type="button"
+            onClick={handlePublish}
+            disabled={isPending || blocks.length > 0}
+            className={`rounded-md px-4 py-2 text-sm font-medium ${
+              blocks.length > 0
+                ? 'cursor-not-allowed bg-muted text-muted-foreground opacity-50'
+                : 'bg-primary text-primary-foreground hover:bg-feis-green-600 disabled:cursor-not-allowed disabled:opacity-40'
+            }`}
+          >
+            {isPending
+              ? 'Publishing...'
+              : blocks.length > 0
+                ? 'Cannot Publish'
+                : 'Publish Feis'}
+          </button>
+        </div>
       </div>
     </div>
   )

@@ -8,6 +8,7 @@ import type {
   ListingStatus,
   CompetitionType,
 } from '@/lib/types/feis-listing'
+import { formatTimezone } from '@/lib/format'
 import { StatusActions } from '@/components/organiser/status-actions'
 import { DeleteDraftButton } from '@/components/organiser/delete-draft-button'
 import { CloneFeisButton } from '@/components/organiser/clone-feis-button'
@@ -109,7 +110,7 @@ function OverviewTab({
           <div>
             <dt className="text-sm text-muted-foreground">Timezone</dt>
             <dd className="mt-0.5 font-medium">
-              {listing.timezone ?? 'Not set'}
+              {listing.timezone ? formatTimezone(listing.timezone) : 'Not set'}
             </dd>
           </div>
           <div>

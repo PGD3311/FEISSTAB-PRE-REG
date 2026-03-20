@@ -168,27 +168,7 @@ export function FeisWizard({
         )}
       </div>
 
-      {/* Navigation */}
-      <div className="mt-8 flex items-center justify-between border-t border-border pt-6">
-        <button
-          type="button"
-          onClick={handleBack}
-          disabled={currentStep === 1}
-          className="rounded-md bg-secondary px-4 py-2 text-sm font-medium text-secondary-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          Back
-        </button>
-        {currentStep < 5 && (
-          <button
-            type="button"
-            onClick={handleNext}
-            disabled={currentStep > completedStep}
-            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-feis-green-600 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            Next
-          </button>
-        )}
-      </div>
+      {/* Navigation is handled by each step component's own Back/Save buttons */}
     </div>
   )
 }

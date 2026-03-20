@@ -252,6 +252,29 @@ export function FeisWizardStep1({ listing, onNext }: FeisWizardStep1Props) {
               />
             </div>
           </div>
+
+          {/* Privacy Policy URL — grouped with contact info */}
+          <div>
+            <label
+              htmlFor="privacy_policy_url"
+              className="mb-1.5 block text-sm font-medium"
+            >
+              Privacy Policy URL{' '}
+              <span className="text-destructive">*</span>
+            </label>
+            <input
+              id="privacy_policy_url"
+              name="privacy_policy_url"
+              type="url"
+              defaultValue={listing.privacy_policy_url ?? ''}
+              placeholder="https://example.com/privacy"
+              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+            <p className="mt-1 text-xs text-muted-foreground">
+              Required to publish. Link to your privacy policy (e.g.
+              https://example.com/privacy)
+            </p>
+          </div>
         </div>
 
         {/* Description */}
@@ -270,27 +293,6 @@ export function FeisWizardStep1({ listing, onNext }: FeisWizardStep1Props) {
             placeholder="Brief description shown to parents (optional)"
             className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
           />
-        </div>
-
-        {/* Privacy Policy URL */}
-        <div>
-          <label
-            htmlFor="privacy_policy_url"
-            className="mb-1.5 block text-sm font-medium"
-          >
-            Privacy Policy URL
-          </label>
-          <input
-            id="privacy_policy_url"
-            name="privacy_policy_url"
-            type="url"
-            defaultValue={listing.privacy_policy_url ?? ''}
-            placeholder="https://example.com/privacy"
-            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
-          />
-          <p className="mt-1 text-xs text-muted-foreground">
-            Required for publishing. Link to your privacy policy.
-          </p>
         </div>
       </div>
 

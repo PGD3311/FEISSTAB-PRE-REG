@@ -21,8 +21,10 @@ function StatusBadge({ status }: { status: ListingStatus }) {
   )
 }
 
-function formatDate(dateString: string): string {
+function formatDate(dateString: string | null): string {
+  if (!dateString) return 'No date set'
   const date = new Date(dateString + 'T00:00:00')
+  if (isNaN(date.getTime())) return 'No date set'
   return date.toLocaleDateString('en-US', {
     month: 'long',
     day: 'numeric',
@@ -73,7 +75,7 @@ export default async function FeiseannaPage() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="font-semibold text-foreground">
-                    {listing.name}
+                    {listing.name || 'Untitled Feis'}
                   </p>
                   <p className="mt-1 text-sm text-muted-foreground">
                     {formatDate(listing.feis_date)}

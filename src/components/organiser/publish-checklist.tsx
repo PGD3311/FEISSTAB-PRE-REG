@@ -3,30 +3,36 @@
 interface PublishChecklistProps {
   blocks: string[]
   warnings: string[]
+  passed?: string[]
 }
 
-export function PublishChecklist({ blocks, warnings }: PublishChecklistProps) {
-  if (blocks.length === 0 && warnings.length === 0) {
-    return (
-      <div className="flex items-center gap-2 rounded-md border border-border bg-background px-4 py-3 text-sm">
-        <svg
-          className="h-5 w-5 flex-shrink-0 text-green-600"
-          viewBox="0 0 20 20"
-          fill="currentColor"
-        >
-          <path
-            fillRule="evenodd"
-            d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z"
-            clipRule="evenodd"
-          />
-        </svg>
-        <span className="font-medium text-green-700">Ready to publish</span>
-      </div>
-    )
-  }
+export function PublishChecklist({ blocks, warnings, passed = [] }: PublishChecklistProps) {
+  const allClear = blocks.length === 0 && warnings.length === 0
 
   return (
     <div className="space-y-2">
+      {/* Green passed items */}
+      {passed.map((item) => (
+        <div
+          key={item}
+          className="flex items-start gap-2 rounded-md border border-green-200 bg-green-50 px-4 py-3 text-sm"
+        >
+          <svg
+            className="mt-0.5 h-4 w-4 flex-shrink-0 text-green-600"
+            viewBox="0 0 20 20"
+            fill="currentColor"
+          >
+            <path
+              fillRule="evenodd"
+              d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z"
+              clipRule="evenodd"
+            />
+          </svg>
+          <span className="text-green-700">{item}</span>
+        </div>
+      ))}
+
+      {/* Red blocks */}
       {blocks.map((block) => (
         <div
           key={block}
@@ -66,6 +72,24 @@ export function PublishChecklist({ blocks, warnings }: PublishChecklistProps) {
           <span className="text-feis-orange">{warning}</span>
         </div>
       ))}
+
+      {/* Ready banner when no blocks/warnings */}
+      {allClear && passed.length > 0 && (
+        <div className="flex items-center gap-2 rounded-md border border-green-300 bg-green-50 px-4 py-3 text-sm">
+          <svg
+            className="h-5 w-5 flex-shrink-0 text-green-600"
+            viewBox="0 0 20 20"
+            fill="currentColor"
+          >
+            <path
+              fillRule="evenodd"
+              d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z"
+              clipRule="evenodd"
+            />
+          </svg>
+          <span className="font-medium text-green-700">Ready to publish</span>
+        </div>
+      )}
     </div>
   )
 }
