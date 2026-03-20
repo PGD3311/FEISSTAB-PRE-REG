@@ -44,11 +44,21 @@ export async function getExistingRegistration(feisListingId: string) {
 
 export async function cancelRegistration(registrationId: string) {
   const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { error: 'Not authenticated' }
+
+  const { data: household } = await supabase
+    .from('households')
+    .select('id')
+    .eq('user_id', user.id)
+    .single()
+  if (!household) return { error: 'Household not found' }
 
   const { data: reg, error: fetchError } = await supabase
     .from('registrations')
     .select('status')
     .eq('id', registrationId)
+    .eq('household_id', household.id)
     .single()
 
   if (fetchError || !reg) return { error: 'Registration not found' }
@@ -206,11 +216,21 @@ export async function createDraftRegistration(input: CreateDraftInput) {
 
 export async function createCheckoutSession(registrationId: string) {
   const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { error: 'Not authenticated' }
+
+  const { data: household } = await supabase
+    .from('households')
+    .select('id')
+    .eq('user_id', user.id)
+    .single()
+  if (!household) return { error: 'Household not found' }
 
   const { data: reg, error: regError } = await supabase
     .from('registrations')
     .select('*, registration_entries(*, dancers(first_name, last_name)), feis_listings(name, stripe_account_id)')
     .eq('id', registrationId)
+    .eq('household_id', household.id)
     .single()
 
   if (regError || !reg) return { error: 'Registration not found' }

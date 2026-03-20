@@ -87,6 +87,8 @@ export async function updateListingDetails(
   formData: FormData
 ) {
   const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { error: 'Not authenticated' }
 
   const name = formData.get('name') as string | null
   const feis_date = formData.get('feis_date') as string | null
@@ -134,6 +136,7 @@ export async function updateListingDetails(
       season_year,
     })
     .eq('id', listingId)
+    .eq('created_by', user.id)
 
   if (error) {
     console.error('Failed to update listing:', error)
@@ -296,6 +299,17 @@ export async function expandAndSaveSyllabus(
   syllabusSnapshot: TemplateData
 ) {
   const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { error: 'Not authenticated' }
+
+  // Verify ownership
+  const { data: owned } = await supabase
+    .from('feis_listings')
+    .select('id')
+    .eq('id', listingId)
+    .eq('created_by', user.id)
+    .single()
+  if (!owned) return { error: 'Listing not found' }
 
   // 1. Update listing with template reference and frozen snapshot
   const { error: listingError } = await supabase
@@ -305,6 +319,7 @@ export async function expandAndSaveSyllabus(
       syllabus_snapshot: syllabusSnapshot,
     })
     .eq('id', listingId)
+    .eq('created_by', user.id)
 
   if (listingError) return { error: listingError.message }
 
@@ -338,6 +353,17 @@ export async function saveFeeSchedule(
   formData: FormData
 ) {
   const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { error: 'Not authenticated' }
+
+  // Verify ownership
+  const { data: owned } = await supabase
+    .from('feis_listings')
+    .select('id')
+    .eq('id', listingId)
+    .eq('created_by', user.id)
+    .single()
+  if (!owned) return { error: 'Listing not found' }
 
   function toCents(key: string): number {
     const raw = formData.get(key) as string | null
@@ -410,6 +436,8 @@ export async function saveDeadlines(
   formData: FormData
 ) {
   const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { error: 'Not authenticated' }
 
   const reg_opens_at_raw = formData.get('reg_opens_at') as string | null
   const reg_closes_at_raw = formData.get('reg_closes_at') as string | null
@@ -443,6 +471,7 @@ export async function saveDeadlines(
       dancer_cap,
     })
     .eq('id', listingId)
+    .eq('created_by', user.id)
 
   if (error) {
     console.error('Failed to save deadlines:', error)
@@ -454,12 +483,15 @@ export async function saveDeadlines(
 
 export async function deleteDraftListing(listingId: string) {
   const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { error: 'Not authenticated' }
 
-  // Verify the listing exists and is a draft
+  // Verify the listing exists, is a draft, and belongs to user
   const { data: listing, error: fetchError } = await supabase
     .from('feis_listings')
     .select('status')
     .eq('id', listingId)
+    .eq('created_by', user.id)
     .single()
 
   if (fetchError || !listing) {
@@ -475,6 +507,7 @@ export async function deleteDraftListing(listingId: string) {
     .from('feis_listings')
     .delete()
     .eq('id', listingId)
+    .eq('created_by', user.id)
 
   if (deleteError) {
     console.error('Failed to delete listing:', deleteError)
@@ -489,12 +522,15 @@ export async function transitionListingStatus(
   to: string
 ) {
   const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { error: 'Not authenticated' }
 
-  // Fetch listing
+  // Fetch listing (scoped to owner)
   const { data: listing, error: listingError } = await supabase
     .from('feis_listings')
     .select('*')
     .eq('id', listingId)
+    .eq('created_by', user.id)
     .single()
 
   if (listingError || !listing) {
@@ -547,6 +583,7 @@ export async function transitionListingStatus(
     .from('feis_listings')
     .update({ status: toStatus })
     .eq('id', listingId)
+    .eq('created_by', user.id)
 
   if (updateError) {
     console.error('Failed to update listing status:', updateError)

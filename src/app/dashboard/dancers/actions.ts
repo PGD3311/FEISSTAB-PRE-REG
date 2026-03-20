@@ -94,6 +94,29 @@ export async function updateDancer(dancerId: string, input: UpdateDancerInput) {
 
   if (!user) return { error: 'Not authenticated' }
 
+  // Get household
+  const { data: household, error: householdError } = await supabase
+    .from('households')
+    .select('id')
+    .eq('user_id', user.id)
+    .single()
+
+  if (householdError || !household) {
+    return { error: 'Household not found' }
+  }
+
+  // Verify dancer belongs to this household
+  const { data: dancerCheck, error: dancerCheckError } = await supabase
+    .from('dancers')
+    .select('id')
+    .eq('id', dancerId)
+    .eq('household_id', household.id)
+    .single()
+
+  if (dancerCheckError || !dancerCheck) {
+    return { error: 'Dancer not found' }
+  }
+
   // Update dancer profile
   const { error: dancerError } = await supabase
     .from('dancers')
@@ -150,6 +173,29 @@ export async function archiveDancer(dancerId: string) {
   } = await supabase.auth.getUser()
 
   if (!user) return { error: 'Not authenticated' }
+
+  // Get household
+  const { data: household, error: householdError } = await supabase
+    .from('households')
+    .select('id')
+    .eq('user_id', user.id)
+    .single()
+
+  if (householdError || !household) {
+    return { error: 'Household not found' }
+  }
+
+  // Verify dancer belongs to this household
+  const { data: dancerCheck, error: dancerCheckError } = await supabase
+    .from('dancers')
+    .select('id')
+    .eq('id', dancerId)
+    .eq('household_id', household.id)
+    .single()
+
+  if (dancerCheckError || !dancerCheck) {
+    return { error: 'Dancer not found' }
+  }
 
   const { error } = await supabase
     .from('dancers')
