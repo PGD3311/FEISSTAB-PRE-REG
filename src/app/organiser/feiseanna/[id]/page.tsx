@@ -31,6 +31,7 @@ function StatusBadge({ status }: { status: ListingStatus }) {
     draft: 'bg-muted text-muted-foreground',
     open: 'bg-secondary text-primary',
     closed: 'bg-feis-orange-light text-feis-orange',
+    launched: 'bg-primary text-primary-foreground',
   }
 
   return (
@@ -145,23 +146,63 @@ function OverviewTab({
         </div>
       </div>
 
-      {/* Status actions */}
-      <div className="feis-card p-5">
-        <h2 className="mb-4 text-lg font-semibold">Actions</h2>
-        <div className="flex flex-wrap items-center gap-3">
-          <StatusActions
-            listingId={listing.id}
-            status={listing.status}
-          />
-          <Link
-            href={`/organiser/feiseanna/${listing.id}/edit`}
-            className="rounded-md bg-secondary px-4 py-2 text-sm font-medium text-secondary-foreground hover:bg-muted"
-          >
-            Edit Details
-          </Link>
-          <CloneFeisButton listingId={listing.id} />
+      {/* Launched banner */}
+      {listing.status === 'launched' && (
+        <div className="feis-card border-primary/30 p-5">
+          <h2 className="mb-2 text-lg font-semibold">Feis Day Launched</h2>
+          <p className="text-sm text-muted-foreground">
+            Registration data was transferred to FeisTab on{' '}
+            {formatDateTime(listing.launched_at)}.
+            This listing is now read-only.
+          </p>
+          {listing.launched_event_id && (
+            <p className="mt-2 text-sm text-muted-foreground">
+              Phase 1 Event ID:{' '}
+              <code className="font-mono text-xs">
+                {listing.launched_event_id}
+              </code>
+            </p>
+          )}
         </div>
-      </div>
+      )}
+
+      {/* Status actions */}
+      {listing.status !== 'launched' && (
+        <div className="feis-card p-5">
+          <h2 className="mb-4 text-lg font-semibold">Actions</h2>
+          <div className="flex flex-wrap items-center gap-3">
+            <StatusActions
+              listingId={listing.id}
+              status={listing.status}
+            />
+            {listing.status === 'closed' && (
+              <Link
+                href={`/organiser/feiseanna/${listing.id}/launch`}
+                className="rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-feis-green-600"
+              >
+                Launch Feis Day
+              </Link>
+            )}
+            <Link
+              href={`/organiser/feiseanna/${listing.id}/edit`}
+              className="rounded-md bg-secondary px-4 py-2 text-sm font-medium text-secondary-foreground hover:bg-muted"
+            >
+              Edit Details
+            </Link>
+            <CloneFeisButton listingId={listing.id} />
+          </div>
+        </div>
+      )}
+
+      {/* Clone for launched listings */}
+      {listing.status === 'launched' && (
+        <div className="feis-card p-5">
+          <h2 className="mb-4 text-lg font-semibold">Actions</h2>
+          <div className="flex flex-wrap items-center gap-3">
+            <CloneFeisButton listingId={listing.id} />
+          </div>
+        </div>
+      )}
     </div>
   )
 }

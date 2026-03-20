@@ -1,5 +1,5 @@
 // Listing status
-export type ListingStatus = 'draft' | 'open' | 'closed'
+export type ListingStatus = 'draft' | 'open' | 'closed' | 'launched'
 
 // Fee category — maps to fee_schedule columns
 export type FeeCategoryType = 'solo' | 'prelim_champ' | 'open_champ'
@@ -87,6 +87,8 @@ export interface FeisListing {
   logo_url: string | null
   accepted_dpa_at: string | null
   show_contact_publicly: boolean
+  launched_at: string | null
+  launched_event_id: string | null
   created_by: string | null
   created_at: string
   updated_at: string
@@ -176,6 +178,9 @@ export interface ListingTransitionContext {
     championship_key: ChampionshipKey | null
     fee_category: FeeCategoryType
   }[]
+  // Launch context (closed → launched)
+  paidRegistrationCount?: number
+  unsettledRegistrationCount?: number
 }
 
 // ─── Registration status ───

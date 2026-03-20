@@ -10,6 +10,7 @@ function StatusBadge({ status }: { status: ListingStatus }) {
     draft: 'bg-muted text-muted-foreground',
     open: 'bg-secondary text-primary',
     closed: 'bg-feis-orange-light text-feis-orange',
+    launched: 'bg-primary text-primary-foreground',
   }
 
   return (

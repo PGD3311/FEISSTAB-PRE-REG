@@ -65,5 +65,6 @@ export function StatusActions({ listingId, status }: StatusActionsProps) {
     )
   }
 
+  // launched = terminal state, no status actions
   return null
 }

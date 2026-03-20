@@ -9,7 +9,8 @@ import type {
 const VALID_TRANSITIONS: Record<ListingStatus, ListingStatus[]> = {
   draft: ['open'],
   open: ['closed'],
-  closed: ['open'],
+  closed: ['open', 'launched'],
+  launched: [],  // Terminal state
 }
 
 // ─── Public API ───
@@ -35,13 +36,18 @@ export function getNextListingStates(
 
 /**
  * Return publish-gate validation: hard blocks and soft warnings.
- * Only enforced on draft → open. All other transitions pass unconditionally.
+ * Enforced on draft → open and closed → launched.
  */
 export function getListingTransitionBlockReasons(
   from: ListingStatus,
   to: ListingStatus,
   context: ListingTransitionContext
 ): PublishValidation {
+  // closed → launched validation
+  if (from === 'closed' && to === 'launched') {
+    return getLaunchBlockReasons(context)
+  }
+
   if (from !== 'draft' || to !== 'open') {
     return { blocks: [], warnings: [] }
   }
@@ -186,6 +192,33 @@ export function getListingTransitionBlockReasons(
     if (listing.reg_opens_at < now) {
       warnings.push('Registration open date is in the past')
     }
+  }
+
+  return { blocks, warnings }
+}
+
+/**
+ * Validation for closed → launched transition.
+ */
+function getLaunchBlockReasons(
+  context: ListingTransitionContext
+): PublishValidation {
+  const { listing } = context
+  const blocks: string[] = []
+  const warnings: string[] = []
+
+  if (!listing.feis_date) {
+    blocks.push('Feis date is required')
+  }
+
+  if ((context.paidRegistrationCount ?? 0) === 0) {
+    blocks.push('No paid registrations found. Nothing to launch.')
+  }
+
+  if ((context.unsettledRegistrationCount ?? 0) > 0) {
+    blocks.push(
+      'There are unsettled registrations. All must be paid, expired, or cancelled before launching.'
+    )
   }
 
   return { blocks, warnings }

@@ -621,3 +621,130 @@ export async function getFeisEntries(feisListingId: string) {
     },
   }
 }
+
+export async function launchFeisDay(feisListingId: string) {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { error: 'Not authenticated' }
+
+  // 1. Fetch listing and verify ownership
+  const { data: listing, error: listingError } = await supabase
+    .from('feis_listings')
+    .select('*')
+    .eq('id', feisListingId)
+    .eq('created_by', user.id)
+    .single()
+
+  if (listingError || !listing) return { error: 'Listing not found' }
+
+  // Idempotency: already launched
+  if (listing.status === 'launched') {
+    return { eventId: listing.launched_event_id, alreadyLaunched: true }
+  }
+
+  // 2. Validate prerequisites
+  if (listing.status !== 'closed') {
+    return { error: 'Feis must be closed before launching' }
+  }
+
+  // Check for unsettled registrations
+  const { data: unsettled } = await supabase
+    .from('registrations')
+    .select('id')
+    .eq('feis_listing_id', feisListingId)
+    .in('status', ['draft', 'pending_payment'])
+    .limit(1)
+
+  if (unsettled && unsettled.length > 0) {
+    return {
+      error: 'There are unsettled registrations. All must be paid, expired, or cancelled before launching.',
+    }
+  }
+
+  // Check for paid registrations
+  const { data: paidRegs, error: paidError } = await supabase
+    .from('registrations')
+    .select('id')
+    .eq('feis_listing_id', feisListingId)
+    .eq('status', 'paid')
+    .limit(1)
+
+  if (paidError || !paidRegs || paidRegs.length === 0) {
+    return { error: 'No paid registrations found. Nothing to launch.' }
+  }
+
+  // 3. Fetch all data for the bridge
+  const { data: competitions } = await supabase
+    .from('feis_competitions')
+    .select('id, display_name, age_group_key, age_group_label, level_key, level_label')
+    .eq('feis_listing_id', feisListingId)
+    .eq('enabled', true)
+
+  const { data: entries } = await supabase
+    .from('registration_entries')
+    .select(`
+      dancer_id,
+      feis_competition_id,
+      dancers(first_name, last_name, date_of_birth, school_name),
+      registrations!inner(status)
+    `)
+    .eq('registrations.feis_listing_id', feisListingId)
+    .eq('registrations.status', 'paid')
+
+  if (!competitions || !entries) {
+    return { error: 'Failed to fetch registration data' }
+  }
+
+  // 4. Execute bridge
+  const { executeBridge } = await import('@/lib/bridge')
+
+  try {
+    const result = await executeBridge({
+      listing: {
+        id: listing.id,
+        name: listing.name ?? 'Unnamed Feis',
+        feis_date: listing.feis_date!,
+        end_date: listing.end_date,
+        venue_name: listing.venue_name,
+        venue_address: listing.venue_address,
+      },
+      competitions: competitions ?? [],
+      entries: (entries ?? []).map((e: Record<string, unknown>) => {
+        const dancer = e.dancers as Record<string, string | null>
+        return {
+          dancer_id: e.dancer_id as string,
+          feis_competition_id: e.feis_competition_id as string,
+          dancer_first_name: dancer?.first_name ?? '',
+          dancer_last_name: dancer?.last_name ?? '',
+          dancer_date_of_birth: dancer?.date_of_birth ?? null,
+          dancer_school_name: dancer?.school_name ?? null,
+        }
+      }),
+    })
+
+    // 5. Mark listing as launched
+    const { error: updateError } = await supabase
+      .from('feis_listings')
+      .update({
+        status: 'launched',
+        launched_at: new Date().toISOString(),
+        launched_event_id: result.eventId,
+      })
+      .eq('id', feisListingId)
+
+    if (updateError) {
+      console.error('Failed to mark listing as launched:', updateError)
+      return { error: 'Bridge succeeded but failed to update listing status' }
+    }
+
+    return {
+      eventId: result.eventId,
+      competitionsCreated: result.competitionsCreated,
+      dancersCreated: result.dancersCreated,
+      registrationsCreated: result.registrationsCreated,
+    }
+  } catch (err) {
+    console.error('Bridge execution failed:', err)
+    return { error: `Bridge failed: ${err instanceof Error ? err.message : 'unknown error'}` }
+  }
+}

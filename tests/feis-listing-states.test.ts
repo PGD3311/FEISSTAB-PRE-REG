@@ -41,8 +41,12 @@ function validListing(overrides: Partial<FeisListing> = {}): FeisListing {
     stripe_payouts_enabled: true,
     privacy_policy_url: 'https://example.com/privacy',
     terms_url: null,
+    website_url: null,
+    logo_url: null,
     accepted_dpa_at: null,
     show_contact_publicly: true,
+    launched_at: null,
+    launched_event_id: null,
     created_by: 'user-001',
     created_at: '2025-01-01T00:00:00Z',
     updated_at: '2025-01-01T00:00:00Z',
@@ -104,6 +108,17 @@ describe('canTransitionListing', () => {
     expect(canTransitionListing('open', 'draft')).toBe(false)
   })
 
+  it('allows closed -> launched', () => {
+    expect(canTransitionListing('closed', 'launched')).toBe(true)
+  })
+
+  it('rejects launched -> any (terminal state)', () => {
+    expect(canTransitionListing('launched', 'draft')).toBe(false)
+    expect(canTransitionListing('launched', 'open')).toBe(false)
+    expect(canTransitionListing('launched', 'closed')).toBe(false)
+    expect(canTransitionListing('launched', 'launched')).toBe(false)
+  })
+
   it('rejects same-state transitions', () => {
     expect(canTransitionListing('draft', 'draft')).toBe(false)
     expect(canTransitionListing('open', 'open')).toBe(false)
@@ -120,8 +135,12 @@ describe('getNextListingStates', () => {
     expect(getNextListingStates('open')).toEqual(['closed'])
   })
 
-  it('returns [open] for closed', () => {
-    expect(getNextListingStates('closed')).toEqual(['open'])
+  it('returns [open, launched] for closed', () => {
+    expect(getNextListingStates('closed')).toEqual(['open', 'launched'])
+  })
+
+  it('returns [] for launched (terminal)', () => {
+    expect(getNextListingStates('launched')).toEqual([])
   })
 })
 
@@ -409,6 +428,52 @@ describe('getListingTransitionBlockReasons', () => {
       expect(result.blocks).not.toContain(
         'End date must be on or after the feis start date'
       )
+    })
+  })
+
+  describe('closed -> launched validation', () => {
+    it('blocks when feis_date is missing', () => {
+      const ctx = validContext({
+        listing: validListing({ status: 'closed', feis_date: null }),
+        paidRegistrationCount: 5,
+        unsettledRegistrationCount: 0,
+      })
+      const result = getListingTransitionBlockReasons('closed', 'launched', ctx)
+      expect(result.blocks).toContain('Feis date is required')
+    })
+
+    it('blocks when no paid registrations', () => {
+      const ctx = validContext({
+        listing: validListing({ status: 'closed' }),
+        paidRegistrationCount: 0,
+        unsettledRegistrationCount: 0,
+      })
+      const result = getListingTransitionBlockReasons('closed', 'launched', ctx)
+      expect(result.blocks).toContain(
+        'No paid registrations found. Nothing to launch.'
+      )
+    })
+
+    it('blocks when unsettled registrations exist', () => {
+      const ctx = validContext({
+        listing: validListing({ status: 'closed' }),
+        paidRegistrationCount: 5,
+        unsettledRegistrationCount: 2,
+      })
+      const result = getListingTransitionBlockReasons('closed', 'launched', ctx)
+      expect(result.blocks).toContain(
+        'There are unsettled registrations. All must be paid, expired, or cancelled before launching.'
+      )
+    })
+
+    it('passes when all prerequisites met', () => {
+      const ctx = validContext({
+        listing: validListing({ status: 'closed' }),
+        paidRegistrationCount: 10,
+        unsettledRegistrationCount: 0,
+      })
+      const result = getListingTransitionBlockReasons('closed', 'launched', ctx)
+      expect(result.blocks).toEqual([])
     })
   })
 
