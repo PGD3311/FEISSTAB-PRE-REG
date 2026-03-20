@@ -12,11 +12,13 @@ import { formatTimezone } from '@/lib/format'
 import { StatusActions } from '@/components/organiser/status-actions'
 import { DeleteDraftButton } from '@/components/organiser/delete-draft-button'
 import { CloneFeisButton } from '@/components/organiser/clone-feis-button'
+import { EntriesTab } from '@/components/organiser/entries-tab'
 
 export const dynamic = 'force-dynamic'
 
 const TABS = [
   { key: 'overview', label: 'Overview' },
+  { key: 'entries', label: 'Entries' },
   { key: 'syllabus', label: 'Syllabus' },
   { key: 'fees', label: 'Fees' },
   { key: 'settings', label: 'Settings' },
@@ -455,6 +457,9 @@ export default async function FeisDashboardPage({
             listing={typedListing}
             competitionsCount={competitionsCount}
           />
+        )}
+        {activeTab === 'entries' && (
+          <EntriesTab listingId={id} />
         )}
         {activeTab === 'syllabus' && (
           <SyllabusTab

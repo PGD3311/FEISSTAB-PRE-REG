@@ -543,3 +543,69 @@ export async function transitionListingStatus(
 
   return { success: true as const, warnings }
 }
+
+export async function getFeisEntries(feisListingId: string) {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { error: 'Not authenticated' }
+
+  // Verify the user owns this listing
+  const { data: listing } = await supabase
+    .from('feis_listings')
+    .select('id')
+    .eq('id', feisListingId)
+    .eq('created_by', user.id)
+    .single()
+
+  if (!listing) return { error: 'Listing not found or not authorized' }
+
+  // Fetch entries with dancer name + school only
+  const { data: entries, error } = await supabase
+    .from('registration_entries')
+    .select(`
+      id,
+      fee_category,
+      base_fee_cents,
+      late_fee_cents,
+      created_at,
+      dancer_id,
+      dancers(first_name, last_name, school_name, date_of_birth, gender),
+      feis_competitions(display_name, age_group_key),
+      registrations!inner(
+        status,
+        confirmation_number,
+        total_cents,
+        created_at
+      )
+    `)
+    .eq('registrations.feis_listing_id', feisListingId)
+
+  if (error) {
+    console.error('Failed to fetch entries:', error)
+    return { error: 'Failed to fetch entries' }
+  }
+
+  // Fetch summary stats
+  const { data: stats } = await supabase
+    .from('registrations')
+    .select('status, total_cents')
+    .eq('feis_listing_id', feisListingId)
+
+  const paidRegs = (stats ?? []).filter(s => s.status === 'paid')
+  const pendingRegs = (stats ?? []).filter(
+    s => s.status === 'pending_payment' || s.status === 'draft'
+  )
+
+  // Count unique dancers from entries
+  const uniqueDancerIds = new Set((entries ?? []).map(e => e.dancer_id))
+
+  return {
+    entries: entries ?? [],
+    summary: {
+      totalDancers: uniqueDancerIds.size,
+      totalEntries: entries?.length ?? 0,
+      revenueCents: paidRegs.reduce((sum, r) => sum + (r.total_cents ?? 0), 0),
+      pendingCount: pendingRegs.length,
+    },
+  }
+}
