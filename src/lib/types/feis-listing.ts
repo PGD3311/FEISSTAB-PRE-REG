@@ -83,6 +83,8 @@ export interface FeisListing {
   stripe_payouts_enabled: boolean
   privacy_policy_url: string | null
   terms_url: string | null
+  website_url: string | null
+  logo_url: string | null
   accepted_dpa_at: string | null
   show_contact_publicly: boolean
   created_by: string | null
