@@ -69,7 +69,7 @@ function UnauthenticatedScreen({ feisId }: { feisId: string }) {
           You need an account to register dancers for this feis.
         </p>
         <Link
-          href={`/auth/login?redirect=/feiseanna/${feisId}/register`}
+          href={`/auth/login?redirect=${encodeURIComponent(`/feiseanna/${feisId}/register`)}`}
           className="inline-block rounded-md bg-primary px-6 py-2.5 text-sm font-medium text-primary-foreground hover:bg-[var(--color-feis-green-600)]"
         >
           Sign In
@@ -77,7 +77,7 @@ function UnauthenticatedScreen({ feisId }: { feisId: string }) {
         <p className="mt-4 text-sm text-muted-foreground">
           No account?{' '}
           <Link
-            href={`/auth/signup?redirect=/feiseanna/${feisId}/register`}
+            href={`/auth/signup?redirect=${encodeURIComponent(`/feiseanna/${feisId}/register`)}`}
             className="font-medium text-primary hover:underline"
           >
             Create one
@@ -121,13 +121,10 @@ function StepIndicator({ current }: { current: number }) {
   )
 }
 
-export default function RegisterPage() {
-  const params = useParams()
-  const router = useRouter()
-  const feisId = params.id as string
-  const supabase = useSupabase()
+// Extracted into its own component so hooks are always called unconditionally
+function RegistrationFlow({ data, feisId }: { data: PageData; feisId: string }) {
+  const { listing, feeSchedule, competitions, dancers, expiredHold } = data
 
-  const [loadState, setLoadState] = useState<LoadState>({ status: 'loading' })
   const [step, setStep] = useState(1)
   const [selectedDancerIds, setSelectedDancerIds] = useState<string[]>([])
   const [cart, setCart] = useState<Record<string, string[]>>({})
@@ -135,106 +132,16 @@ export default function RegisterPage() {
   const [holdExpiresAt, setHoldExpiresAt] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
-  useEffect(() => {
-    async function load() {
-      // Check auth
-      const {
-        data: { user },
-      } = await supabase.auth.getUser()
-
-      if (!user) {
-        setLoadState({ status: 'unauthenticated' })
-        return
-      }
-
-      // Fetch household
-      const { data: household, error: householdError } = await supabase
-        .from('households')
-        .select('id')
-        .eq('user_id', user.id)
-        .single()
-
-      if (householdError || !household) {
-        router.push('/auth/onboarding')
-        return
-      }
-
-      // Fetch all data in parallel
-      const [listingResult, feesResult, compsResult, dancersResult, existingRegResult] =
-        await Promise.all([
-          supabase
-            .from('feis_listings')
-            .select('*')
-            .eq('id', feisId)
-            .eq('status', 'open')
-            .single(),
-          supabase
-            .from('fee_schedules')
-            .select('*')
-            .eq('feis_listing_id', feisId)
-            .single(),
-          supabase
-            .from('feis_competitions')
-            .select('*')
-            .eq('feis_listing_id', feisId)
-            .eq('enabled', true),
-          supabase
-            .from('dancers')
-            .select('*, dance_levels:dancer_dance_levels(*)')
-            .eq('household_id', household.id)
-            .eq('is_active', true)
-            .order('first_name', { ascending: true }),
-          getExistingRegistration(feisId),
-        ])
-
-      if (listingResult.error || !listingResult.data) {
-        setLoadState({
-          status: 'error',
-          message: 'This feis is no longer available for registration.',
-        })
-        return
-      }
-
-      setLoadState({
-        status: 'ready',
-        data: {
-          listing: listingResult.data as FeisListing,
-          feeSchedule: feesResult.data as FeeSchedule | null,
-          competitions: (compsResult.data ?? []) as FeisCompetition[],
-          dancers: (dancersResult.data ?? []) as (Dancer & { dance_levels: DancerDanceLevel[] })[],
-          existingRegistration:
-            existingRegResult.registration as RegistrationWithEntries | null ?? null,
-          expiredHold: existingRegResult.expired === true,
-        },
-      })
-    }
-
-    load()
-  }, [feisId, supabase, router])
-
-  if (loadState.status === 'loading') return <LoadingScreen />
-  if (loadState.status === 'unauthenticated') return <UnauthenticatedScreen feisId={feisId} />
-  if (loadState.status === 'error') return <ErrorScreen message={loadState.message} />
-
-  const { listing, feeSchedule, competitions, dancers, existingRegistration, expiredHold } =
-    loadState.data
-
   const ageCutoffDate = listing.age_cutoff_date
     ? new Date(listing.age_cutoff_date + 'T00:00:00')
     : listing.feis_date
       ? new Date(listing.feis_date + 'T00:00:00')
       : new Date()
 
-  // Get levels from syllabus snapshot
   const levels: Level[] = listing.syllabus_snapshot?.levels ?? []
-
-  // Determine if registration is in late period
   const isLate = listing.reg_closes_at ? new Date() > new Date(listing.reg_closes_at) : false
-
-  // Get selected dancers with their dance levels
   const selectedDancers = dancers.filter(d => selectedDancerIds.includes(d.id))
 
-  // Compute fee breakdown for the current cart
   const feeBreakdown: FeeBreakdown = useMemo(() => {
     if (!feeSchedule || Object.keys(cart).length === 0) {
       return {
@@ -288,7 +195,7 @@ export default function RegisterPage() {
         feisListingId: feisId,
         entries,
         consentAcceptedAt: new Date().toISOString(),
-        consentIp: '0.0.0.0' // Server will capture real IP
+        consentIp: '0.0.0.0'
       })
 
       if ('error' in result) {
@@ -327,7 +234,11 @@ export default function RegisterPage() {
     if (!confirm('Cancel this registration? You can start over.')) return
     setLoading(true)
     try {
-      await cancelRegistration(registrationId)
+      const result = await cancelRegistration(registrationId)
+      if ('error' in result) {
+        alert(result.error)
+        return
+      }
       setRegistrationId(null)
       setHoldExpiresAt(null)
       setCart({})
@@ -340,7 +251,6 @@ export default function RegisterPage() {
   return (
     <div className="min-h-screen bg-[var(--color-feis-cream)]">
       <div className="mx-auto max-w-2xl px-6 py-8">
-        {/* Header */}
         <div className="mb-6">
           <Link
             href={`/feiseanna/${feisId}`}
@@ -354,7 +264,6 @@ export default function RegisterPage() {
           <h1 className="mt-2 text-2xl font-bold">Register</h1>
         </div>
 
-        {/* Expired hold notice */}
         {expiredHold && (
           <div className="mb-6 rounded-md border border-orange-200 bg-orange-50 px-4 py-3 text-sm text-orange-800">
             Your previous registration hold expired. You can start a new registration below.
@@ -406,4 +315,101 @@ export default function RegisterPage() {
       </div>
     </div>
   )
+}
+
+export default function RegisterPage() {
+  const params = useParams()
+  const router = useRouter()
+  const feisId = params.id as string
+  const supabase = useSupabase()
+
+  const [loadState, setLoadState] = useState<LoadState>({ status: 'loading' })
+
+  useEffect(() => {
+    async function load() {
+      try {
+        const {
+          data: { user },
+        } = await supabase.auth.getUser()
+
+        if (!user) {
+          setLoadState({ status: 'unauthenticated' })
+          return
+        }
+
+        const { data: household, error: householdError } = await supabase
+          .from('households')
+          .select('id')
+          .eq('user_id', user.id)
+          .single()
+
+        if (householdError || !household) {
+          router.push('/auth/onboarding')
+          return
+        }
+
+        const [listingResult, feesResult, compsResult, dancersResult, existingRegResult] =
+          await Promise.all([
+            supabase
+              .from('feis_listings')
+              .select('*')
+              .eq('id', feisId)
+              .eq('status', 'open')
+              .single(),
+            supabase
+              .from('fee_schedules')
+              .select('*')
+              .eq('feis_listing_id', feisId)
+              .single(),
+            supabase
+              .from('feis_competitions')
+              .select('*')
+              .eq('feis_listing_id', feisId)
+              .eq('enabled', true),
+            supabase
+              .from('dancers')
+              .select('*, dance_levels:dancer_dance_levels(*)')
+              .eq('household_id', household.id)
+              .eq('is_active', true)
+              .order('first_name', { ascending: true }),
+            getExistingRegistration(feisId),
+          ])
+
+        if (listingResult.error || !listingResult.data) {
+          setLoadState({
+            status: 'error',
+            message: 'This feis is no longer available for registration.',
+          })
+          return
+        }
+
+        setLoadState({
+          status: 'ready',
+          data: {
+            listing: listingResult.data as FeisListing,
+            feeSchedule: feesResult.data as FeeSchedule | null,
+            competitions: (compsResult.data ?? []) as FeisCompetition[],
+            dancers: (dancersResult.data ?? []) as (Dancer & { dance_levels: DancerDanceLevel[] })[],
+            existingRegistration:
+              existingRegResult.registration as RegistrationWithEntries | null ?? null,
+            expiredHold: existingRegResult.expired === true,
+          },
+        })
+      } catch (err) {
+        console.error('Failed to load registration page:', err)
+        setLoadState({
+          status: 'error',
+          message: 'Something went wrong. Please try again.',
+        })
+      }
+    }
+
+    load()
+  }, [feisId, supabase, router])
+
+  if (loadState.status === 'loading') return <LoadingScreen />
+  if (loadState.status === 'unauthenticated') return <UnauthenticatedScreen feisId={feisId} />
+  if (loadState.status === 'error') return <ErrorScreen message={loadState.message} />
+
+  return <RegistrationFlow data={loadState.data} feisId={feisId} />
 }
