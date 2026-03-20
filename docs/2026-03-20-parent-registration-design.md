@@ -124,7 +124,7 @@ One registration per household per feis. Contains the state machine, payment ref
 | `total_cents` | integer | NOT NULL DEFAULT 0, CHECK >= 0 | Total charged to parent |
 | `application_fee_cents` | integer | NOT NULL DEFAULT 0, CHECK >= 0 | Platform fee (FeisTab revenue) |
 | `event_fee_cents` | integer | NOT NULL DEFAULT 0, CHECK >= 0 | Family event fee component |
-| `is_late` | boolean | NOT NULL DEFAULT false | Was this a late registration? |
+| `is_late` | boolean | NOT NULL DEFAULT false | Was this a late registration? Late-ness is determined at registration time based on whether `now()` is after `reg_closes_at`. All entries in a registration share the same late status. The `late_fee_cents` on individual `registration_entries` is per-dancer (charged once per dancer, not per entry), computed by the fee calculator. |
 | `consent_accepted_at` | timestamptz | NULL | When terms were accepted |
 | `consent_version` | text | NULL | Which version of terms |
 | `consent_ip` | text | NULL | IP address at consent time |
@@ -148,6 +148,7 @@ Individual competition entries within a registration. One row per dancer per com
 | `base_fee_cents` | integer | NOT NULL, CHECK >= 0 | Frozen fee at time of registration |
 | `late_fee_cents` | integer | NOT NULL DEFAULT 0, CHECK >= 0 | Per-dancer, first entry only |
 | `day_of_surcharge_cents` | integer | NOT NULL DEFAULT 0, CHECK >= 0 | |
+| `created_at` | timestamptz | NOT NULL, default `now()` | |
 | UNIQUE | | `(registration_id, dancer_id, feis_competition_id)` | No duplicate entries |
 
 ### `registration_snapshots`
@@ -231,7 +232,7 @@ Enforced by `canTransitionRegistration(from, to)` in `src/lib/registration-state
 ### Hold Lifecycle
 
 1. **Hold created** when `registration` row transitions to `draft` (parent enters Step 3).
-   - `hold_expires_at` set to `now() + 15 minutes`.
+   - `hold_expires_at` set to `now() + 30 minutes`.
    - For each competition entry, increment a hold counter on `feis_competitions` (or use the registration count query).
    - Race condition safety: `SELECT FOR UPDATE` on `feis_competitions` rows, check `capacity_cap` minus current active registrations/holds > 0 before placing.
 2. **Timer visible** on the Review page. Countdown shows "You have X:XX to complete payment."
@@ -264,13 +265,19 @@ interface DancerProfile {
   danceLevels: DanceLevelMap
 }
 
+// Represents a feis_competitions database row — the canonical shape for
+// eligibility filtering, cart building, and capacity checks.
 interface FeisCompetition {
   id: string
+  feis_listing_id: string
   age_group_key: string | null
+  age_group_label: string | null
   age_max_jan1: number | null
   age_min_jan1: number | null
   level_key: string | null
+  level_label: string | null
   dance_key: string | null
+  dance_label: string | null
   competition_type: CompetitionType
   championship_key: ChampionshipKey | null
   fee_category: FeeCategoryType
@@ -420,7 +427,7 @@ Summary screen with all selections, full fee breakdown, and payment initiation.
 - If late registration: "Late fee: $25/dancer" clearly shown per dancer
 - If family cap applied: "Family cap applied — you saved $X" in green
 - Grand total prominently displayed
-- Capacity hold timer: "Your spots are held for X:XX" (countdown from 15 minutes)
+- Capacity hold timer: "Your spots are held for X:XX" (countdown from 30 minutes)
 
 **Legal consent checkbox (required before payment):**
 
@@ -519,6 +526,8 @@ async function createCheckoutSession(registrationId: string): Promise<string> {
     mode: 'payment',
     line_items: lineItems,  // One line item per entry, human-readable descriptions
     payment_intent_data: {
+      // Application fee = Math.round(total_cents * STRIPE_APPLICATION_FEE_PERCENT / 100)
+      // Where STRIPE_APPLICATION_FEE_PERCENT is an environment variable (e.g., 5 = 5%).
       application_fee_amount: applicationFeeCents,
     },
     success_url: `${baseUrl}/feiseanna/${feisId}/register/success?session_id={CHECKOUT_SESSION_ID}`,
@@ -566,10 +575,15 @@ export async function POST(request: Request) {
       return new Response('Already processed', { status: 200 })
     }
 
+    // Extract charge ID from the payment intent for reconciliation
+    const paymentIntent = await stripe.paymentIntents.retrieve(session.payment_intent as string)
+    const chargeId = paymentIntent.latest_charge as string | null
+
     // Update registration
     await updateRegistration(registrationId, {
       status: 'paid',
       stripe_payment_intent_id: session.payment_intent as string,
+      stripe_charge_id: chargeId,
       total_cents: session.amount_total!,
       confirmation_number: generateConfirmationNumber(),
       hold_expires_at: null,  // Clear hold — permanently confirmed
@@ -592,7 +606,7 @@ Human-readable, unique, 10 characters: `FT-YYYY-XXXX` where YYYY is the year and
 
 Example: `FT-2026-A3B7`
 
-Generated server-side on payment confirmation. Stored on `registrations.confirmation_number`. Shown in confirmation email and on dashboard.
+Generated server-side on payment confirmation. Stored on `registrations.confirmation_number`. Shown in confirmation email and on dashboard. Generation uses a retry loop: generate a candidate, attempt insert, if uniqueness violation retry with a new candidate (max 5 retries).
 
 ### Success Redirect Page
 
@@ -616,7 +630,7 @@ This page does NOT change registration status. The webhook does.
 Capacity holds prevent overselling during the checkout window. They are a UX tool — not a hard database lock.
 
 1. **When:** Hold is created when the registration row is created at `draft` status (parent enters Step 3).
-2. **Duration:** 15 minutes from creation. `hold_expires_at = now() + interval '15 minutes'`.
+2. **Duration:** 30 minutes from creation. `hold_expires_at = now() + interval '30 minutes'`. This matches the Stripe Checkout session expiry (`expires_after: 1800`) and prevents the edge case where a hold expires while the parent is still paying.
 3. **Scope:** The hold applies to all `registration_entries` in the registration. Each entry "holds" one spot in its competition.
 4. **Counting:** Available spots = `capacity_cap` - count of entries where registration status is `draft`, `pending_payment`, or `paid`.
 5. **Race condition safety:** When creating the draft registration and entries:
@@ -787,7 +801,7 @@ At Step 3 (Review & Pay), before the payment button is enabled:
 
 > [ ] I agree to the [Terms of Service] and [Privacy Policy] and confirm I am the parent/legal guardian of the dancers listed above.
 
-Links open in new tabs to the organiser's `terms_url` and `privacy_policy_url` (set on the feis listing in sub-project 1).
+Links open in new tabs to the organiser's `terms_url` and `privacy_policy_url` (set on the feis listing in sub-project 1). If `terms_url` is null on the feis listing, the consent checkbox shows only the privacy policy link. `terms_url` is not a publish prerequisite -- organisers may use their own terms outside the platform.
 
 ### Consent Record
 
@@ -823,6 +837,14 @@ CREATE POLICY "Users manage own dancers" ON dancers
       SELECT id FROM households WHERE user_id = auth.uid()
     )
   );
+
+-- Organisers can read dancer names for dancers registered at their feiseanna
+CREATE POLICY "Organisers read dancers at their feiseanna" ON dancers FOR SELECT
+  USING (id IN (
+    SELECT re.dancer_id FROM registration_entries re
+    JOIN registrations r ON re.registration_id = r.id
+    WHERE r.feis_listing_id IN (SELECT id FROM feis_listings WHERE created_by = auth.uid())
+  ));
 
 -- ─── dancer_dance_levels ───
 ALTER TABLE dancer_dance_levels ENABLE ROW LEVEL SECURITY;
@@ -1033,6 +1055,7 @@ export interface RegistrationEntry {
   base_fee_cents: number
   late_fee_cents: number
   day_of_surcharge_cents: number
+  created_at: string
 }
 
 // ─── Eligibility types ───
@@ -1048,7 +1071,7 @@ export interface DancerProfile {
 }
 
 export interface EligibleCompetition {
-  competition: ExpandedCompetition & { id: string; capacity_cap: number | null; enabled: boolean }
+  competition: FeisCompetition  // Full feis_competitions row — see eligibility engine section
   eligible: boolean
   reason: string
 }
@@ -1075,6 +1098,9 @@ CREATE TABLE households (
 CREATE INDEX idx_households_user_id ON households(user_id);
 
 -- ─── dancers ───
+-- Note: 'dancers' also exists in the public schema (Phase 1 day-of).
+-- These are separate tables in separate schemas. The bridge (Sub-project 3)
+-- maps between them.
 CREATE TABLE dancers (
   id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
   household_id uuid NOT NULL REFERENCES households(id) ON DELETE CASCADE,
@@ -1110,6 +1136,9 @@ CREATE TRIGGER set_dancer_dance_levels_updated_at BEFORE UPDATE ON dancer_dance_
   FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
 -- ─── registrations ───
+-- Note: 'registrations' also exists in the public schema (Phase 1 day-of).
+-- These are separate tables in separate schemas. The bridge (Sub-project 3)
+-- maps between them.
 CREATE TABLE registrations (
   id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
   feis_listing_id uuid NOT NULL REFERENCES feis_listings(id),
@@ -1156,6 +1185,7 @@ CREATE TABLE registration_entries (
   base_fee_cents integer NOT NULL CHECK (base_fee_cents >= 0),
   late_fee_cents integer NOT NULL DEFAULT 0 CHECK (late_fee_cents >= 0),
   day_of_surcharge_cents integer NOT NULL DEFAULT 0 CHECK (day_of_surcharge_cents >= 0),
+  created_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (registration_id, dancer_id, feis_competition_id)
 );
 
@@ -1189,6 +1219,14 @@ CREATE POLICY "Users manage own dancers" ON dancers
   FOR ALL USING (
     household_id IN (SELECT id FROM households WHERE user_id = auth.uid())
   );
+
+-- Organisers can read dancer names for dancers registered at their feiseanna
+CREATE POLICY "Organisers read dancers at their feiseanna" ON dancers FOR SELECT
+  USING (id IN (
+    SELECT re.dancer_id FROM registration_entries re
+    JOIN registrations r ON re.registration_id = r.id
+    WHERE r.feis_listing_id IN (SELECT id FROM feis_listings WHERE created_by = auth.uid())
+  ));
 
 -- dancer_dance_levels
 CREATE POLICY "Levels follow dancer access" ON dancer_dance_levels
@@ -1376,7 +1414,7 @@ These architectural decisions are documented now to prevent schema rework later.
 - [ ] Eligibility filtering: verify correct competitions shown for dancer's age + level
 - [ ] Per-dance level override: dancer at different levels for different dances
 - [ ] Championship filtering: only shown to qualifying dancers
-- [ ] Capacity hold: wait 15 minutes, verify expiry and ability to re-register
+- [ ] Capacity hold: wait 30 minutes, verify expiry and ability to re-register
 - [ ] Page refresh during Step 3: verify draft is reused, not duplicated
 - [ ] Stripe Checkout cancellation: return to review page with cart intact
 - [ ] Organiser entries view: verify entries table, summary stats, CSV export
