@@ -101,20 +101,17 @@ export async function createDraftRegistration(input: CreateDraftInput) {
 
   if (!household) return { error: 'Household not found' }
 
-  const { data: feeSchedule, error: feeError } = await supabase
-    .from('fee_schedules')
-    .select('*')
-    .eq('feis_listing_id', input.feisListingId)
-    .single()
+  // Fetch fee schedule and listing in parallel (both use feisListingId)
+  const [{ data: feeSchedule, error: feeError }, { data: listing }] = await Promise.all([
+    supabase.from('fee_schedules').select('*').eq('feis_listing_id', input.feisListingId).single(),
+    supabase
+      .from('feis_listings')
+      .select('reg_closes_at, late_reg_closes_at, stripe_account_id')
+      .eq('id', input.feisListingId)
+      .single(),
+  ])
 
   if (feeError || !feeSchedule) return { error: 'Fee schedule not found' }
-
-  const { data: listing } = await supabase
-    .from('feis_listings')
-    .select('reg_closes_at, late_reg_closes_at, stripe_account_id')
-    .eq('id', input.feisListingId)
-    .single()
-
   if (!listing) return { error: 'Feis listing not found' }
 
   // Validate registration window is open
@@ -131,26 +128,23 @@ export async function createDraftRegistration(input: CreateDraftInput) {
     }
   }
 
-  // Validate all dancers belong to this household
+  // Validate dancers and competitions in parallel
   const dancerIds = [...new Set(input.entries.map(e => e.dancerId))]
-  const { data: validDancers } = await supabase
-    .from('dancers')
-    .select('id')
-    .eq('household_id', household.id)
-    .in('id', dancerIds)
+  const compIds = [...new Set(input.entries.map(e => e.competitionId))]
+
+  const [{ data: validDancers }, { data: competitions }] = await Promise.all([
+    supabase.from('dancers').select('id').eq('household_id', household.id).in('id', dancerIds),
+    supabase
+      .from('feis_competitions')
+      .select('id, fee_category')
+      .eq('feis_listing_id', input.feisListingId)
+      .eq('enabled', true)
+      .in('id', compIds),
+  ])
 
   if (!validDancers || validDancers.length !== dancerIds.length) {
     return { error: 'One or more dancers do not belong to your family.' }
   }
-
-  // Validate all competitions belong to this feis, are enabled, and fetch fee_category in one query
-  const compIds = [...new Set(input.entries.map(e => e.competitionId))]
-  const { data: competitions } = await supabase
-    .from('feis_competitions')
-    .select('id, fee_category')
-    .eq('feis_listing_id', input.feisListingId)
-    .eq('enabled', true)
-    .in('id', compIds)
 
   if (!competitions || competitions.length !== compIds.length) {
     return { error: 'One or more competitions are not available.' }

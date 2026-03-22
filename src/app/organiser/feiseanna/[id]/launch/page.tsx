@@ -105,34 +105,37 @@ export default async function LaunchPage({
     )
   }
 
-  // Fetch counts for prerequisites
-  const { count: paidCount } = await supabase
-    .from('registrations')
-    .select('id', { count: 'exact', head: true })
-    .eq('feis_listing_id', id)
-    .eq('status', 'paid')
-
-  const { count: unsettledCount } = await supabase
-    .from('registrations')
-    .select('id', { count: 'exact', head: true })
-    .eq('feis_listing_id', id)
-    .in('status', ['draft', 'pending_payment'])
-
-  const { count: competitionsCount } = await supabase
-    .from('feis_competitions')
-    .select('id', { count: 'exact', head: true })
-    .eq('feis_listing_id', id)
-    .eq('enabled', true)
-
-  // Count unique dancers from paid entries
-  const { data: paidEntries } = await supabase
-    .from('registration_entries')
-    .select(`
-      dancer_id,
-      registrations!inner(status)
-    `)
-    .eq('registrations.feis_listing_id', id)
-    .eq('registrations.status', 'paid')
+  // Fetch all prerequisite counts in parallel (4 independent queries)
+  const [
+    { count: paidCount },
+    { count: unsettledCount },
+    { count: competitionsCount },
+    { data: paidEntries },
+  ] = await Promise.all([
+    supabase
+      .from('registrations')
+      .select('id', { count: 'exact', head: true })
+      .eq('feis_listing_id', id)
+      .eq('status', 'paid'),
+    supabase
+      .from('registrations')
+      .select('id', { count: 'exact', head: true })
+      .eq('feis_listing_id', id)
+      .in('status', ['draft', 'pending_payment']),
+    supabase
+      .from('feis_competitions')
+      .select('id', { count: 'exact', head: true })
+      .eq('feis_listing_id', id)
+      .eq('enabled', true),
+    supabase
+      .from('registration_entries')
+      .select(`
+        dancer_id,
+        registrations!inner(status)
+      `)
+      .eq('registrations.feis_listing_id', id)
+      .eq('registrations.status', 'paid'),
+  ])
 
   const uniqueDancerIds = new Set(
     (paidEntries ?? []).map((e: Record<string, unknown>) => e.dancer_id as string)

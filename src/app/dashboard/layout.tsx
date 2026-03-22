@@ -20,17 +20,10 @@ export default async function DashboardLayout({
   }
 
   // Check capabilities for view toggle
-  const { data: household } = await supabase
-    .from('households')
-    .select('id')
-    .eq('user_id', user.id)
-    .single()
-
-  const { data: listings } = await supabase
-    .from('feis_listings')
-    .select('id')
-    .eq('created_by', user.id)
-    .limit(1)
+  const [{ data: household }, { data: listings }] = await Promise.all([
+    supabase.from('households').select('id').eq('user_id', user.id).single(),
+    supabase.from('feis_listings').select('id').eq('created_by', user.id).limit(1),
+  ])
 
   const hasHousehold = !!household
   const hasListings = !!(listings && listings.length > 0)

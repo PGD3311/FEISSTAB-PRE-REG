@@ -404,19 +404,15 @@ export default async function FeisDashboardPage({
 
   const typedListing = listing as FeisListing
 
-  // Fetch fee schedule
-  const { data: feeSchedule } = await supabase
-    .from('fee_schedules')
-    .select('*')
-    .eq('feis_listing_id', id)
-    .single()
-
-  // Fetch competitions
-  const { data: competitions } = await supabase
-    .from('feis_competitions')
-    .select('id, display_name, competition_type, enabled')
-    .eq('feis_listing_id', id)
-    .order('sort_order', { ascending: true })
+  // Fetch fee schedule and competitions in parallel
+  const [{ data: feeSchedule }, { data: competitions }] = await Promise.all([
+    supabase.from('fee_schedules').select('*').eq('feis_listing_id', id).single(),
+    supabase
+      .from('feis_competitions')
+      .select('id, display_name, competition_type, enabled')
+      .eq('feis_listing_id', id)
+      .order('sort_order', { ascending: true }),
+  ])
 
   const typedCompetitions = (competitions ?? []) as FeisCompetition[]
   const competitionsCount = typedCompetitions.length

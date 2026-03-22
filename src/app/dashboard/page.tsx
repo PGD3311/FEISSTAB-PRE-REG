@@ -27,24 +27,24 @@ export default async function DashboardPage() {
 
   if (!household) redirect('/auth/onboarding')
 
-  // Get dancers for filter chips
-  const { data: dancers } = await supabase
-    .from('dancers')
-    .select('id, first_name, last_name')
-    .eq('household_id', household.id)
-    .eq('is_active', true)
-    .order('first_name')
-
-  // Get registrations with feis info and entries
-  const { data: registrations } = await supabase
-    .from('registrations')
-    .select(`
-      *,
-      feis_listings(name, feis_date, venue_name),
-      registration_entries(dancer_id, feis_competitions(display_name))
-    `)
-    .eq('household_id', household.id)
-    .order('created_at', { ascending: false })
+  // Get dancers and registrations in parallel (both use household.id)
+  const [{ data: dancers }, { data: registrations }] = await Promise.all([
+    supabase
+      .from('dancers')
+      .select('id, first_name, last_name')
+      .eq('household_id', household.id)
+      .eq('is_active', true)
+      .order('first_name'),
+    supabase
+      .from('registrations')
+      .select(`
+        *,
+        feis_listings(name, feis_date, venue_name),
+        registration_entries(dancer_id, feis_competitions(display_name))
+      `)
+      .eq('household_id', household.id)
+      .order('created_at', { ascending: false }),
+  ])
 
   const typedRegistrations = (registrations ?? []) as (Registration & {
     feis_listings: { name: string; feis_date: string; venue_name: string }

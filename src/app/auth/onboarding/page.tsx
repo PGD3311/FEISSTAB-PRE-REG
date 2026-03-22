@@ -13,18 +13,11 @@ export default async function OnboardingPage() {
     redirect('/auth/login')
   }
 
-  // Check existing capabilities
-  const { data: household } = await supabase
-    .from('households')
-    .select('id')
-    .eq('user_id', user.id)
-    .single()
-
-  const { data: listings } = await supabase
-    .from('feis_listings')
-    .select('id')
-    .eq('created_by', user.id)
-    .limit(1)
+  // Check existing capabilities in parallel
+  const [{ data: household }, { data: listings }] = await Promise.all([
+    supabase.from('households').select('id').eq('user_id', user.id).single(),
+    supabase.from('feis_listings').select('id').eq('created_by', user.id).limit(1),
+  ])
 
   // If user already has data, route them
   if (household && listings && listings.length > 0) {

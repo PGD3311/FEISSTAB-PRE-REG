@@ -80,13 +80,11 @@ function extractDomain(url: string): string {
 
 export default async function HomePage() {
   const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
 
-  const { data: listings, error } = await supabase
-    .from('feis_listings')
-    .select('*')
-    .eq('status', 'open')
-    .order('feis_date', { ascending: true })
+  const [{ data: { user } }, { data: listings, error }] = await Promise.all([
+    supabase.auth.getUser(),
+    supabase.from('feis_listings').select('*').eq('status', 'open').order('feis_date', { ascending: true }),
+  ])
 
   if (error) {
     console.error('Failed to fetch listings:', error)

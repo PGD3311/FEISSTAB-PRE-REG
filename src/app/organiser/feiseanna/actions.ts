@@ -570,18 +570,14 @@ export async function transitionListingStatus(
     }
   }
 
-  // Fetch fee schedule
-  const { data: feeSchedule } = await supabase
-    .from('fee_schedules')
-    .select('*')
-    .eq('feis_listing_id', listingId)
-    .single()
-
-  // Fetch enabled competitions
-  const { data: competitions } = await supabase
-    .from('feis_competitions')
-    .select('competition_type, championship_key, fee_category')
-    .eq('feis_listing_id', listingId)
+  // Fetch fee schedule and competitions in parallel
+  const [{ data: feeSchedule }, { data: competitions }] = await Promise.all([
+    supabase.from('fee_schedules').select('*').eq('feis_listing_id', listingId).single(),
+    supabase
+      .from('feis_competitions')
+      .select('competition_type, championship_key, fee_category')
+      .eq('feis_listing_id', listingId),
+  ])
 
   const context: ListingTransitionContext = {
     listing: typedListing,

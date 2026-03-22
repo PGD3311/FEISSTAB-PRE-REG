@@ -29,18 +29,11 @@ export default async function FeisDetailPage({ params }: PageParams) {
   const { id } = await params
   const supabase = await createClient()
 
-  // Check for logged-in user (optional — page is public)
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-
-  // Fetch listing
-  const { data: listingData, error: listingError } = await supabase
-    .from('feis_listings')
-    .select('*')
-    .eq('id', id)
-    .eq('status', 'open')
-    .single()
+  // Fetch user (optional — page is public) and listing in parallel
+  const [{ data: { user } }, { data: listingData, error: listingError }] = await Promise.all([
+    supabase.auth.getUser(),
+    supabase.from('feis_listings').select('*').eq('id', id).eq('status', 'open').single(),
+  ])
 
   if (listingError || !listingData) {
     notFound()
