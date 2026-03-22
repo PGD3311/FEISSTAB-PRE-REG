@@ -1,6 +1,8 @@
 -- 005_performance_indexes.sql
 -- Performance audit fixes: missing indexes, composite indexes, RLS optimization
 
+SET search_path TO pre_registration, public;
+
 -- ================================================================
 -- 1. Missing indexes on queried columns
 -- ================================================================
@@ -57,7 +59,7 @@ STABLE
 SECURITY DEFINER
 SET search_path = ''
 AS $$
-  SELECT id FROM public.households WHERE user_id = auth.uid()
+  SELECT id FROM pre_registration.households WHERE user_id = auth.uid()
 $$;
 
 -- Simplify triple-nested policies on registration_entries
