@@ -1,13 +1,10 @@
 import { Resend } from 'resend'
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { formatCents, formatDate } from '@/lib/format'
 
 const resend = process.env.RESEND_API_KEY
   ? new Resend(process.env.RESEND_API_KEY)
   : null
-
-function formatCents(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`
-}
 
 export async function sendConfirmationEmail(
   registrationId: string,
@@ -44,14 +41,7 @@ export async function sendConfirmationEmail(
     .eq('registration_id', registrationId)
 
   const feis = reg.feis_listings
-  const feisDate = feis.feis_date
-    ? new Date(feis.feis_date + 'T00:00:00').toLocaleDateString('en-US', {
-        weekday: 'long',
-        month: 'long',
-        day: 'numeric',
-        year: 'numeric',
-      })
-    : 'TBD'
+  const feisDate = formatDate(feis.feis_date, { weekday: 'long', fallback: 'TBD' })
 
   // Group entries by dancer
   const dancerEntries: Record<string, { name: string; competitions: string[] }> = {}

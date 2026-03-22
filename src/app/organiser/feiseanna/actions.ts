@@ -46,6 +46,7 @@ export async function createDraftListing(formData: FormData) {
   const {
     data: { user },
   } = await supabase.auth.getUser()
+  if (!user) return { error: 'Not authenticated' }
 
   const feisYear = new Date(feis_date + 'T00:00:00').getFullYear()
   const age_cutoff_date = `${feisYear}-01-01`
@@ -69,7 +70,7 @@ export async function createDraftListing(formData: FormData) {
       age_cutoff_date,
       season_year,
       status: 'draft',
-      created_by: user?.id ?? null,
+      created_by: user.id,
     })
     .select('id')
     .single()
@@ -540,7 +541,7 @@ export async function deleteDraftListing(listingId: string) {
 
 export async function transitionListingStatus(
   listingId: string,
-  to: string
+  to: ListingStatus
 ) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -560,13 +561,12 @@ export async function transitionListingStatus(
   }
 
   const typedListing = listing as FeisListing
-  const toStatus = to as ListingStatus
 
   // Validate transition is allowed
-  if (!canTransitionListing(typedListing.status, toStatus)) {
+  if (!canTransitionListing(typedListing.status, to)) {
     return {
-      error: `Cannot transition from ${typedListing.status} to ${toStatus}`,
-      blocks: [`Invalid transition: ${typedListing.status} -> ${toStatus}`],
+      error: `Cannot transition from ${typedListing.status} to ${to}`,
+      blocks: [`Invalid transition: ${typedListing.status} -> ${to}`],
     }
   }
 
@@ -591,7 +591,7 @@ export async function transitionListingStatus(
 
   const { blocks, warnings } = getListingTransitionBlockReasons(
     typedListing.status,
-    toStatus,
+    to,
     context
   )
 
@@ -602,7 +602,7 @@ export async function transitionListingStatus(
   // Perform the transition
   const { error: updateError } = await supabase
     .from('feis_listings')
-    .update({ status: toStatus })
+    .update({ status: to })
     .eq('id', listingId)
     .eq('created_by', user.id)
 

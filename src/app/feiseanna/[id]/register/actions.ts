@@ -143,27 +143,20 @@ export async function createDraftRegistration(input: CreateDraftInput) {
     return { error: 'One or more dancers do not belong to your family.' }
   }
 
-  // Validate all competitions belong to this feis and are enabled
+  // Validate all competitions belong to this feis, are enabled, and fetch fee_category in one query
   const compIds = [...new Set(input.entries.map(e => e.competitionId))]
-  const { data: validComps } = await supabase
+  const { data: competitions } = await supabase
     .from('feis_competitions')
-    .select('id')
+    .select('id, fee_category')
     .eq('feis_listing_id', input.feisListingId)
     .eq('enabled', true)
     .in('id', compIds)
 
-  if (!validComps || validComps.length !== compIds.length) {
+  if (!competitions || competitions.length !== compIds.length) {
     return { error: 'One or more competitions are not available.' }
   }
 
   const isLate = listing.reg_closes_at ? now > new Date(listing.reg_closes_at) : false
-
-  const { data: competitions } = await supabase
-    .from('feis_competitions')
-    .select('id, fee_category')
-    .in('id', compIds)
-
-  if (!competitions) return { error: 'Competitions not found' }
 
   const compMap = new Map(competitions.map(c => [c.id, c]))
 

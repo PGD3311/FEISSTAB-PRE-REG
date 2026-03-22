@@ -9,32 +9,10 @@ import type {
   ListingTransitionContext,
 } from '@/lib/types/feis-listing'
 import { getListingTransitionBlockReasons } from '@/lib/feis-listing-states'
-import { formatTimezone } from '@/lib/format'
+import { formatTimezone, formatCentsOrNull, formatDate, formatDateTime } from '@/lib/format'
 import { useSupabase } from '@/hooks/use-supabase'
 import { transitionListingStatus } from '@/app/organiser/feiseanna/actions'
 import { PublishChecklist } from '@/components/organiser/publish-checklist'
-
-function formatCents(cents: number | null): string {
-  if (cents === null || cents === undefined) return 'N/A'
-  return `$${(cents / 100).toFixed(2)}`
-}
-
-function formatDate(dateStr: string | null): string {
-  if (!dateStr) return 'Not set'
-  const d = new Date(dateStr + 'T00:00:00')
-  return d.toLocaleDateString('en-US', {
-    weekday: 'short',
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  })
-}
-
-function formatTimestamp(ts: string | null): string {
-  if (!ts) return 'Not set'
-  const dateStr = ts.split('T')[0]
-  return formatDate(dateStr)
-}
 
 interface CompetitionSummary {
   total: number
@@ -203,8 +181,8 @@ export function FeisWizardStep5({
             <div>
               <dt className="text-muted-foreground">Date</dt>
               <dd className="font-medium">
-                {formatDate(listing.feis_date)}
-                {listing.end_date && ` \u2013 ${formatDate(listing.end_date)}`}
+                {formatDate(listing.feis_date, { weekday: 'short', month: 'short', fallback: 'Not set' })}
+                {listing.end_date && ` \u2013 ${formatDate(listing.end_date, { weekday: 'short', month: 'short', fallback: 'Not set' })}`}
               </dd>
             </div>
             <div>
@@ -263,45 +241,43 @@ export function FeisWizardStep5({
               <div className="flex justify-between sm:block">
                 <dt className="text-muted-foreground">Event Fee</dt>
                 <dd className="font-medium font-mono">
-                  {formatCents(feeSchedule.event_fee_cents)}
+                  {formatCentsOrNull(feeSchedule.event_fee_cents)}
                 </dd>
               </div>
               <div className="flex justify-between sm:block">
                 <dt className="text-muted-foreground">Solo Fee</dt>
                 <dd className="font-medium font-mono">
-                  {formatCents(feeSchedule.solo_fee_cents)}
+                  {formatCentsOrNull(feeSchedule.solo_fee_cents)}
                 </dd>
               </div>
               <div className="flex justify-between sm:block">
                 <dt className="text-muted-foreground">Prelim Champ Fee</dt>
                 <dd className="font-medium font-mono">
-                  {formatCents(feeSchedule.prelim_champ_fee_cents)}
+                  {formatCentsOrNull(feeSchedule.prelim_champ_fee_cents)}
                 </dd>
               </div>
               <div className="flex justify-between sm:block">
                 <dt className="text-muted-foreground">Open Champ Fee</dt>
                 <dd className="font-medium font-mono">
-                  {formatCents(feeSchedule.open_champ_fee_cents)}
+                  {formatCentsOrNull(feeSchedule.open_champ_fee_cents)}
                 </dd>
               </div>
               <div className="flex justify-between sm:block">
                 <dt className="text-muted-foreground">Family Cap</dt>
                 <dd className="font-medium font-mono">
-                  {feeSchedule.family_cap_cents !== null
-                    ? formatCents(feeSchedule.family_cap_cents)
-                    : 'No cap'}
+                  {formatCentsOrNull(feeSchedule.family_cap_cents, 'No cap')}
                 </dd>
               </div>
               <div className="flex justify-between sm:block">
                 <dt className="text-muted-foreground">Late Fee</dt>
                 <dd className="font-medium font-mono">
-                  {formatCents(feeSchedule.late_fee_cents)}
+                  {formatCentsOrNull(feeSchedule.late_fee_cents)}
                 </dd>
               </div>
               <div className="flex justify-between sm:block">
                 <dt className="text-muted-foreground">Day-of Surcharge</dt>
                 <dd className="font-medium font-mono">
-                  {formatCents(feeSchedule.day_of_surcharge_cents)}
+                  {formatCentsOrNull(feeSchedule.day_of_surcharge_cents)}
                 </dd>
               </div>
             </dl>
@@ -321,13 +297,13 @@ export function FeisWizardStep5({
             <div>
               <dt className="text-muted-foreground">Registration Opens</dt>
               <dd className="font-medium">
-                {formatTimestamp(listing.reg_opens_at)}
+                {formatDateTime(listing.reg_opens_at, 'Not set')}
               </dd>
             </div>
             <div>
               <dt className="text-muted-foreground">Registration Closes</dt>
               <dd className="font-medium">
-                {formatTimestamp(listing.reg_closes_at)}
+                {formatDateTime(listing.reg_closes_at, 'Not set')}
               </dd>
             </div>
             {listing.late_reg_closes_at && (
@@ -336,7 +312,7 @@ export function FeisWizardStep5({
                   Late Registration Closes
                 </dt>
                 <dd className="font-medium">
-                  {formatTimestamp(listing.late_reg_closes_at)}
+                  {formatDateTime(listing.late_reg_closes_at, 'Not set')}
                 </dd>
               </div>
             )}

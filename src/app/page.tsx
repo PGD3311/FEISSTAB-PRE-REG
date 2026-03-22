@@ -1,21 +1,22 @@
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
+import { parseLocalDate } from '@/lib/format'
 import type { FeisListing } from '@/lib/types/feis-listing'
 
 export const dynamic = 'force-dynamic'
 
 function parseMonth(dateString: string): string {
-  const date = new Date(dateString + 'T00:00:00')
+  const date = parseLocalDate(dateString)
   return date.toLocaleDateString('en-US', { month: 'short' }).toUpperCase()
 }
 
 function parseDay(dateString: string): string {
-  const date = new Date(dateString + 'T00:00:00')
+  const date = parseLocalDate(dateString)
   return date.getDate().toString()
 }
 
 function parseWeekday(dateString: string): string {
-  const date = new Date(dateString + 'T00:00:00')
+  const date = parseLocalDate(dateString)
   return date.toLocaleDateString('en-US', { weekday: 'short' }).toUpperCase()
 }
 

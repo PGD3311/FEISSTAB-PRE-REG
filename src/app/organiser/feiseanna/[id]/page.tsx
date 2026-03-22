@@ -8,7 +8,7 @@ import type {
   ListingStatus,
   CompetitionType,
 } from '@/lib/types/feis-listing'
-import { formatTimezone } from '@/lib/format'
+import { formatTimezone, formatDate, formatDateTime, formatCents, formatCentsOrNull } from '@/lib/format'
 import { StatusActions } from '@/components/organiser/status-actions'
 import { DeleteDraftButton } from '@/components/organiser/delete-draft-button'
 import { CloneFeisButton } from '@/components/organiser/clone-feis-button'
@@ -43,35 +43,6 @@ function StatusBadge({ status }: { status: ListingStatus }) {
   )
 }
 
-function formatDate(dateString: string | null): string {
-  if (!dateString) return 'Not set'
-  const date = new Date(dateString + 'T00:00:00')
-  return date.toLocaleDateString('en-US', {
-    month: 'long',
-    day: 'numeric',
-    year: 'numeric',
-  })
-}
-
-function formatDateTime(dateString: string | null): string {
-  if (!dateString) return 'Not set'
-  const date = new Date(dateString)
-  return date.toLocaleDateString('en-US', {
-    month: 'long',
-    day: 'numeric',
-    year: 'numeric',
-  })
-}
-
-function formatCents(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`
-}
-
-function formatCentsOrNull(cents: number | null): string {
-  if (cents === null) return 'None'
-  return `$${(cents / 100).toFixed(2)}`
-}
-
 interface FeisCompetition {
   id: string
   display_name: string
@@ -95,8 +66,8 @@ function OverviewTab({
           <div>
             <dt className="text-sm text-muted-foreground">Date</dt>
             <dd className="mt-0.5 font-medium">
-              {formatDate(listing.feis_date)}
-              {listing.end_date && ` — ${formatDate(listing.end_date)}`}
+              {formatDate(listing.feis_date, { fallback: 'Not set' })}
+              {listing.end_date && ` — ${formatDate(listing.end_date, { fallback: 'Not set' })}`}
             </dd>
           </div>
           <div>
@@ -141,7 +112,7 @@ function OverviewTab({
             Registration Deadline
           </p>
           <p className="mt-1 text-lg font-semibold">
-            {formatDateTime(listing.reg_closes_at)}
+            {formatDateTime(listing.reg_closes_at, 'Not set')}
           </p>
         </div>
       </div>
@@ -152,7 +123,7 @@ function OverviewTab({
           <h2 className="mb-2 text-lg font-semibold">Feis Day Launched</h2>
           <p className="text-sm text-muted-foreground">
             Registration data was transferred to FeisTab on{' '}
-            {formatDateTime(listing.launched_at)}.
+            {formatDateTime(listing.launched_at, 'Not set')}.
             This listing is now read-only.
           </p>
           {listing.launched_event_id && (
@@ -304,7 +275,7 @@ function FeesTab({
     { label: 'Solo Fee (per dance)', value: formatCents(feeSchedule.solo_fee_cents) },
     { label: 'Prelim Championship Fee', value: formatCents(feeSchedule.prelim_champ_fee_cents) },
     { label: 'Open Championship Fee', value: formatCents(feeSchedule.open_champ_fee_cents) },
-    { label: 'Family Cap', value: formatCentsOrNull(feeSchedule.family_cap_cents) },
+    { label: 'Family Cap', value: formatCentsOrNull(feeSchedule.family_cap_cents, 'None') },
     { label: 'Late Fee (per dancer)', value: formatCents(feeSchedule.late_fee_cents) },
     { label: 'Day-of Surcharge (per dancer)', value: formatCents(feeSchedule.day_of_surcharge_cents) },
   ]
@@ -355,7 +326,7 @@ function SettingsTab({ listing }: { listing: FeisListing }) {
               Registration Opens
             </dt>
             <dd className="mt-0.5 font-medium">
-              {formatDateTime(listing.reg_opens_at)}
+              {formatDateTime(listing.reg_opens_at, 'Not set')}
             </dd>
           </div>
           <div>
@@ -363,7 +334,7 @@ function SettingsTab({ listing }: { listing: FeisListing }) {
               Registration Closes
             </dt>
             <dd className="mt-0.5 font-medium">
-              {formatDateTime(listing.reg_closes_at)}
+              {formatDateTime(listing.reg_closes_at, 'Not set')}
             </dd>
           </div>
           <div>
@@ -371,7 +342,7 @@ function SettingsTab({ listing }: { listing: FeisListing }) {
               Late Registration Closes
             </dt>
             <dd className="mt-0.5 font-medium">
-              {formatDateTime(listing.late_reg_closes_at)}
+              {formatDateTime(listing.late_reg_closes_at, 'Not set')}
             </dd>
           </div>
         </dl>

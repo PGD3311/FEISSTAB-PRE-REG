@@ -1,19 +1,9 @@
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
+import { formatDate } from '@/lib/format'
 import type { FeisListing } from '@/lib/types/feis-listing'
 
 export const dynamic = 'force-dynamic'
-
-function formatDate(dateString: string | null): string {
-  if (!dateString) return ''
-  const date = new Date(dateString + 'T00:00:00')
-  return date.toLocaleDateString('en-US', {
-    weekday: 'short',
-    month: 'long',
-    day: 'numeric',
-    year: 'numeric',
-  })
-}
 
 function daysUntil(dateString: string): number {
   const target = new Date(dateString + 'T00:00:00')
@@ -63,7 +53,7 @@ export default async function BrowseFeiseannaPage() {
                     <div>
                       <h2 className="text-lg font-semibold">{feis.name}</h2>
                       <p className="mt-1 text-sm text-muted-foreground">
-                        {formatDate(feis.feis_date)}
+                        {formatDate(feis.feis_date, { weekday: 'short' })}
                       </p>
                       <p className="text-sm text-muted-foreground">
                         {feis.venue_name}

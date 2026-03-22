@@ -1,23 +1,10 @@
 import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
+import { formatDate, formatCents } from '@/lib/format'
 import type { Registration, Dancer, RegistrationStatus } from '@/lib/types/feis-listing'
 
 export const dynamic = 'force-dynamic'
-
-function formatDate(dateString: string | null): string {
-  if (!dateString) return ''
-  const date = new Date(dateString + 'T00:00:00')
-  return date.toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  })
-}
-
-function formatCents(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`
-}
 
 const STATUS_STYLES: Record<RegistrationStatus, { bg: string; label: string }> = {
   draft: { bg: 'bg-muted text-muted-foreground', label: 'Draft' },
@@ -128,7 +115,7 @@ export default async function DashboardPage() {
                       </span>
                     </div>
                     <p className="mt-0.5 text-sm text-muted-foreground">
-                      {formatDate(reg.feis_listings.feis_date)} &middot; {reg.feis_listings.venue_name}
+                      {formatDate(reg.feis_listings.feis_date, { month: 'short' })} &middot; {reg.feis_listings.venue_name}
                     </p>
                     <p className="mt-1 text-sm text-muted-foreground">
                       {dancerNames.join(', ')} &middot; {reg.registration_entries.length} competition{reg.registration_entries.length !== 1 ? 's' : ''}

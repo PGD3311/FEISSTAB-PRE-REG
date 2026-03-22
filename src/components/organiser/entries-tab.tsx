@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 
 import { getFeisEntries } from '@/app/organiser/feiseanna/actions'
+import { formatCents } from '@/lib/format'
 
 interface EntryRow {
   id: string
@@ -35,10 +36,6 @@ interface EntrySummary {
   totalEntries: number
   revenueCents: number
   pendingCount: number
-}
-
-function formatCents(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`
 }
 
 function StatusBadge({ status }: { status: string }) {

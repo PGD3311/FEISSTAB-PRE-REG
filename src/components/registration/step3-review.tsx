@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
+import { formatCents, formatDate } from '@/lib/format'
 import type {
   FeisListing,
   Dancer,
@@ -22,10 +23,6 @@ interface Step3ReviewProps {
   onCancel: () => void
   onBack: () => void
   loading: boolean
-}
-
-function formatCents(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`
 }
 
 function CountdownTimer({ holdExpiresAt }: { holdExpiresAt: string }) {
@@ -133,12 +130,7 @@ export function Step3Review({
         <div className="text-sm font-semibold">{feis.name}</div>
         {feis.feis_date && (
           <div className="mt-0.5 text-sm text-muted-foreground">
-            {new Date(feis.feis_date + 'T00:00:00').toLocaleDateString('en-US', {
-              weekday: 'long',
-              year: 'numeric',
-              month: 'long',
-              day: 'numeric'
-            })}
+            {formatDate(feis.feis_date, { weekday: 'long' })}
           </div>
         )}
         {feis.venue_name && (

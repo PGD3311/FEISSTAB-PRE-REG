@@ -1,6 +1,7 @@
 import Link from 'next/link'
 
 import { createClient } from '@/lib/supabase/server'
+import { formatDate } from '@/lib/format'
 import type { ListingStatus } from '@/lib/types/feis-listing'
 
 export const dynamic = 'force-dynamic'
@@ -20,17 +21,6 @@ function StatusBadge({ status }: { status: ListingStatus }) {
       {status}
     </span>
   )
-}
-
-function formatDate(dateString: string | null): string {
-  if (!dateString) return 'No date set'
-  const date = new Date(dateString + 'T00:00:00')
-  if (isNaN(date.getTime())) return 'No date set'
-  return date.toLocaleDateString('en-US', {
-    month: 'long',
-    day: 'numeric',
-    year: 'numeric',
-  })
 }
 
 export default async function FeiseannaPage() {
@@ -79,7 +69,7 @@ export default async function FeiseannaPage() {
                     {listing.name || 'Untitled Feis'}
                   </p>
                   <p className="mt-1 text-sm text-muted-foreground">
-                    {formatDate(listing.feis_date)}
+                    {formatDate(listing.feis_date, { fallback: 'No date set' })}
                   </p>
                 </div>
                 <StatusBadge status={listing.status as ListingStatus} />

@@ -3,6 +3,7 @@
 import { useState, useMemo } from 'react'
 import { getEligibleCompetitions, calculateAgeOnDate } from '@/lib/engine/eligibility'
 import { calculateFees } from '@/lib/engine/fee-calculator'
+import { formatCents, parseLocalDate } from '@/lib/format'
 import type {
   Dancer,
   DancerDanceLevel,
@@ -25,10 +26,6 @@ interface Step2CartProps {
   onBack: () => void
 }
 
-function formatCents(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`
-}
-
 function buildDancerProfile(
   dancer: Dancer & { dance_levels: DancerDanceLevel[] }
 ): DancerProfile {
@@ -37,7 +34,7 @@ function buildDancerProfile(
     danceLevels[dl.dance_key] = dl.level_key
   }
   return {
-    dob: new Date(dancer.date_of_birth + 'T00:00:00'),
+    dob: parseLocalDate(dancer.date_of_birth),
     gender: dancer.gender,
     championshipStatus: dancer.championship_status,
     danceLevels
@@ -194,7 +191,7 @@ export function Step2Cart({
   }
 
   const activeDancerAge = calculateAgeOnDate(
-    new Date(activeDancer.date_of_birth + 'T00:00:00'),
+    parseLocalDate(activeDancer.date_of_birth),
     ageCutoffDate
   )
 

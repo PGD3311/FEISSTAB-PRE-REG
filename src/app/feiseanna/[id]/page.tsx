@@ -1,36 +1,10 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
+import { formatDate, formatDateTime, formatCents } from '@/lib/format'
 import type { FeisListing, FeeSchedule, FeisCompetition, CompetitionType } from '@/lib/types/feis-listing'
 
 export const dynamic = 'force-dynamic'
-
-function formatDate(dateString: string | null): string {
-  if (!dateString) return '—'
-  const date = new Date(dateString + 'T00:00:00')
-  return date.toLocaleDateString('en-US', {
-    weekday: 'long',
-    month: 'long',
-    day: 'numeric',
-    year: 'numeric',
-  })
-}
-
-function formatDateTime(isoString: string | null): string {
-  if (!isoString) return '—'
-  const date = new Date(isoString)
-  return date.toLocaleDateString('en-US', {
-    month: 'long',
-    day: 'numeric',
-    year: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  })
-}
-
-function formatCents(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`
-}
 
 function groupByType(
   competitions: FeisCompetition[]
@@ -118,7 +92,7 @@ export default async function FeisDetailPage({ params }: PageParams) {
         <div className="mb-8">
           <h1 className="text-3xl font-bold">{listing.name}</h1>
           <p className="mt-2 text-lg text-muted-foreground">
-            {formatDate(listing.feis_date)}
+            {formatDate(listing.feis_date, { weekday: 'long', fallback: '—' })}
           </p>
           {listing.venue_name && (
             <p className="mt-1 text-muted-foreground">
@@ -147,16 +121,16 @@ export default async function FeisDetailPage({ params }: PageParams) {
             <dl className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               <div>
                 <dt className="text-xs text-muted-foreground">Registration Opens</dt>
-                <dd className="mt-0.5 text-sm font-medium">{formatDateTime(listing.reg_opens_at)}</dd>
+                <dd className="mt-0.5 text-sm font-medium">{formatDateTime(listing.reg_opens_at, '—')}</dd>
               </div>
               <div>
                 <dt className="text-xs text-muted-foreground">Registration Closes</dt>
-                <dd className="mt-0.5 text-sm font-medium">{formatDateTime(listing.reg_closes_at)}</dd>
+                <dd className="mt-0.5 text-sm font-medium">{formatDateTime(listing.reg_closes_at, '—')}</dd>
               </div>
               {listing.late_reg_closes_at && (
                 <div>
                   <dt className="text-xs text-muted-foreground">Late Registration Closes</dt>
-                  <dd className="mt-0.5 text-sm font-medium">{formatDateTime(listing.late_reg_closes_at)}</dd>
+                  <dd className="mt-0.5 text-sm font-medium">{formatDateTime(listing.late_reg_closes_at, '—')}</dd>
                 </div>
               )}
             </dl>

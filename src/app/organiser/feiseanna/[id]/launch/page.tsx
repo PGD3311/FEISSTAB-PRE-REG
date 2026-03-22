@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { notFound, redirect } from 'next/navigation'
 
 import { createClient } from '@/lib/supabase/server'
+import { formatDateTime } from '@/lib/format'
 import type { FeisListing } from '@/lib/types/feis-listing'
 import { LaunchButton } from '@/components/organiser/launch-button'
 
@@ -35,18 +36,6 @@ function CheckItem({
       </div>
     </li>
   )
-}
-
-function formatDate(dateString: string | null): string {
-  if (!dateString) return 'Not set'
-  const date = new Date(dateString)
-  return date.toLocaleDateString('en-US', {
-    month: 'long',
-    day: 'numeric',
-    year: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  })
 }
 
 export default async function LaunchPage({
@@ -101,7 +90,7 @@ export default async function LaunchPage({
           </h2>
           <p className="mb-4 text-sm text-muted-foreground">
             Registration data was transferred to FeisTab on{' '}
-            {formatDate(typedListing.launched_at)}.
+            {formatDateTime(typedListing.launched_at, 'Not set')}.
           </p>
           {typedListing.launched_event_id && (
             <p className="text-sm text-muted-foreground">

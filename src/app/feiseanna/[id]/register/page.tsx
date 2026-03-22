@@ -4,6 +4,7 @@ import { useEffect, useState, useMemo } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useSupabase } from '@/hooks/use-supabase'
+import { parseLocalDate } from '@/lib/format'
 import { getExistingRegistration, createDraftRegistration, createCheckoutSession, cancelRegistration } from './actions'
 import { calculateFees } from '@/lib/engine/fee-calculator'
 import { Step1Dancers } from '@/components/registration/step1-dancers'
@@ -133,9 +134,9 @@ function RegistrationFlow({ data, feisId }: { data: PageData; feisId: string }) 
   const [loading, setLoading] = useState(false)
 
   const ageCutoffDate = listing.age_cutoff_date
-    ? new Date(listing.age_cutoff_date + 'T00:00:00')
+    ? parseLocalDate(listing.age_cutoff_date)
     : listing.feis_date
-      ? new Date(listing.feis_date + 'T00:00:00')
+      ? parseLocalDate(listing.feis_date)
       : new Date()
 
   const levels: Level[] = listing.syllabus_snapshot?.levels ?? []

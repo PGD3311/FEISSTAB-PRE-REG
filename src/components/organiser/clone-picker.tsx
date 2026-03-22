@@ -3,6 +3,7 @@
 import { useState, useTransition } from 'react'
 
 import { cloneFeisAndRedirect } from '@/app/organiser/feiseanna/actions'
+import { formatDate } from '@/lib/format'
 import type { ListingStatus } from '@/lib/types/feis-listing'
 
 interface ClonePickerListing {
@@ -14,15 +15,6 @@ interface ClonePickerListing {
 
 interface ClonePickerProps {
   listings: ClonePickerListing[]
-}
-
-function formatDate(dateString: string): string {
-  const date = new Date(dateString + 'T00:00:00')
-  return date.toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  })
 }
 
 const statusStyles: Record<ListingStatus, string> = {
@@ -71,7 +63,7 @@ export function ClonePicker({ listings }: ClonePickerProps) {
                 {listing.name}
               </p>
               <p className="mt-0.5 text-xs text-muted-foreground">
-                {formatDate(listing.feis_date)}
+                {formatDate(listing.feis_date, { month: 'short' })}
               </p>
             </div>
             <div className="ml-3 flex items-center gap-2">
