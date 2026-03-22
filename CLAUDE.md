@@ -377,7 +377,7 @@ Email last year's registrants with personalized link that pre-fills dancer profi
 > Full reference: `docs/research/architecture-patterns.md`
 
 ### Separate Supabase Projects (Current Decision)
-Pre-reg (`vwfrmhbczwpvqonlpfzs`) is a separate Supabase project from FeisTab Phase 1 (`acxyvouzwgvobtbmvoej`). This isolates auth, migrations, and data sensitivity classes. All tables live in the `public` schema — isolation is at the project level, not the schema level.
+Pre-reg and Phase 1 share the same Supabase project (`acxyvouzwgvobtbmvoej`). Pre-reg tables live in the `pre_registration` schema; Phase 1 tables live in `public`. All pre-reg migrations must include `SET search_path TO pre_registration, public;`.
 
 **Bridge:** The `launchFeisDay` server action uses Phase 1's service_role key to write across projects. Handles partial failure via `import_status` on the Phase 1 event. Uses upsert on external ID columns (`prereg_*`) for idempotent retries. Cannot use database transactions across the boundary.
 

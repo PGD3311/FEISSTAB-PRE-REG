@@ -2,6 +2,8 @@
 -- Pre-registration: parent registration portal tables
 -- Builds on 001_feis_setup.sql — requires feis_listings, feis_competitions tables
 
+SET search_path TO pre_registration, public;
+
 -- ─── households ───
 CREATE TABLE households (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

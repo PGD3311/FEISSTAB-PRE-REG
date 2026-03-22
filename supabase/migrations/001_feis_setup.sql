@@ -1,10 +1,12 @@
 -- 001_feis_setup.sql
 -- Pre-registration: organiser feis setup tables
--- Tables live in the public schema. Isolation from Phase 1 is achieved
--- via separate Supabase projects, not separate schemas.
+-- Tables live in the pre_registration schema within the shared Supabase project.
 
 -- Enable UUID generation
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+-- Target the pre_registration schema
+SET search_path TO pre_registration, public;
 
 -- Auto-update updated_at trigger function
 CREATE OR REPLACE FUNCTION update_updated_at()
