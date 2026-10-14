@@ -1,5 +1,5 @@
 // RunFeis logo, drawn from the brand sheet (Logo 1A, Oct 2026).
-// "color" sits on cream/white; "onGreen" is the all-cream version for green headers.
+// "color" sits on cream/white; "onGreen" is the main app banner: cream wordmark, tricolour shoes.
 
 const BRAND = {
   green: '#2F7A52',
@@ -8,7 +8,20 @@ const BRAND = {
   cream: '#FBF9F4'
 }
 
-type Tone = 'dark' | 'light'
+// dark: black shoe (on cream). light: cream shoe (reversed, dark backgrounds).
+// tricolor: green/white/orange shoe with a cream outline (on the green app banner).
+type Tone = 'dark' | 'light' | 'tricolor'
+
+const SHOE_OUTLINE =
+  'M8 34 C6 22 14 12 26 14 C34 16 40 22 46 26 L64 34 C84 40 104 44 114 52 C120 58 116 64 106 64 L26 64 C12 64 8 52 8 34 Z'
+const LACE_HOLES: Array<[number, number]> = [
+  [50, 32.5],
+  [58, 36],
+  [66, 39.5],
+  [75, 42.5],
+  [84, 45],
+  [93, 47.5]
+]
 
 function Shoe({
   tone,
@@ -21,24 +34,58 @@ function Shoe({
   rotate: number
   nudgeY?: number
 }) {
-  const fill = tone === 'dark' ? BRAND.black : BRAND.cream
-  const line = tone === 'dark' ? '#F6F3EC' : BRAND.black
+  const body = tone === 'dark' ? BRAND.black : tone === 'light' ? BRAND.cream : 'url(#runfeis-tri)'
+  const outline = tone === 'dark' ? BRAND.black : BRAND.cream
+  const detail = tone === 'dark' ? '#F3EAD6' : BRAND.black
+  const hole = tone === 'tricolor' ? BRAND.cream : detail
   return (
     <svg
-      viewBox="0 0 120 72"
+      viewBox="-3 -3 126 78"
       width={width}
-      height={(width * 72) / 120}
+      height={(width * 78) / 126}
       aria-hidden="true"
       style={{ flexShrink: 0, transform: `rotate(${rotate}deg) translateY(${nudgeY}px)` }}
     >
+      {tone === 'tricolor' && (
+        <defs>
+          <linearGradient id="runfeis-tri" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0" stopColor={BRAND.green} />
+            <stop offset=".36" stopColor={BRAND.green} />
+            <stop offset=".36" stopColor={BRAND.cream} />
+            <stop offset=".64" stopColor={BRAND.cream} />
+            <stop offset=".64" stopColor={BRAND.orange} />
+            <stop offset="1" stopColor={BRAND.orange} />
+          </linearGradient>
+        </defs>
+      )}
       <path
-        fill={fill}
-        d="M12 22 C20 15 33 17 41 23 L58 30 C78 34 100 38 110 46 C117 51 116 58 108 58 L38 58 C33 58 31 54 27 54 L27 67 L9 67 L9 54 C7 45 7 30 12 22 Z"
+        fill={body}
+        stroke={outline}
+        strokeWidth={3.5}
+        strokeLinejoin="round"
+        d={SHOE_OUTLINE}
       />
-      <path fill="none" stroke={line} strokeWidth={2.5} strokeLinecap="round" d="M40 54.5 L106 54.5" />
-      <path fill="none" stroke={line} strokeWidth={2.5} strokeLinecap="round" d="M43 25 C45 33 47 41 50 49" />
-      <rect x={40} y={31} width={10} height={9} rx={1.5} fill={fill} stroke={line} strokeWidth={2} />
-      <path fill="none" stroke={line} strokeWidth={2} strokeLinecap="round" d="M11 61 L25 61" />
+      <path fill={detail} d="M13 23 C19 15 31 15 40 23 C31 20 21 21 13 28 Z" />
+      <path
+        fill="none"
+        stroke={detail}
+        strokeWidth={3.5}
+        strokeLinecap="round"
+        d="M15 32 C18 46 32 56 64 59"
+      />
+      {LACE_HOLES.map(([cx, cy]) => (
+        <ellipse
+          key={cx}
+          cx={cx}
+          cy={cy}
+          rx={5.2}
+          ry={2.7}
+          transform={`rotate(-58 ${cx} ${cy})`}
+          fill={hole}
+          stroke={tone === 'tricolor' ? BRAND.black : 'none'}
+          strokeWidth={1.4}
+        />
+      ))}
     </svg>
   )
 }
@@ -57,7 +104,7 @@ function SpeedLines({ tone, width }: { tone: Tone; width: number }) {
         stroke={tone === 'dark' ? BRAND.black : BRAND.cream}
         strokeWidth={4}
         strokeLinecap="round"
-        d="M8 8 L52 8 M20 20 L52 20 M30 32 L52 32"
+        d="M54 4 C32 4 14 14 8 32 M54 17 C40 17 28 23 24 34"
       />
     </svg>
   )
@@ -82,7 +129,7 @@ export function RunFeisLogo({
   className?: string
 }) {
   const { text, shoe } = SIZES[size]
-  const tone: Tone = variant === 'color' ? 'dark' : 'light'
+  const tone: Tone = variant === 'color' ? 'dark' : 'tricolor'
   const run = variant === 'color' ? BRAND.green : BRAND.cream
   const feis = variant === 'color' ? BRAND.orange : BRAND.cream
 
@@ -94,7 +141,10 @@ export function RunFeisLogo({
       style={{ gap: text * 0.12 }}
     >
       {full && (
-        <span className="inline-flex items-center" style={{ transform: `translateY(${text * 0.25}px)` }}>
+        <span
+          className="inline-flex items-center"
+          style={{ transform: `translateY(${text * 0.25}px)` }}
+        >
           <SpeedLines tone={tone} width={shoe * 0.43} />
           <Shoe tone={tone} width={shoe} rotate={18} />
         </span>
