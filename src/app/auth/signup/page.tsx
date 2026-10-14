@@ -4,6 +4,7 @@ import { Suspense, useState, type FormEvent } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { useSupabase } from '@/hooks/use-supabase'
+import { RunFeisLogo } from '@/components/runfeis-logo'
 
 function SignupForm() {
   const supabase = useSupabase()
@@ -86,7 +87,9 @@ function SignupForm() {
     <div className="mx-auto mt-20 max-w-md px-6">
       <div className="feis-card p-8">
         <div className="mb-8 text-center">
-          <h1 className="text-2xl font-bold">RunFeis</h1>
+          <h1 className="flex justify-center">
+            <RunFeisLogo size="md" full />
+          </h1>
           <p className="mt-1 text-sm text-muted-foreground">
             Create your account
           </p>

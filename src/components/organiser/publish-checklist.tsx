@@ -59,7 +59,7 @@ export function PublishChecklist({ blocks, warnings, passed = [] }: PublishCheck
           className="flex items-start gap-2 rounded-md border border-feis-orange/20 bg-feis-orange/5 px-4 py-3 text-sm"
         >
           <svg
-            className="mt-0.5 h-4 w-4 flex-shrink-0 text-feis-orange"
+            className="mt-0.5 h-4 w-4 flex-shrink-0 text-feis-orange-ink"
             viewBox="0 0 20 20"
             fill="currentColor"
           >
@@ -69,7 +69,7 @@ export function PublishChecklist({ blocks, warnings, passed = [] }: PublishCheck
               clipRule="evenodd"
             />
           </svg>
-          <span className="text-feis-orange">{warning}</span>
+          <span className="text-feis-orange-ink">{warning}</span>
         </div>
       ))}
 

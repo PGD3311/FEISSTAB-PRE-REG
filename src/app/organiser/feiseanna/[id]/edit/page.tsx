@@ -41,7 +41,7 @@ export default async function EditFeisDetailsPage({
       <h1 className="mb-6 text-2xl">Edit Details</h1>
 
       {typedListing.status === 'open' && (
-        <div className="mb-6 rounded-md border-l-4 border-feis-orange bg-feis-orange-light p-4 text-sm text-feis-orange">
+        <div className="mb-6 rounded-md border-l-4 border-feis-orange bg-feis-orange-light p-4 text-sm text-feis-orange-ink">
           This feis has published registration. Changes to date or venue
           will affect registered families.
         </div>

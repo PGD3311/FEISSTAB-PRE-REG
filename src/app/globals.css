@@ -50,56 +50,58 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 
   /* RunFeis — precision palette */
-  --color-feis-green: #0B4D2C;
-  --color-feis-green-600: #0E6B3A;
-  --color-feis-green-700: #0A3F24;
-  --color-feis-green-light: #EBF4EF;
-  --color-feis-cream: #F7F8FA;
-  --color-feis-cream-dark: #EFF1F3;
-  --color-feis-orange: #D4652A;
-  --color-feis-orange-light: #FEF3EC;
+  --color-feis-green: #2F7A52;
+  --color-feis-green-600: #286A47;
+  --color-feis-green-700: #1F5538;
+  --color-feis-green-light: #E8F2EC;
+  --color-feis-cream: #FBF9F4;
+  --color-feis-cream-dark: #F1EDE4;
+  --color-feis-orange: #D0802F;
+  /* Brand orange is ~3:1 on cream; small text uses this deeper shade (4.6:1) */
+  --color-feis-orange-ink: #9A5A1A;
+  --color-feis-orange-light: #FBF1E6;
   --color-feis-gold: #C59D5F;
-  --color-feis-charcoal: #1A1D23;
+  --color-feis-charcoal: #17191B;
 }
 
 :root {
   /* RunFeis — Professional competition software */
-  --background: #F7F8FA;
-  --foreground: #1A1D23;
+  --background: #FBF9F4;
+  --foreground: #17191B;
   --card: #FFFFFF;
-  --card-foreground: #1A1D23;
+  --card-foreground: #17191B;
   --popover: #FFFFFF;
-  --popover-foreground: #1A1D23;
-  --primary: #0B4D2C;
+  --popover-foreground: #17191B;
+  --primary: #2F7A52;
   --primary-foreground: #FFFFFF;
-  --secondary: #EBF4EF;
-  --secondary-foreground: #0B4D2C;
-  --muted: #EFF1F3;
-  --muted-foreground: #636C76;
-  --accent: #EBF4EF;
-  --accent-foreground: #0B4D2C;
+  --secondary: #E8F2EC;
+  --secondary-foreground: #2F7A52;
+  --muted: #F1EDE4;
+  --muted-foreground: #615D55;
+  --accent: #E8F2EC;
+  --accent-foreground: #2F7A52;
   --destructive: #B91C1C;
-  --border: #D1D5DB;
-  --input: #D1D5DB;
-  --ring: #0B4D2C;
-  --chart-1: #0B4D2C;
-  --chart-2: #0E6B3A;
-  --chart-3: #D4652A;
+  --border: #DDD8CD;
+  --input: #D3CDC0;
+  --ring: #2F7A52;
+  --chart-1: #2F7A52;
+  --chart-2: #1F5538;
+  --chart-3: #D0802F;
   --chart-4: #C59D5F;
-  --chart-5: #1A1D23;
+  --chart-5: #17191B;
   --radius: 0.375rem;
-  --sidebar: #0B4D2C;
+  --sidebar: #2F7A52;
   --sidebar-foreground: #FFFFFF;
-  --sidebar-primary: #EBF4EF;
-  --sidebar-primary-foreground: #0B4D2C;
-  --sidebar-accent: #0A3F24;
+  --sidebar-primary: #E8F2EC;
+  --sidebar-primary-foreground: #2F7A52;
+  --sidebar-accent: #1F5538;
   --sidebar-accent-foreground: #FFFFFF;
-  --sidebar-border: #0A3F24;
+  --sidebar-border: #1F5538;
   --sidebar-ring: #C59D5F;
 
   /* Single font system */
-  --font-display: 'Outfit', system-ui, -apple-system, sans-serif;
-  --font-body: 'Outfit', system-ui, -apple-system, sans-serif;
+  --font-display: 'Archivo', system-ui, -apple-system, sans-serif;
+  --font-body: 'Archivo', system-ui, -apple-system, sans-serif;
 }
 
 @layer base {
@@ -146,12 +148,12 @@
 
   /* Left accent border for featured panels */
   .feis-accent-left {
-    border-left: 3px solid #0B4D2C;
+    border-left: 3px solid #2F7A52;
   }
 
   /* Orange accent for action-needed states */
   .feis-accent-orange {
-    border-left: 3px solid #D4652A;
+    border-left: 3px solid #D0802F;
   }
 
   /* Clean background — no texture */
@@ -163,7 +165,7 @@
   .feis-number {
     font-family: ui-monospace, 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
     font-weight: 700;
-    color: #0B4D2C;
+    color: #2F7A52;
     font-variant-numeric: tabular-nums;
   }
 
@@ -174,7 +176,7 @@
 
   /* Table header — dense, functional */
   .feis-thead {
-    background-color: #0B4D2C;
+    background-color: #2F7A52;
     color: #FFFFFF;
   }
   .feis-thead th {
@@ -203,7 +205,7 @@
     font-weight: 700;
     font-size: 1.75rem;
     line-height: 1;
-    color: #0B4D2C;
+    color: #2F7A52;
     font-variant-numeric: tabular-nums;
   }
 

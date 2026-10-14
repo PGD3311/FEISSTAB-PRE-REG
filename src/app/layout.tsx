@@ -1,11 +1,14 @@
 import type { Metadata } from 'next'
-import { Outfit } from 'next/font/google'
+import { Archivo } from 'next/font/google'
 import { Geist_Mono } from 'next/font/google'
 import './globals.css'
 
-const outfit = Outfit({
+// Brand type: Archivo 400/500/700 for body, 900 italic for the logo and headlines
+const archivo = Archivo({
   variable: '--font-body',
   subsets: ['latin'],
+  weight: ['400', '500', '600', '700', '900'],
+  style: ['normal', 'italic'],
   display: 'swap',
 })
 
@@ -27,7 +30,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${outfit.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${archivo.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">{children}</body>
     </html>

@@ -45,7 +45,7 @@ export function StatusActions({ listingId, status }: StatusActionsProps) {
         type="button"
         onClick={() => handleTransition('closed')}
         disabled={isPending}
-        className="rounded-md bg-feis-orange-light px-4 py-2 text-sm font-medium text-feis-orange hover:bg-feis-orange/10 disabled:cursor-not-allowed disabled:opacity-40"
+        className="rounded-md bg-feis-orange-light px-4 py-2 text-sm font-medium text-feis-orange-ink hover:bg-feis-orange/10 disabled:cursor-not-allowed disabled:opacity-40"
       >
         {isPending ? 'Closing...' : 'Close Registration'}
       </button>

@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
 import { parseLocalDate } from '@/lib/format'
 import type { FeisListing } from '@/lib/types/feis-listing'
+import { RunFeisLogo } from '@/components/runfeis-logo'
 
 export const dynamic = 'force-dynamic'
 
@@ -105,11 +106,8 @@ export default async function HomePage() {
       {/* Nav — dark green with gold accent */}
       <nav className="feis-hero-nav">
         <div className="mx-auto flex max-w-4xl items-center justify-between px-6 py-3">
-          <Link href="/" className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-md bg-white/15">
-              <span className="text-sm font-bold text-white">FT</span>
-            </div>
-            <span className="text-lg font-bold tracking-tight text-white">RunFeis</span>
+          <Link href="/" className="flex items-center">
+            <RunFeisLogo variant="onGreen" size="sm" />
           </Link>
           <div className="flex items-center gap-3">
             {user ? (

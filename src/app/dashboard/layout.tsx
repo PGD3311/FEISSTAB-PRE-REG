@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import { ViewToggle } from '@/components/navigation/view-toggle'
+import { RunFeisLogo } from '@/components/runfeis-logo'
 
 export const dynamic = 'force-dynamic'
 
@@ -33,8 +34,8 @@ export default async function DashboardLayout({
       <nav className="border-b bg-white">
         <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-3">
           <div className="flex items-center gap-6">
-            <Link href="/dashboard" className="text-lg font-bold text-primary">
-              RunFeis
+            <Link href="/dashboard" className="flex items-center">
+              <RunFeisLogo size="sm" />
             </Link>
             <div className="flex items-center gap-4 text-sm">
               <Link href="/dashboard" className="font-medium text-foreground hover:text-primary">

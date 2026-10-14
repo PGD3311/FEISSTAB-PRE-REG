@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { LogoutButton } from '@/components/logout-button'
+import { RunFeisLogo } from '@/components/runfeis-logo'
 
 export const dynamic = 'force-dynamic'
 
@@ -22,7 +23,7 @@ export default async function OrganiserLayout({
     <>
       <nav className="feis-nav-accent bg-primary text-primary-foreground">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
-          <span className="text-xl font-bold">RunFeis</span>
+          <RunFeisLogo variant="onGreen" size="sm" />
           <div className="flex items-center gap-4">
             <span className="text-sm opacity-80">{user.email}</span>
             <LogoutButton />

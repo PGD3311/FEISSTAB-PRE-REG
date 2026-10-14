@@ -20,7 +20,7 @@ interface ClonePickerProps {
 const statusStyles: Record<ListingStatus, string> = {
   draft: 'bg-muted text-muted-foreground',
   open: 'bg-secondary text-primary',
-  closed: 'bg-feis-orange-light text-feis-orange',
+  closed: 'bg-feis-orange-light text-feis-orange-ink',
   launched: 'bg-primary text-primary-foreground',
 }
 

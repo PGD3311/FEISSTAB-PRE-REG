@@ -66,12 +66,12 @@ export async function sendConfirmationEmail(
 
   const html = `
     <div style="font-family: system-ui, -apple-system, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-      <h1 style="color: #0B4D2C; margin-bottom: 4px;">You're registered!</h1>
+      <h1 style="color: #2F7A52; margin-bottom: 4px;">You're registered!</h1>
       <h2 style="color: #666; font-weight: normal; margin-top: 0;">${feis.name}</h2>
 
       <div style="background: #EBF4EF; border-radius: 8px; padding: 16px; margin: 20px 0; text-align: center;">
         <div style="color: #666; font-size: 14px;">Confirmation Number</div>
-        <div style="font-size: 28px; font-weight: bold; color: #0B4D2C; font-family: monospace;">${reg.confirmation_number}</div>
+        <div style="font-size: 28px; font-weight: bold; color: #2F7A52; font-family: monospace;">${reg.confirmation_number}</div>
       </div>
 
       <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
