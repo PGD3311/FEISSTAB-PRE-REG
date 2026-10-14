@@ -101,7 +101,7 @@ export async function sendConfirmationEmail(
       ${feis.contact_email ? `<p style="color: #666; font-size: 14px;">Questions? Contact the organiser: <a href="mailto:${feis.contact_email}">${feis.contact_email}</a></p>` : ''}
 
       <p style="color: #999; font-size: 12px; margin-top: 20px;">
-        Sent by FeisTab — <a href="${process.env.NEXT_PUBLIC_BASE_URL}/dashboard">View your registrations</a>
+        Sent by RunFeis — <a href="${process.env.NEXT_PUBLIC_BASE_URL}/dashboard">View your registrations</a>
       </p>
     </div>
   `
@@ -116,7 +116,7 @@ export async function sendConfirmationEmail(
 
   try {
     await resend.emails.send({
-      from: process.env.EMAIL_FROM ?? 'FeisTab <noreply@feistab.com>',
+      from: process.env.EMAIL_FROM ?? 'RunFeis <noreply@feistab.com>',
       to: user.email,
       subject: `You're registered for ${feis.name}`,
       html,

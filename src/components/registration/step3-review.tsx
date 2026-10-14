@@ -229,7 +229,7 @@ export function Step3Review({
             className="mt-0.5 h-4 w-4 rounded border-input accent-primary"
           />
           <span className="text-sm text-muted-foreground">
-            I agree to FeisTab&apos;s{' '}
+            I agree to RunFeis&apos;s{' '}
             <Link href="/terms" className="font-medium text-primary hover:underline" target="_blank">
               Terms of Service
             </Link>{' '}

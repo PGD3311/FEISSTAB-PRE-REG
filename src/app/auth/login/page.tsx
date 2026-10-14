@@ -48,7 +48,7 @@ function LoginForm() {
     <div className="mx-auto mt-20 max-w-md px-6">
       <div className="feis-card p-8">
         <div className="mb-8 text-center">
-          <h1 className="text-2xl font-bold">FeisTab</h1>
+          <h1 className="text-2xl font-bold">RunFeis</h1>
           <p className="mt-1 text-sm text-muted-foreground">
             Pre-Registration
           </p>

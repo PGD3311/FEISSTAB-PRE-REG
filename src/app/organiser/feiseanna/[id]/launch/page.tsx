@@ -89,7 +89,7 @@ export default async function LaunchPage({
             This feis has been launched
           </h2>
           <p className="mb-4 text-sm text-muted-foreground">
-            Registration data was transferred to FeisTab on{' '}
+            Registration data was transferred to RunFeis on{' '}
             {formatDateTime(typedListing.launched_at, 'Not set')}.
           </p>
           {typedListing.launched_event_id && (

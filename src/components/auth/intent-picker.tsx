@@ -31,7 +31,7 @@ export function IntentPicker() {
     <div className="mx-auto mt-20 max-w-md px-6">
       <div className="feis-card p-8">
         <div className="mb-8 text-center">
-          <h1 className="text-2xl font-bold">Welcome to FeisTab</h1>
+          <h1 className="text-2xl font-bold">Welcome to RunFeis</h1>
           <p className="mt-2 text-sm text-muted-foreground">What do you want to do first?</p>
         </div>
 

@@ -34,7 +34,7 @@ export default async function DashboardLayout({
         <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-3">
           <div className="flex items-center gap-6">
             <Link href="/dashboard" className="text-lg font-bold text-primary">
-              FeisTab
+              RunFeis
             </Link>
             <div className="flex items-center gap-4 text-sm">
               <Link href="/dashboard" className="font-medium text-foreground hover:text-primary">

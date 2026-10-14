@@ -22,7 +22,7 @@ export default async function OrganiserLayout({
     <>
       <nav className="feis-nav-accent bg-primary text-primary-foreground">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
-          <span className="text-xl font-bold">FeisTab</span>
+          <span className="text-xl font-bold">RunFeis</span>
           <div className="flex items-center gap-4">
             <span className="text-sm opacity-80">{user.email}</span>
             <LogoutButton />

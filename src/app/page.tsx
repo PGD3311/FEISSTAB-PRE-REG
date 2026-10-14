@@ -109,7 +109,7 @@ export default async function HomePage() {
             <div className="flex h-8 w-8 items-center justify-center rounded-md bg-white/15">
               <span className="text-sm font-bold text-white">FT</span>
             </div>
-            <span className="text-lg font-bold tracking-tight text-white">FeisTab</span>
+            <span className="text-lg font-bold tracking-tight text-white">RunFeis</span>
           </Link>
           <div className="flex items-center gap-3">
             {user ? (
@@ -328,7 +328,7 @@ export default async function HomePage() {
       <footer className="mt-auto border-t bg-white">
         <div className="mx-auto flex max-w-4xl items-center justify-between px-6 py-6">
           <div className="text-xs text-muted-foreground">
-            FeisTab — Irish dance competition management
+            RunFeis — Irish dance competition management
           </div>
           <div className="flex items-center gap-4 text-xs text-muted-foreground">
             <Link href="/auth/login" className="hover:text-foreground">Sign In</Link>

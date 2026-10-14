@@ -122,7 +122,7 @@ function OverviewTab({
         <div className="feis-card border-primary/30 p-5">
           <h2 className="mb-2 text-lg font-semibold">Feis Day Launched</h2>
           <p className="text-sm text-muted-foreground">
-            Registration data was transferred to FeisTab on{' '}
+            Registration data was transferred to RunFeis on{' '}
             {formatDateTime(listing.launched_at, 'Not set')}.
             This listing is now read-only.
           </p>

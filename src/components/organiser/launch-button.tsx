@@ -93,7 +93,7 @@ export function LaunchButton({ listingId, disabled }: LaunchButtonProps) {
           <h3 className="mb-2 text-lg font-semibold">Confirm Launch</h3>
           <p className="mb-4 text-sm text-muted-foreground">
             This action is irreversible. Registration data will be transferred to
-            FeisTab for competition day and this listing will become read-only.
+            RunFeis for competition day and this listing will become read-only.
           </p>
           <div className="flex items-center gap-3">
             <button

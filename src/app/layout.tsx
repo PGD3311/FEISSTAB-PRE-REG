@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 })
 
 export const metadata: Metadata = {
-  title: 'FeisTab Pre-Registration',
+  title: 'RunFeis Pre-Registration',
   description: 'Organiser feis setup and parent registration for Irish dance competitions',
 }
 
