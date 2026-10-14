@@ -729,6 +729,24 @@ export async function launchFeisDay(feisListingId: string) {
     return { error: 'No paid registrations found. Nothing to launch.' }
   }
 
+  // Number any paid registration the payment webhook missed, then load numbers
+  const { error: numberingError } = await supabase.rpc('assign_missing_competitor_numbers', {
+    p_feis_listing_id: feisListingId,
+  })
+  if (numberingError) {
+    console.error('[BRIDGE] Failed to assign missing competitor numbers:', numberingError)
+    return { error: 'Failed to assign competitor numbers' }
+  }
+
+  const { data: competitorNumbers, error: numbersError } = await supabase
+    .from('competitor_numbers')
+    .select('dancer_id, competitor_number')
+    .eq('feis_listing_id', feisListingId)
+
+  if (numbersError || !competitorNumbers) {
+    return { error: 'Failed to fetch competitor numbers' }
+  }
+
   // 3. Fetch all data for the bridge
   const { data: competitions } = await supabase
     .from('feis_competitions')
@@ -768,6 +786,7 @@ export async function launchFeisDay(feisListingId: string) {
         venue_address: listing.venue_address,
       },
       competitions: competitions ?? [],
+      competitorNumbers,
       entries: (entries ?? []).map((e: Record<string, unknown>) => {
         const dancer = e.dancers as Record<string, string | null>
         return {
@@ -798,7 +817,7 @@ export async function launchFeisDay(feisListingId: string) {
     }
 
     console.log(`[BRIDGE] Phase 1 event created: ${result.eventId}`)
-    console.log(`[BRIDGE] Bridge complete: ${result.competitionsCreated} competitions, ${result.dancersCreated} dancers, ${result.registrationsCreated} registrations`)
+    console.log(`[BRIDGE] Bridge complete: ${result.competitionsCreated} competitions, ${result.dancersCreated} dancers, ${result.registrationsCreated} registrations, ${result.competitorNumbersAssigned} competitor numbers`)
 
     return {
       eventId: result.eventId,

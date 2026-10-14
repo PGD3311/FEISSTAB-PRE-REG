@@ -1,7 +1,23 @@
 import { NextResponse } from 'next/server'
 import type Stripe from 'stripe'
 import { getStripe } from '@/lib/stripe'
-import { createServiceClient } from '@/lib/supabase/service'
+import { createServiceClient, type ServiceClient } from '@/lib/supabase/service'
+
+
+// Competitor numbers go out in payment order. Idempotent, so Stripe retries are safe.
+async function assignCompetitorNumbers(
+  supabase: ServiceClient,
+  registrationId: string
+): Promise<boolean> {
+  const { error } = await supabase.rpc('assign_competitor_numbers', {
+    p_registration_id: registrationId,
+  })
+  if (error) {
+    console.error(`Failed to assign competitor numbers for registration ${registrationId}:`, error)
+    return false
+  }
+  return true
+}
 
 function generateConfirmationNumber(): string {
   const year = new Date().getFullYear()
@@ -67,6 +83,10 @@ export async function POST(request: Request) {
     }
 
     if (registration.status === 'paid') {
+      // A previous delivery may have failed after marking paid but before numbering
+      if (!(await assignCompetitorNumbers(supabase, registrationId))) {
+        return NextResponse.json({ error: 'Failed to assign competitor numbers' }, { status: 500 })
+      }
       return NextResponse.json({ received: true, already_processed: true })
     }
 
@@ -122,6 +142,7 @@ export async function POST(request: Request) {
         total_cents: session.amount_total ?? 0,
         confirmation_number: confirmationNumber,
         hold_expires_at: null,
+        paid_at: new Date().toISOString(),
       })
       .eq('id', registrationId)
 
@@ -129,6 +150,10 @@ export async function POST(request: Request) {
       console.error('Failed to update registration:', updateError)
       return NextResponse.json({ error: 'Failed to update registration' }, { status: 500 })
     }
+
+    // On failure, still snapshot and email, then return 500 so Stripe retries;
+    // the already-paid branch above re-runs the assignment
+    const numbersAssigned = await assignCompetitorNumbers(supabase, registrationId)
 
     // Create registration snapshot
     const { data: fullReg, error: snapFetchError } = await supabase
@@ -160,6 +185,10 @@ export async function POST(request: Request) {
       await sendConfirmationEmail(registrationId, supabase)
     } catch (err) {
       console.error('Failed to send confirmation email:', err)
+    }
+
+    if (!numbersAssigned) {
+      return NextResponse.json({ error: 'Failed to assign competitor numbers' }, { status: 500 })
     }
   }
 

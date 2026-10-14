@@ -30,6 +30,10 @@ interface PreRegData {
     level_key: string | null
     level_label: string | null
   }[]
+  competitorNumbers: {
+    dancer_id: string
+    competitor_number: number
+  }[]
   entries: {
     id: string
     dancer_id: string
@@ -46,6 +50,7 @@ export interface BridgeResult {
   competitionsCreated: number
   dancersCreated: number
   registrationsCreated: number
+  competitorNumbersAssigned: number
 }
 
 export async function executeBridge(data: PreRegData): Promise<BridgeResult> {
@@ -272,6 +277,22 @@ export async function executeBridge(data: PreRegData): Promise<BridgeResult> {
       }
     }
 
+    // Competitor numbers were assigned at registration; carry them across so the
+    // desk only hands out cards. Keyed by Phase 1 dancer ID.
+    const numberByDancer = new Map<string, string>()
+    for (const row of data.competitorNumbers) {
+      const phase1DancerId = dancerMap.get(row.dancer_id)
+      if (!phase1DancerId) continue
+      const number = String(row.competitor_number)
+      const existing = numberByDancer.get(phase1DancerId)
+      if (existing && existing !== number) {
+        throw new Error(
+          `Dancer ${phase1DancerId} matched two pre-reg dancers with numbers ${existing} and ${number}`
+        )
+      }
+      numberByDancer.set(phase1DancerId, number)
+    }
+
     // 4. Create registrations with external IDs (upsert for idempotency)
     const registrationRows = data.entries
       .map((entry) => {
@@ -283,6 +304,7 @@ export async function executeBridge(data: PreRegData): Promise<BridgeResult> {
           dancer_id: phase1DancerId,
           competition_id: phase1CompId,
           status: 'registered',
+          competitor_number: numberByDancer.get(phase1DancerId) ?? null,
           prereg_registration_entry_id: entry.id,
         }
       })
@@ -295,6 +317,25 @@ export async function executeBridge(data: PreRegData): Promise<BridgeResult> {
 
       if (regsError) {
         throw new Error(`Failed to create Phase 1 registrations: ${regsError.message}`)
+      }
+    }
+
+    // Pre-assign numbers on the event: a check-in row with no arrival time is
+    // "number assigned, not arrived yet". Rows from an earlier run are left alone.
+    const checkInRows = [...numberByDancer].map(([dancerId, number]) => ({
+      event_id: event.id,
+      dancer_id: dancerId,
+      competitor_number: number,
+      checked_in_by: 'prereg',
+    }))
+
+    if (checkInRows.length > 0) {
+      const { error: checkInError } = await phase1
+        .from('event_check_ins')
+        .upsert(checkInRows, { onConflict: 'event_id,dancer_id', ignoreDuplicates: true })
+
+      if (checkInError) {
+        throw new Error(`Failed to assign Phase 1 competitor numbers: ${checkInError.message}`)
       }
     }
 
@@ -313,6 +354,7 @@ export async function executeBridge(data: PreRegData): Promise<BridgeResult> {
       competitionsCreated: createdComps.length,
       dancersCreated: dancerMap.size,
       registrationsCreated: registrationRows.length,
+      competitorNumbersAssigned: checkInRows.length,
     }
   } catch (err) {
     // Mark import as failed on the event (if it was created)
