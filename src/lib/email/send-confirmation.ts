@@ -1,5 +1,5 @@
 import { Resend } from 'resend'
-import type { SupabaseClient } from '@supabase/supabase-js'
+import type { ServiceClient } from '@/lib/supabase/service'
 import { formatCents, formatDate } from '@/lib/format'
 
 const resend = process.env.RESEND_API_KEY
@@ -8,7 +8,7 @@ const resend = process.env.RESEND_API_KEY
 
 export async function sendConfirmationEmail(
   registrationId: string,
-  supabase: SupabaseClient
+  supabase: ServiceClient
 ) {
   const { data: reg, error } = await supabase
     .from('registrations')

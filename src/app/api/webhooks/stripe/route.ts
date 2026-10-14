@@ -1,15 +1,7 @@
 import { NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
-import { getStripe } from '@/lib/stripe'
 import type Stripe from 'stripe'
-
-// Use service_role for webhook handler (no user auth context)
-function createServiceClient() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
-  )
-}
+import { getStripe } from '@/lib/stripe'
+import { createServiceClient } from '@/lib/supabase/service'
 
 function generateConfirmationNumber(): string {
   const year = new Date().getFullYear()
