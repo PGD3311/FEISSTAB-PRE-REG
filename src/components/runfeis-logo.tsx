@@ -111,7 +111,7 @@ function SpeedLines({ tone, width }: { tone: Tone; width: number }) {
 }
 
 const SIZES = {
-  sm: { text: 20, shoe: 30 },
+  sm: { text: 22, shoe: 46 },
   md: { text: 34, shoe: 50 },
   lg: { text: 52, shoe: 76 }
 }
@@ -138,7 +138,8 @@ export function RunFeisLogo({
       role="img"
       aria-label="RunFeis"
       className={`inline-flex items-center ${className ?? ''}`}
-      style={{ gap: text * 0.12 }}
+      // The tilted shoes overhang the text box; reserve room so they don't crowd neighbours
+      style={{ gap: text * 0.12, paddingBlock: text * 0.35 }}
     >
       {full && (
         <span
