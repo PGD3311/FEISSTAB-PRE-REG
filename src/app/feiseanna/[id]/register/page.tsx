@@ -5,6 +5,7 @@ import { useParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useSupabase } from '@/hooks/use-supabase'
 import { parseLocalDate } from '@/lib/format'
+import { isHouseholdComplete } from '@/lib/household'
 import { getExistingRegistration, createDraftRegistration, createCheckoutSession, cancelRegistration } from './actions'
 import { calculateFees } from '@/lib/engine/fee-calculator'
 import { Step1Dancers } from '@/components/registration/step1-dancers'
@@ -343,12 +344,18 @@ export default function RegisterPage() {
 
         const { data: household, error: householdError } = await supabase
           .from('households')
-          .select('id')
+          .select('id, first_name, last_name, phone, address_line1, city, state_region, postal_code')
           .eq('user_id', user.id)
           .single()
 
         if (householdError || !household) {
           router.push('/auth/onboarding')
+          return
+        }
+
+        // The feis needs a contact name, phone and address before anyone registers
+        if (!isHouseholdComplete(household)) {
+          router.push(`/dashboard/account?next=${encodeURIComponent(`/feiseanna/${feisId}/register`)}`)
           return
         }
 

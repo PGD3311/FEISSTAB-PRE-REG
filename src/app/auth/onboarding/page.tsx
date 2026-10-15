@@ -42,5 +42,5 @@ export default async function OnboardingPage() {
     redirect('/dashboard')
   }
 
-  redirect('/dashboard/dancers/new')
+  redirect('/dashboard/account?welcome=1&next=/dashboard/dancers/new')
 }

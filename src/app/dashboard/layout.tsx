@@ -44,6 +44,9 @@ export default async function DashboardLayout({
               <Link href="/dashboard/dancers" className="text-muted-foreground hover:text-foreground">
                 Dancers
               </Link>
+              <Link href="/dashboard/account" className="text-muted-foreground hover:text-foreground">
+                Family
+              </Link>
               <Link href="/feiseanna" className="text-muted-foreground hover:text-foreground">
                 Browse Feiseanna
               </Link>

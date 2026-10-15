@@ -3,6 +3,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { canTransitionRegistration } from '@/lib/registration-states'
 import { calculateFees } from '@/lib/engine/fee-calculator'
+import { isHouseholdComplete } from '@/lib/household'
 import type {
   RegistrationStatus,
   FeeSchedule,
@@ -100,11 +101,14 @@ export async function createDraftRegistration(input: CreateDraftInput) {
 
   const { data: household } = await supabase
     .from('households')
-    .select('id')
+    .select('id, first_name, last_name, phone, address_line1, city, state_region, postal_code')
     .eq('user_id', user.id)
     .single()
 
   if (!household) return { error: 'Household not found' }
+  if (!isHouseholdComplete(household)) {
+    return { error: 'Please add your family details (name, phone and address) before registering.' }
+  }
 
   // Fetch fee schedule and listing in parallel (both use feisListingId)
   const [{ data: feeSchedule, error: feeError }, { data: listing }] = await Promise.all([

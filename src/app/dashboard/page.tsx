@@ -2,6 +2,7 @@ import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { formatDate, formatCents } from '@/lib/format'
+import { isHouseholdComplete } from '@/lib/household'
 import type { Registration, Dancer, RegistrationStatus } from '@/lib/types/feis-listing'
 
 export const dynamic = 'force-dynamic'
@@ -21,11 +22,12 @@ export default async function DashboardPage() {
 
   const { data: household } = await supabase
     .from('households')
-    .select('id')
+    .select('id, first_name, last_name, phone, address_line1, city, state_region, postal_code')
     .eq('user_id', user.id)
     .single()
 
   if (!household) redirect('/auth/onboarding')
+  const detailsComplete = isHouseholdComplete(household)
 
   // Get dancers and registrations in parallel (both use household.id)
   const [{ data: dancers }, { data: registrations }] = await Promise.all([
@@ -66,6 +68,15 @@ export default async function DashboardPage() {
           Browse Feiseanna
         </Link>
       </div>
+
+      {!detailsComplete && (
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-md border border-[var(--color-feis-orange)]/30 bg-[var(--color-feis-orange)]/5 px-4 py-3 text-sm">
+          <span>Add your name, phone and address before you register for a feis.</span>
+          <Link href="/dashboard/account" className="font-medium text-primary hover:underline">
+            Add family details
+          </Link>
+        </div>
+      )}
 
       {/* Dancer filter chips */}
       {typedDancers.length > 0 && hasRegistrations && (

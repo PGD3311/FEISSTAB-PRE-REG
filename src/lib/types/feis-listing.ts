@@ -207,6 +207,21 @@ export type RegistrationStatus = 'draft' | 'pending_payment' | 'paid' | 'expired
 // ─── Championship status ───
 export type ChampionshipStatus = 'none' | 'prelim' | 'open'
 
+// ─── Household (family account) ───
+export interface Household {
+  id: string
+  user_id: string
+  first_name: string | null
+  last_name: string | null
+  phone: string | null
+  address_line1: string | null
+  address_line2: string | null
+  city: string | null
+  state_region: string | null
+  postal_code: string | null
+  country: string
+}
+
 // ─── Dancer types ───
 export interface Dancer {
   id: string
