@@ -26,6 +26,8 @@ function makeCompetition(overrides: Partial<FeisCompetition> = {}): FeisCompetit
     fee_category: 'solo',
     fee_cents: null,
     exclude_from_family_cap: false,
+    grades_only: false,
+    display_code: null,
     display_name: 'U12 Novice Reel',
     capacity_cap: null,
     enabled: true,
@@ -228,5 +230,27 @@ describe('getEligibleCompetitions', () => {
     expect(result.find(r => r.competition.id === 'c2')!.eligible).toBe(true)
     expect(result.find(r => r.competition.id === 'c3')!.eligible).toBe(false)
     expect(result.find(r => r.competition.id === 'c4')!.eligible).toBe(true)
+  })
+
+  it('grades-only competitions (e.g. Future Champ) are open to grades dancers', () => {
+    const comp = makeCompetition({ competition_type: 'custom', level_key: null, dance_key: null, grades_only: true })
+    const result = getEligibleCompetitions(noviceDancer, [comp], ageCutoff, LEVELS)
+    expect(result[0].eligible).toBe(true)
+  })
+
+  it('grades-only competitions are closed to prelim and open dancers', () => {
+    const comp = makeCompetition({ competition_type: 'custom', level_key: null, dance_key: null, grades_only: true })
+    for (const championshipStatus of ['prelim', 'open'] as const) {
+      const dancer: DancerProfile = { ...noviceDancer, championshipStatus }
+      const result = getEligibleCompetitions(dancer, [comp], ageCutoff, LEVELS)
+      expect(result[0].eligible).toBe(false)
+      expect(result[0].reason).toContain('grades')
+    }
+  })
+
+  it('a custom competition with an age group still checks age', () => {
+    const comp = makeCompetition({ competition_type: 'custom', level_key: null, dance_key: null, age_max_jan1: 7 })
+    const result = getEligibleCompetitions(noviceDancer, [comp], ageCutoff, LEVELS)
+    expect(result[0].eligible).toBe(false)
   })
 })

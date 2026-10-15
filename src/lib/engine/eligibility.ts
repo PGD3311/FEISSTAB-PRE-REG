@@ -51,6 +51,14 @@ export function getEligibleCompetitions(
       }
     }
 
+    if (comp.grades_only && dancer.championshipStatus !== 'none') {
+      return {
+        competition: comp,
+        eligible: false,
+        reason: 'Only for grades dancers (not prelim or open championship)'
+      }
+    }
+
     switch (comp.competition_type) {
       case 'solo': {
         if (!comp.dance_key || !comp.level_key) {

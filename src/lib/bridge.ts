@@ -25,6 +25,7 @@ interface PreRegData {
   competitions: {
     id: string
     display_name: string
+    display_code: string | null
     age_group_key: string | null
     age_group_label: string | null
     level_key: string | null
@@ -89,7 +90,7 @@ export async function executeBridge(data: PreRegData): Promise<BridgeResult> {
       event_id: event.id,
       prereg_feis_competition_id: comp.id,
       name: comp.display_name,
-      code: comp.display_name,
+      code: comp.display_code ?? comp.display_name,
       age_group: comp.age_group_label ?? comp.age_group_key,
       level: comp.level_label ?? comp.level_key,
       status: 'imported',

@@ -92,7 +92,12 @@ function CompetitionRow({
           )}
         </div>
         <div className="min-w-0">
-          <div className="truncate text-sm font-medium">{competition.display_name}</div>
+          <div className="truncate text-sm font-medium">
+            {competition.display_code && (
+              <span className="mr-1.5 font-mono text-muted-foreground">{competition.display_code}</span>
+            )}
+            {competition.display_name}
+          </div>
           {!eligible.eligible && (
             <div className="mt-0.5 truncate text-xs text-muted-foreground">{eligible.reason}</div>
           )}

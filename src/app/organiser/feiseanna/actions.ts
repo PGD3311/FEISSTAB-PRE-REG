@@ -4,7 +4,7 @@ import { redirect } from 'next/navigation'
 
 import { createClient } from '@/lib/supabase/server'
 import { expandSyllabus } from '@/lib/engine/syllabus-expander'
-import { startOfLocalDateIso } from '@/lib/timezone'
+import { endOfLocalDateIso, startOfLocalDateIso } from '@/lib/timezone'
 import {
   canTransitionListing,
   getListingTransitionBlockReasons,
@@ -519,12 +519,21 @@ export async function saveDeadlines(
     return { error: 'Registration open and close dates are required' }
   }
 
-  // Store dates as end-of-day timestamps
-  const reg_opens_at = `${reg_opens_at_raw}T23:59:59`
-  const reg_closes_at = `${reg_closes_at_raw}T23:59:59`
+  const { data: owned } = await supabase
+    .from('feis_listings')
+    .select('timezone')
+    .eq('id', listingId)
+    .eq('created_by', user.id)
+    .single()
+  if (!owned) return { error: 'Listing not found' }
+  const timeZone = owned.timezone ?? 'America/New_York'
+
+  // Registration opens at the start of its day and closes at the end of its day, at the feis
+  const reg_opens_at = startOfLocalDateIso(reg_opens_at_raw, timeZone)
+  const reg_closes_at = endOfLocalDateIso(reg_closes_at_raw, timeZone)
   const late_reg_closes_at =
     late_reg_closes_at_raw && late_reg_closes_at_raw.trim() !== ''
-      ? `${late_reg_closes_at_raw}T23:59:59`
+      ? endOfLocalDateIso(late_reg_closes_at_raw, timeZone)
       : null
   const dancer_cap =
     dancer_cap_raw && dancer_cap_raw.trim() !== ''
@@ -797,7 +806,7 @@ export async function launchFeisDay(feisListingId: string) {
   // 3. Fetch all data for the bridge
   const { data: competitions } = await supabase
     .from('feis_competitions')
-    .select('id, display_name, age_group_key, age_group_label, level_key, level_label')
+    .select('id, display_name, display_code, age_group_key, age_group_label, level_key, level_label')
     .eq('feis_listing_id', feisListingId)
     .eq('enabled', true)
 
@@ -876,4 +885,127 @@ export async function launchFeisDay(feisListingId: string) {
     console.error(`[BRIDGE] Launch failed for feis ${feisListingId}:`, err)
     return { error: `Bridge failed: ${err instanceof Error ? err.message : 'unknown error'}` }
   }
+}
+
+// ─── Competition editor ───
+
+export interface CompetitionEdit {
+  display_name: string
+  display_code: string
+  fee: string // dollars; blank = use the fee schedule
+  exclude_from_family_cap: boolean
+  grades_only: boolean
+  enabled: boolean
+}
+
+export interface NewCompetition extends Omit<CompetitionEdit, 'enabled'> {
+  age_group_key: string | null // null = all ages
+}
+
+const EDITABLE_STATUSES = ['draft', 'open']
+
+function parseCompetitionFields(
+  input: Omit<CompetitionEdit, 'enabled'>
+): { error: string } | { fields: Record<string, string | number | boolean | null> } {
+  const display_name = input.display_name.trim()
+  if (!display_name) return { error: 'Competition name is required' }
+  let fee_cents: number | null = null
+  if (input.fee.trim() !== '') {
+    const fee = parseFloat(input.fee)
+    if (!Number.isFinite(fee) || fee < 0) return { error: 'Price must be a positive amount' }
+    fee_cents = Math.round(fee * 100)
+  }
+  return {
+    fields: {
+      display_name,
+      display_code: input.display_code.trim() || null,
+      fee_cents,
+      exclude_from_family_cap: input.exclude_from_family_cap,
+      grades_only: input.grades_only,
+    },
+  }
+}
+
+async function getEditableListing(listingId: string) {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { error: 'Not authenticated' as const }
+
+  const { data: listing, error } = await supabase
+    .from('feis_listings')
+    .select('id, status, syllabus_snapshot')
+    .eq('id', listingId)
+    .eq('created_by', user.id)
+    .single()
+
+  if (error || !listing) return { error: 'Listing not found' as const }
+  if (!EDITABLE_STATUSES.includes(listing.status)) {
+    return { error: 'Competitions can only be changed before registration closes' as const }
+  }
+  return { supabase, listing }
+}
+
+export async function updateCompetition(listingId: string, competitionId: string, input: CompetitionEdit) {
+  const ctx = await getEditableListing(listingId)
+  if ('error' in ctx) return { error: ctx.error }
+
+  const parsed = parseCompetitionFields(input)
+  if ('error' in parsed) return { error: parsed.error }
+
+  const { error } = await ctx.supabase
+    .from('feis_competitions')
+    .update({ ...parsed.fields, enabled: input.enabled })
+    .eq('id', competitionId)
+    .eq('feis_listing_id', listingId)
+
+  if (error) {
+    console.error('Failed to update competition:', error)
+    return { error: 'Failed to save the competition' }
+  }
+  return { success: true as const }
+}
+
+export async function addCompetition(listingId: string, input: NewCompetition) {
+  const ctx = await getEditableListing(listingId)
+  if ('error' in ctx) return { error: ctx.error }
+
+  const parsed = parseCompetitionFields(input)
+  if ('error' in parsed) return { error: parsed.error }
+
+  const snapshot = ctx.listing.syllabus_snapshot as TemplateData | null
+  const age = input.age_group_key
+    ? snapshot?.age_groups.find((a) => a.key === input.age_group_key)
+    : null
+  if (input.age_group_key && !age) return { error: 'Unknown age group' }
+
+  const { data: last, error: lastError } = await ctx.supabase
+    .from('feis_competitions')
+    .select('sort_order')
+    .eq('feis_listing_id', listingId)
+    .order('sort_order', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (lastError) {
+    console.error('Failed to read competition order:', lastError)
+    return { error: 'Failed to add the competition' }
+  }
+
+  const { error } = await ctx.supabase.from('feis_competitions').insert({
+    feis_listing_id: listingId,
+    ...parsed.fields,
+    age_group_key: age?.key ?? null,
+    age_group_label: age?.label ?? null,
+    age_max_jan1: age?.max_age_jan1 ?? null,
+    age_min_jan1: age?.min_age_jan1 ?? null,
+    competition_type: 'custom',
+    fee_category: 'solo',
+    enabled: true,
+    sort_order: (last?.sort_order ?? 0) + 1,
+  })
+
+  if (error) {
+    console.error('Failed to add competition:', error)
+    return { error: 'Failed to add the competition' }
+  }
+  return { success: true as const }
 }

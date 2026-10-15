@@ -42,6 +42,30 @@ export function SyllabusToggle({
     return [...keys]
   }
 
+  // Dances per level. No level_dances means every level gets every dance.
+  const enabledLevels = templateData.levels.filter((l) => selection.enabled_levels.includes(l.key))
+  const enabledDances = templateData.dances.filter((d) => selection.enabled_dances.includes(d.key))
+
+  function levelOffersDance(levelKey: string, danceKey: string): boolean {
+    return !selection.level_dances || (selection.level_dances[levelKey] ?? []).includes(danceKey)
+  }
+
+  function toggleLevelDance(levelKey: string, danceKey: string) {
+    const current =
+      selection.level_dances ??
+      Object.fromEntries(templateData.levels.map((l) => [l.key, templateData.dances.map((d) => d.key)]))
+    const dances = current[levelKey] ?? []
+    onChange({
+      ...selection,
+      level_dances: {
+        ...current,
+        [levelKey]: dances.includes(danceKey)
+          ? dances.filter((k) => k !== danceKey)
+          : [...dances, danceKey],
+      },
+    })
+  }
+
   // Age group toggles
   function toggleAgeGroup(key: string) {
     onChange({
@@ -207,6 +231,48 @@ export function SyllabusToggle({
           ))}
         </div>
       </ToggleSection>
+
+      {/* Dances per level */}
+      {selection.enabled_levels.length > 0 && selection.enabled_dances.length > 0 && (
+        <div className="feis-card overflow-x-auto px-5 py-4">
+          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+            Dances per level
+          </h3>
+          <p className="mb-3 mt-1 text-xs text-muted-foreground">
+            Untick a dance a level doesn&apos;t offer, e.g. no treble jig for Beginners.
+          </p>
+          <table className="text-sm">
+            <thead>
+              <tr>
+                <th className="pr-4 text-left font-medium text-muted-foreground" />
+                {enabledDances.map((dance) => (
+                  <th key={dance.key} className="px-2 pb-2 text-center text-xs font-medium text-muted-foreground">
+                    {dance.label}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {enabledLevels.map((level) => (
+                <tr key={level.key}>
+                  <td className="whitespace-nowrap py-1 pr-4 font-medium">{level.label}</td>
+                  {enabledDances.map((dance) => (
+                    <td key={dance.key} className="px-2 py-1 text-center">
+                      <input
+                        type="checkbox"
+                        aria-label={`${level.label} ${dance.label}`}
+                        checked={levelOffersDance(level.key, dance.key)}
+                        onChange={() => toggleLevelDance(level.key, dance.key)}
+                        className="h-4 w-4 accent-[var(--color-feis-green)]"
+                      />
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {/* Championships */}
       {hasChampionships && (

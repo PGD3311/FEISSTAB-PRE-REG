@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { startOfLocalDateIso, localDateString } from '@/lib/timezone'
+import { startOfLocalDateIso, endOfLocalDateIso, localDateString } from '@/lib/timezone'
 
 describe('startOfLocalDateIso', () => {
   it('New York in daylight time is UTC-4', () => {
@@ -31,5 +31,21 @@ describe('localDateString', () => {
 
   it('an instant late in the UTC day can still be the previous local date', () => {
     expect(localDateString('2026-10-10T02:00:00Z', 'America/New_York')).toBe('2026-10-09')
+  })
+})
+
+describe('endOfLocalDateIso', () => {
+  it('is 11:59:59 PM local time', () => {
+    expect(endOfLocalDateIso('2026-06-01', 'America/New_York')).toBe('2026-06-02T03:59:59.000Z')
+  })
+
+  it('works across a month end', () => {
+    expect(endOfLocalDateIso('2026-10-31', 'America/Chicago')).toBe('2026-11-01T04:59:59.000Z')
+  })
+
+  it('falls on the same local date', () => {
+    expect(localDateString(endOfLocalDateIso('2026-12-31', 'Europe/Dublin'), 'Europe/Dublin')).toBe(
+      '2026-12-31'
+    )
   })
 })

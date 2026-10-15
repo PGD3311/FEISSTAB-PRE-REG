@@ -6,7 +6,6 @@ import type {
   FeisListing,
   FeeSchedule,
   ListingStatus,
-  CompetitionType,
 } from '@/lib/types/feis-listing'
 import {
   formatTimezone,
@@ -21,6 +20,10 @@ import { StatusActions } from '@/components/organiser/status-actions'
 import { DeleteDraftButton } from '@/components/organiser/delete-draft-button'
 import { CloneFeisButton } from '@/components/organiser/clone-feis-button'
 import { EntriesTab } from '@/components/organiser/entries-tab'
+import {
+  CompetitionEditor,
+  type EditorCompetition,
+} from '@/components/organiser/competition-editor'
 
 export const dynamic = 'force-dynamic'
 
@@ -49,13 +52,6 @@ function StatusBadge({ status }: { status: ListingStatus }) {
       {status}
     </span>
   )
-}
-
-interface FeisCompetition {
-  id: string
-  display_name: string
-  competition_type: CompetitionType
-  enabled: boolean
 }
 
 function OverviewTab({
@@ -188,65 +184,28 @@ function OverviewTab({
 
 function SyllabusTab({
   competitions,
-  listingId,
+  listing,
+  feeSchedule,
 }: {
-  competitions: FeisCompetition[]
-  listingId: string
+  competitions: EditorCompetition[]
+  listing: FeisListing
+  feeSchedule: FeeSchedule | null
 }) {
-  const solos = competitions.filter((c) => c.competition_type === 'solo')
-  const championships = competitions.filter(
-    (c) => c.competition_type === 'championship'
-  )
-  const specials = competitions.filter(
-    (c) =>
-      c.competition_type === 'special' || c.competition_type === 'custom'
-  )
-
-  const groups: { label: string; items: FeisCompetition[] }[] = [
-    { label: 'Solos', items: solos },
-    { label: 'Championships', items: championships },
-    { label: 'Specials', items: specials },
-  ].filter((g) => g.items.length > 0)
-
   return (
     <div className="space-y-6">
-      {competitions.length === 0 ? (
-        <div className="feis-card px-6 py-12 text-center text-muted-foreground">
-          No competitions configured yet.
-        </div>
-      ) : (
-        groups.map((group) => (
-          <div key={group.label} className="feis-card p-5">
-            <h2 className="mb-3 text-lg font-semibold">{group.label}</h2>
-            <ul className="space-y-1.5">
-              {group.items.map((comp) => (
-                <li
-                  key={comp.id}
-                  className="flex items-center justify-between text-sm"
-                >
-                  <span>{comp.display_name}</span>
-                  <span
-                    className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-                      comp.enabled
-                        ? 'bg-secondary text-primary'
-                        : 'bg-muted text-muted-foreground'
-                    }`}
-                  >
-                    {comp.enabled ? 'Enabled' : 'Disabled'}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        ))
-      )}
-
+      <CompetitionEditor
+        listingId={listing.id}
+        competitions={competitions}
+        feeSchedule={feeSchedule}
+        ageGroups={listing.syllabus_snapshot?.age_groups ?? []}
+        editable={listing.status === 'draft' || listing.status === 'open'}
+      />
       <div>
         <Link
-          href={`/organiser/feiseanna/${listingId}/setup`}
+          href={`/organiser/feiseanna/${listing.id}/setup`}
           className="text-sm font-medium text-primary hover:underline"
         >
-          Edit in Wizard
+          Change the syllabus in the wizard
         </Link>
       </div>
     </div>
@@ -425,12 +384,14 @@ export default async function FeisDashboardPage({
     supabase.from('fee_schedules').select('*').eq('feis_listing_id', id).single(),
     supabase
       .from('feis_competitions')
-      .select('id, display_name, competition_type, enabled')
+      .select(
+        'id, display_name, display_code, competition_type, fee_category, fee_cents, exclude_from_family_cap, grades_only, enabled, age_group_label'
+      )
       .eq('feis_listing_id', id)
       .order('sort_order', { ascending: true }),
   ])
 
-  const typedCompetitions = (competitions ?? []) as FeisCompetition[]
+  const typedCompetitions = (competitions ?? []) as EditorCompetition[]
   const competitionsCount = typedCompetitions.length
 
   const activeTab: TabKey =
@@ -488,7 +449,8 @@ export default async function FeisDashboardPage({
         {activeTab === 'syllabus' && (
           <SyllabusTab
             competitions={typedCompetitions}
-            listingId={id}
+            listing={typedListing}
+            feeSchedule={(feeSchedule as FeeSchedule) ?? null}
           />
         )}
         {activeTab === 'fees' && (

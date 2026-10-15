@@ -51,6 +51,8 @@ export interface TemplateData {
   dances: Dance[]
   championship_types: ChampionshipType[]
   specials: Special[]
+  // Which dances each level usually offers, e.g. no treble jig for Beginners
+  default_level_dances?: Record<string, string[]>
 }
 
 // ─── Feis listing types ───
@@ -158,6 +160,8 @@ export interface SyllabusSelection {
   enable_open: boolean
   open_age_groups: string[]
   enable_specials: string[]
+  // Dances offered per level. When absent, every enabled level gets every enabled dance.
+  level_dances?: Record<string, string[]>
 }
 
 export interface ExpandedCompetition {
@@ -173,6 +177,7 @@ export interface ExpandedCompetition {
   championship_key: ChampionshipKey | null
   fee_category: FeeCategoryType
   display_name: string
+  display_code: string | null
   sort_order: number
 }
 
@@ -292,7 +297,9 @@ export interface FeisCompetition {
   fee_category: FeeCategoryType
   fee_cents: number | null
   exclude_from_family_cap: boolean
+  grades_only: boolean
   display_name: string
+  display_code: string | null
   capacity_cap: number | null
   enabled: boolean
 }

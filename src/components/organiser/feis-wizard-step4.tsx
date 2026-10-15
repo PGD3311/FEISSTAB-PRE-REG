@@ -3,6 +3,7 @@
 import { useState, useTransition, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 
+import { localDateString } from '@/lib/timezone'
 import type { FeisListing } from '@/lib/types/feis-listing'
 import { saveDeadlines } from '@/app/organiser/feiseanna/actions'
 
@@ -14,9 +15,9 @@ function daysBeforeDate(dateStr: string, days: number): string {
 }
 
 /** Extract YYYY-MM-DD from a timestamptz string. */
-function toDateInput(ts: string | null): string {
+function toDateInput(ts: string | null, timeZone: string): string {
   if (!ts) return ''
-  return ts.split('T')[0]
+  return localDateString(ts, timeZone)
 }
 
 interface FeisWizardStep4Props {
@@ -30,6 +31,7 @@ export function FeisWizardStep4({
   onNext,
   onBack,
 }: FeisWizardStep4Props) {
+  const timeZone = listing.timezone ?? 'America/New_York'
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
@@ -52,13 +54,13 @@ export function FeisWizardStep4({
 
   // Controlled values for inline validation
   const [regOpens, setRegOpens] = useState(
-    toDateInput(listing.reg_opens_at) || defaults.opens
+    toDateInput(listing.reg_opens_at, timeZone) || defaults.opens
   )
   const [regCloses, setRegCloses] = useState(
-    toDateInput(listing.reg_closes_at) || defaults.closes
+    toDateInput(listing.reg_closes_at, timeZone) || defaults.closes
   )
   const [lateRegCloses, setLateRegCloses] = useState(
-    toDateInput(listing.late_reg_closes_at) || defaults.lateCloses
+    toDateInput(listing.late_reg_closes_at, timeZone) || defaults.lateCloses
   )
 
   // Inline validation

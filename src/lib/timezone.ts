@@ -25,6 +25,13 @@ export function startOfLocalDateIso(dateString: string, timeZone: string): strin
   return new Date(instant).toISOString()
 }
 
+/** The last second of a local date, e.g. a registration deadline of 11:59:59 PM at the feis. */
+export function endOfLocalDateIso(dateString: string, timeZone: string): string {
+  const [y, m, d] = dateString.split('-').map(Number)
+  const next = new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10)
+  return new Date(new Date(startOfLocalDateIso(next, timeZone)).getTime() - 1000).toISOString()
+}
+
 /** The calendar date ('YYYY-MM-DD') an instant falls on in the given timezone. */
 export function localDateString(isoString: string, timeZone: string): string {
   return new Intl.DateTimeFormat('en-CA', {

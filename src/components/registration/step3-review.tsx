@@ -162,7 +162,14 @@ export function Step3Review({
 
                   return (
                     <li key={comp.id} className="flex items-center justify-between px-4 py-2.5 text-sm">
-                      <span>{comp.display_name}</span>
+                      <span>
+                        {comp.display_code && (
+                          <span className="mr-1.5 font-mono text-muted-foreground">
+                            {comp.display_code}
+                          </span>
+                        )}
+                        {comp.display_name}
+                      </span>
                       <span className="font-mono text-muted-foreground">
                         {formatCents(feeCents)}
                       </span>

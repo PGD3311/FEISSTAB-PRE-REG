@@ -43,12 +43,16 @@ function buildDefaultSelection(td: TemplateData): SyllabusSelection {
       ? td.age_groups.map((a) => a.key)
       : [],
     enable_specials: td.specials.map((s) => s.key),
+    level_dances: td.default_level_dances,
   }
 }
 
 /** Estimate total competition count from template data (all enabled). */
 function estimateCount(td: TemplateData): number {
-  const solos = td.age_groups.length * td.levels.length * td.dances.length
+  const dancesPerAge = td.default_level_dances
+    ? Object.values(td.default_level_dances).reduce((sum, dances) => sum + dances.length, 0)
+    : td.levels.length * td.dances.length
+  const solos = td.age_groups.length * dancesPerAge
   const champs = td.championship_types.length * td.age_groups.length
   const specials = td.specials.length
   return solos + champs + specials

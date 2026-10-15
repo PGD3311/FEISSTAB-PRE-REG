@@ -35,6 +35,8 @@ function makeCompetition(
     fee_category: 'solo',
     fee_cents: null,
     exclude_from_family_cap: false,
+    grades_only: false,
+    display_code: null,
     display_name: `${ageKey} Novice Reel`,
     capacity_cap: null,
     enabled: true,

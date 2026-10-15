@@ -1,10 +1,75 @@
 import type {
+  Level,
   TemplateData,
   SyllabusSelection,
   ExpandedCompetition,
   FeeCategoryType,
   ChampionshipKey
 } from '@/lib/types/feis-listing'
+
+// Abbreviations used on most US syllabi, e.g. 210R, 412TJ
+const DANCE_CODES: Record<string, string> = {
+  reel: 'R',
+  light_jig: 'LJ',
+  slip_jig: 'SJ',
+  single_jig: 'Hop',
+  treble_jig: 'TJ',
+  hornpipe: 'HP',
+  st_patricks_day: 'TS',
+  trad_set: 'TS',
+  treble_reel: 'TR'
+}
+
+const CHAMPIONSHIP_DIGITS: Record<ChampionshipKey, string> = { prelim: '5', open: '6' }
+
+function danceCode(danceKey: string): string {
+  return (
+    DANCE_CODES[danceKey] ??
+    danceKey
+      .split('_')
+      .map((word) => word.charAt(0).toUpperCase())
+      .join('')
+  )
+}
+
+/** 'U10' → '10', 'O18' → '18a' (and over), anything else unchanged. */
+function ageCode(ageKey: string): string {
+  const under = /^U(\d+)$/.exec(ageKey)
+  if (under) return under[1].padStart(2, '0')
+  const over = /^O(\d+)$/.exec(ageKey)
+  if (over) return `${over[1]}a`
+  return ageKey
+}
+
+/**
+ * The usual feis competition code: level rank + age + dance for solos (AB U10 Reel → 210R),
+ * 5 + age for prelim and 6 + age for open. Specials get no code; the organiser sets one.
+ */
+export function competitionCode(
+  comp: {
+    competition_type: string
+    level_key: string | null
+    age_group_key: string | null
+    dance_key: string | null
+    championship_key: ChampionshipKey | null
+  },
+  levels: Level[]
+): string | null {
+  if (!comp.age_group_key) return null
+  const age = ageCode(comp.age_group_key)
+
+  if (comp.competition_type === 'championship' && comp.championship_key) {
+    return `${CHAMPIONSHIP_DIGITS[comp.championship_key]}${age}`
+  }
+
+  if (comp.competition_type === 'solo' && comp.level_key && comp.dance_key) {
+    const level = levels.find((l) => l.key === comp.level_key)
+    if (!level) return null
+    return `${level.rank}${age}${danceCode(comp.dance_key)}`
+  }
+
+  return null
+}
 
 /**
  * Expands a syllabus template + organiser selections into frozen competition rows.
@@ -39,6 +104,7 @@ export function expandSyllabus(
       for (const danceKey of selection.enabled_dances) {
         const dance = danceMap.get(danceKey)
         if (!dance) continue
+        if (selection.level_dances && !selection.level_dances[levelKey]?.includes(danceKey)) continue
 
         results.push({
           age_group_key: age.key,
@@ -53,6 +119,16 @@ export function expandSyllabus(
           championship_key: null,
           fee_category: 'solo',
           display_name: `${age.key} ${level.label} ${dance.label}`,
+          display_code: competitionCode(
+            {
+              competition_type: 'solo',
+              level_key: level.key,
+              age_group_key: age.key,
+              dance_key: dance.key,
+              championship_key: null
+            },
+            templateData.levels
+          ),
           sort_order: sortOrder++
         })
       }
@@ -88,6 +164,16 @@ export function expandSyllabus(
         championship_key: config.key,
         fee_category: champType.fee_category as FeeCategoryType,
         display_name: `${age.key} ${champType.label}`,
+        display_code: competitionCode(
+          {
+            competition_type: 'championship',
+            level_key: null,
+            age_group_key: age.key,
+            dance_key: null,
+            championship_key: config.key
+          },
+          templateData.levels
+        ),
         sort_order: sortOrder++
       })
     }
@@ -111,6 +197,7 @@ export function expandSyllabus(
       championship_key: null,
       fee_category: 'solo',
       display_name: special.label,
+      display_code: null,
       sort_order: sortOrder++
     })
   }

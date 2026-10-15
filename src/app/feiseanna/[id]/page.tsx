@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
+import { competitionFeeCents } from '@/lib/engine/fee-calculator'
 import { formatDate, formatDateTime, formatCents, formatLateTier, sortLateTiers } from '@/lib/format'
 import type { FeisListing, FeeSchedule, FeisCompetition, CompetitionType } from '@/lib/types/feis-listing'
 
@@ -53,7 +54,7 @@ export default async function FeisDetailPage({ params }: PageParams) {
       .select('*')
       .eq('feis_listing_id', id)
       .eq('enabled', true)
-      .order('display_name', { ascending: true }),
+      .order('sort_order', { ascending: true }),
   ])
 
   const feeSchedule = feeResult.data as FeeSchedule | null
@@ -205,10 +206,23 @@ export default async function FeisDetailPage({ params }: PageParams) {
                       <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                         {TYPE_LABELS[type]} ({comps.length})
                       </h3>
-                      <ul className="space-y-1">
+                      <ul className="divide-y divide-border">
                         {comps.map((comp) => (
-                          <li key={comp.id} className="text-sm text-foreground">
-                            {comp.display_name}
+                          <li key={comp.id} className="flex items-baseline gap-3 py-1.5 text-sm">
+                            <span className="w-16 shrink-0 font-mono text-xs text-muted-foreground">
+                              {comp.display_code ?? ''}
+                            </span>
+                            <span className="flex-1 text-foreground">
+                              {comp.display_name}
+                              {comp.competition_type === 'custom' && comp.age_group_label && (
+                                <span className="text-muted-foreground"> · {comp.age_group_label}</span>
+                              )}
+                            </span>
+                            {feeSchedule && (
+                              <span className="font-mono text-xs text-muted-foreground">
+                                {formatCents(competitionFeeCents(comp, feeSchedule))}
+                              </span>
+                            )}
                           </li>
                         ))}
                       </ul>
