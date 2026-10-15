@@ -63,7 +63,7 @@ function validFeeSchedule(): FeeSchedule {
     prelim_champ_fee_cents: 5500,
     open_champ_fee_cents: 6000,
     family_cap_cents: 15000,
-    late_fee_cents: 2500,
+    late_fee_tiers: [{ starts_at: '2026-05-01T00:00:00Z', fee_cents: 2500, family_max_cents: null }],
     day_of_surcharge_cents: 5000,
   }
 }

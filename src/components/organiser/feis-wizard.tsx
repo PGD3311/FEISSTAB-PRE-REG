@@ -147,6 +147,7 @@ export function FeisWizard({
           <FeisWizardStep3
             listingId={listing.id}
             feeSchedule={feeSchedule}
+            timeZone={listing.timezone ?? 'America/New_York'}
             onNext={handleNext}
             onBack={handleBack}
           />

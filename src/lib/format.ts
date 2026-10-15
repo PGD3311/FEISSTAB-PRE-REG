@@ -1,3 +1,5 @@
+import type { LateFeeTier } from '@/lib/types/feis-listing'
+
 const TIMEZONE_LABELS: Record<string, string> = {
   'America/New_York': 'Eastern (New York)',
   'America/Chicago': 'Central (Chicago)',
@@ -59,4 +61,21 @@ export function formatDateTime(isoString: string | null, fallback = ''): string 
     hour: 'numeric',
     minute: '2-digit',
   })
+}
+
+/** e.g. "$25.00 per dancer from Oct 10 (max $50.00 per family)" */
+export function formatLateTier(tier: LateFeeTier, timeZone: string): string {
+  const from = new Date(tier.starts_at).toLocaleDateString('en-US', {
+    timeZone,
+    month: 'short',
+    day: 'numeric'
+  })
+  const max =
+    tier.family_max_cents === null ? '' : ` (max ${formatCents(tier.family_max_cents)} per family)`
+  return `${formatCents(tier.fee_cents)} per dancer from ${from}${max}`
+}
+
+/** Late tiers in the order they start. */
+export function sortLateTiers(tiers: LateFeeTier[]): LateFeeTier[] {
+  return [...tiers].sort((a, b) => new Date(a.starts_at).getTime() - new Date(b.starts_at).getTime())
 }

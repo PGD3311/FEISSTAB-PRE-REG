@@ -96,6 +96,12 @@ export interface FeisListing {
 
 // ─── Fee schedule types ───
 
+export interface LateFeeTier {
+  starts_at: string // ISO timestamp; the tier applies from this moment on
+  fee_cents: number // charged per dancer
+  family_max_cents: number | null // most one family pays at this tier; null = no max
+}
+
 export interface FeeSchedule {
   id: string
   feis_listing_id: string
@@ -103,8 +109,10 @@ export interface FeeSchedule {
   solo_fee_cents: number
   prelim_champ_fee_cents: number
   open_champ_fee_cents: number
+  // Most a family pays in competition entry fees. Excludes the event fee, late fees,
+  // day-of surcharges and competitions marked exclude_from_family_cap.
   family_cap_cents: number | null
-  late_fee_cents: number
+  late_fee_tiers: LateFeeTier[]
   day_of_surcharge_cents: number
 }
 
@@ -113,7 +121,8 @@ export interface FeeSchedule {
 export interface FeeEntry {
   dancer_id: string
   fee_category: FeeCategoryType
-  is_late: boolean
+  fee_cents_override?: number | null // per-competition price, e.g. Future Champ or a team
+  exclude_from_family_cap?: boolean
   is_day_of: boolean
 }
 
@@ -123,14 +132,18 @@ export interface FeeLineItem {
   late_fee_cents: number
   day_of_surcharge_cents: number
   line_total_cents: number
+  counts_toward_family_cap: boolean
 }
 
 export interface FeeBreakdown {
   line_items: FeeLineItem[]
   event_fee_cents: number
   subtotal_per_dancer: Record<string, number>
+  late_fees_cents: number
+  active_late_tier: LateFeeTier | null
   subtotal_before_cap_cents: number
   family_cap_applied: boolean
+  family_cap_savings_cents: number
   grand_total_cents: number
 }
 
@@ -277,6 +290,8 @@ export interface FeisCompetition {
   competition_type: CompetitionType
   championship_key: ChampionshipKey | null
   fee_category: FeeCategoryType
+  fee_cents: number | null
+  exclude_from_family_cap: boolean
   display_name: string
   capacity_cap: number | null
   enabled: boolean

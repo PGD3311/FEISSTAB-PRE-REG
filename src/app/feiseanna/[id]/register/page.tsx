@@ -140,7 +140,6 @@ function RegistrationFlow({ data, feisId }: { data: PageData; feisId: string }) 
       : new Date()
 
   const levels: Level[] = listing.syllabus_snapshot?.levels ?? []
-  const isLate = listing.reg_closes_at ? new Date() > new Date(listing.reg_closes_at) : false
   const selectedDancers = dancers.filter(d => selectedDancerIds.includes(d.id))
 
   const feeBreakdown: FeeBreakdown = useMemo(() => {
@@ -149,8 +148,11 @@ function RegistrationFlow({ data, feisId }: { data: PageData; feisId: string }) 
         line_items: [],
         event_fee_cents: 0,
         subtotal_per_dancer: {},
+        late_fees_cents: 0,
+        active_late_tier: null,
         subtotal_before_cap_cents: 0,
         family_cap_applied: false,
+        family_cap_savings_cents: 0,
         grand_total_cents: 0
       }
     }
@@ -162,14 +164,15 @@ function RegistrationFlow({ data, feisId }: { data: PageData; feisId: string }) 
           entries.push({
             dancer_id: dancerId,
             fee_category: comp.fee_category,
-            is_late: isLate,
+            fee_cents_override: comp.fee_cents,
+            exclude_from_family_cap: comp.exclude_from_family_cap,
             is_day_of: false
           })
         }
       }
     }
     return calculateFees(feeSchedule, entries)
-  }, [cart, competitions, feeSchedule, isLate])
+  }, [cart, competitions, feeSchedule])
 
   function handleStep1Next(ids: string[]) {
     setSelectedDancerIds(ids)
@@ -290,7 +293,6 @@ function RegistrationFlow({ data, feisId }: { data: PageData; feisId: string }) 
               feeSchedule={feeSchedule}
               ageCutoffDate={ageCutoffDate}
               levels={levels}
-              isLate={isLate}
               onNext={handleStep2Next}
               onBack={() => setStep(1)}
             />
@@ -299,6 +301,7 @@ function RegistrationFlow({ data, feisId }: { data: PageData; feisId: string }) 
           {step === 3 && (
             <Step3Review
               feis={listing}
+              feeSchedule={feeSchedule}
               dancers={selectedDancers}
               cart={cart}
               competitions={competitions}

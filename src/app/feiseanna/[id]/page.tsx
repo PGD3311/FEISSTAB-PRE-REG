@@ -1,7 +1,7 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
-import { formatDate, formatDateTime, formatCents } from '@/lib/format'
+import { formatDate, formatDateTime, formatCents, formatLateTier, sortLateTiers } from '@/lib/format'
 import type { FeisListing, FeeSchedule, FeisCompetition, CompetitionType } from '@/lib/types/feis-listing'
 
 export const dynamic = 'force-dynamic'
@@ -159,20 +159,25 @@ export default async function FeisDetailPage({ params }: PageParams) {
                   </tr>
                   {feeSchedule.family_cap_cents !== null && (
                     <tr>
-                      <td className="py-2 text-muted-foreground">Family Cap</td>
+                      <td className="py-2 text-muted-foreground">
+                        Competition Entry Max (per family)
+                        <span className="block text-xs">
+                          Does not include the event fee or late fees
+                        </span>
+                      </td>
                       <td className="py-2 text-right font-medium">
                         {formatCents(feeSchedule.family_cap_cents)}
                       </td>
                     </tr>
                   )}
-                  {feeSchedule.late_fee_cents > 0 && (
-                    <tr>
-                      <td className="py-2 text-muted-foreground">Late Fee (per dancer)</td>
+                  {sortLateTiers(feeSchedule.late_fee_tiers).map((tier, i) => (
+                    <tr key={tier.starts_at}>
+                      <td className="py-2 text-muted-foreground">Late Fee, Tier {i + 1}</td>
                       <td className="py-2 text-right font-medium text-[var(--color-feis-orange)]">
-                        +{formatCents(feeSchedule.late_fee_cents)}
+                        {formatLateTier(tier, listing.timezone ?? 'America/New_York')}
                       </td>
                     </tr>
-                  )}
+                  ))}
                   {feeSchedule.day_of_surcharge_cents > 0 && (
                     <tr>
                       <td className="py-2 text-muted-foreground">Day-of Surcharge</td>

@@ -9,7 +9,14 @@ import type {
   ListingTransitionContext,
 } from '@/lib/types/feis-listing'
 import { getListingTransitionBlockReasons } from '@/lib/feis-listing-states'
-import { formatTimezone, formatCentsOrNull, formatDate, formatDateTime } from '@/lib/format'
+import {
+  formatTimezone,
+  formatCentsOrNull,
+  formatDate,
+  formatDateTime,
+  formatLateTier,
+  sortLateTiers
+} from '@/lib/format'
 import { useSupabase } from '@/hooks/use-supabase'
 import { transitionListingStatus } from '@/app/organiser/feiseanna/actions'
 import { PublishChecklist } from '@/components/organiser/publish-checklist'
@@ -263,15 +270,21 @@ export function FeisWizardStep5({
                 </dd>
               </div>
               <div className="flex justify-between sm:block">
-                <dt className="text-muted-foreground">Family Cap</dt>
+                <dt className="text-muted-foreground">Entry Max (per family)</dt>
                 <dd className="font-medium font-mono">
                   {formatCentsOrNull(feeSchedule.family_cap_cents, 'No cap')}
                 </dd>
               </div>
               <div className="flex justify-between sm:block">
-                <dt className="text-muted-foreground">Late Fee</dt>
+                <dt className="text-muted-foreground">Late Fees</dt>
                 <dd className="font-medium font-mono">
-                  {formatCentsOrNull(feeSchedule.late_fee_cents)}
+                  {feeSchedule.late_fee_tiers.length === 0
+                    ? 'None'
+                    : sortLateTiers(feeSchedule.late_fee_tiers).map((tier) => (
+                        <span key={tier.starts_at} className="block">
+                          {formatLateTier(tier, listing.timezone ?? 'America/New_York')}
+                        </span>
+                      ))}
                 </dd>
               </div>
               <div className="flex justify-between sm:block">

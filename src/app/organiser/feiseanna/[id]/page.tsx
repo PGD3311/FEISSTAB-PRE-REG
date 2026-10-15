@@ -8,7 +8,15 @@ import type {
   ListingStatus,
   CompetitionType,
 } from '@/lib/types/feis-listing'
-import { formatTimezone, formatDate, formatDateTime, formatCents, formatCentsOrNull } from '@/lib/format'
+import {
+  formatTimezone,
+  formatDate,
+  formatDateTime,
+  formatCents,
+  formatCentsOrNull,
+  formatLateTier,
+  sortLateTiers,
+} from '@/lib/format'
 import { StatusActions } from '@/components/organiser/status-actions'
 import { DeleteDraftButton } from '@/components/organiser/delete-draft-button'
 import { CloneFeisButton } from '@/components/organiser/clone-feis-button'
@@ -248,9 +256,11 @@ function SyllabusTab({
 function FeesTab({
   feeSchedule,
   listingId,
+  timeZone,
 }: {
   feeSchedule: FeeSchedule | null
   listingId: string
+  timeZone: string
 }) {
   if (!feeSchedule) {
     return (
@@ -275,8 +285,14 @@ function FeesTab({
     { label: 'Solo Fee (per dance)', value: formatCents(feeSchedule.solo_fee_cents) },
     { label: 'Prelim Championship Fee', value: formatCents(feeSchedule.prelim_champ_fee_cents) },
     { label: 'Open Championship Fee', value: formatCents(feeSchedule.open_champ_fee_cents) },
-    { label: 'Family Cap', value: formatCentsOrNull(feeSchedule.family_cap_cents, 'None') },
-    { label: 'Late Fee (per dancer)', value: formatCents(feeSchedule.late_fee_cents) },
+    {
+      label: 'Competition Entry Max (per family)',
+      value: formatCentsOrNull(feeSchedule.family_cap_cents, 'None'),
+    },
+    ...sortLateTiers(feeSchedule.late_fee_tiers).map((tier, i) => ({
+      label: `Late Fee, Tier ${i + 1}`,
+      value: formatLateTier(tier, timeZone),
+    })),
     { label: 'Day-of Surcharge (per dancer)', value: formatCents(feeSchedule.day_of_surcharge_cents) },
   ]
 
@@ -479,6 +495,7 @@ export default async function FeisDashboardPage({
           <FeesTab
             feeSchedule={(feeSchedule as FeeSchedule) ?? null}
             listingId={id}
+            timeZone={listing.timezone ?? 'America/New_York'}
           />
         )}
         {activeTab === 'settings' && (

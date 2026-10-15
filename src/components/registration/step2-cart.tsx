@@ -2,7 +2,7 @@
 
 import { useState, useMemo } from 'react'
 import { getEligibleCompetitions, calculateAgeOnDate } from '@/lib/engine/eligibility'
-import { calculateFees } from '@/lib/engine/fee-calculator'
+import { calculateFees, competitionFeeCents } from '@/lib/engine/fee-calculator'
 import { formatCents, parseLocalDate } from '@/lib/format'
 import type {
   Dancer,
@@ -21,7 +21,6 @@ interface Step2CartProps {
   feeSchedule: FeeSchedule
   ageCutoffDate: Date
   levels: Level[]
-  isLate: boolean
   onNext: (cart: Record<string, string[]>) => void
   onBack: () => void
 }
@@ -62,12 +61,7 @@ function CompetitionRow({
 }) {
   const { competition } = eligible
 
-  const feeCents =
-    competition.fee_category === 'prelim_champ'
-      ? feeSchedule.prelim_champ_fee_cents
-      : competition.fee_category === 'open_champ'
-        ? feeSchedule.open_champ_fee_cents
-        : feeSchedule.solo_fee_cents
+  const feeCents = competitionFeeCents(competition, feeSchedule)
 
   return (
     <button
@@ -117,7 +111,6 @@ export function Step2Cart({
   feeSchedule,
   ageCutoffDate,
   levels,
-  isLate,
   onNext,
   onBack
 }: Step2CartProps) {
@@ -165,14 +158,15 @@ export function Step2Cart({
         entries.push({
           dancer_id: dancerId,
           fee_category: comp.fee_category,
-          is_late: isLate,
+          fee_cents_override: comp.fee_cents,
+          exclude_from_family_cap: comp.exclude_from_family_cap,
           is_day_of: false
         })
       }
     }
     if (entries.length === 0) return null
     return calculateFees(feeSchedule, entries)
-  }, [cart, competitions, feeSchedule, isLate])
+  }, [cart, competitions, feeSchedule])
 
   const totalEntries = Object.values(cart).reduce((sum, ids) => sum + ids.length, 0)
 
@@ -304,16 +298,17 @@ export function Step2Cart({
               <span>{formatCents(feeBreakdown.event_fee_cents)}</span>
             </div>
           )}
-          {isLate && (
+          {feeBreakdown.active_late_tier && (
             <div className="mt-1 flex items-center justify-between text-sm">
-              <span className="text-muted-foreground">Late fee</span>
-              <span>{formatCents(feeSchedule.late_fee_cents)} per dancer</span>
+              <span className="text-muted-foreground">
+                Late fee ({formatCents(feeBreakdown.active_late_tier.fee_cents)} per dancer)
+              </span>
+              <span>{formatCents(feeBreakdown.late_fees_cents)}</span>
             </div>
           )}
           {feeBreakdown.family_cap_applied && (
             <div className="mt-2 text-xs text-[var(--color-feis-green)]">
-              Family cap applied — you saved{' '}
-              {formatCents(feeBreakdown.subtotal_before_cap_cents - feeBreakdown.grand_total_cents)}
+              Family maximum applied — you saved {formatCents(feeBreakdown.family_cap_savings_cents)}
             </div>
           )}
           <div className="mt-3 flex items-center justify-between border-t border-border pt-3">

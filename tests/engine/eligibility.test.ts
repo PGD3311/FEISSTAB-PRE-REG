@@ -24,6 +24,8 @@ function makeCompetition(overrides: Partial<FeisCompetition> = {}): FeisCompetit
     competition_type: 'solo',
     championship_key: null,
     fee_category: 'solo',
+    fee_cents: null,
+    exclude_from_family_cap: false,
     display_name: 'U12 Novice Reel',
     capacity_cap: null,
     enabled: true,

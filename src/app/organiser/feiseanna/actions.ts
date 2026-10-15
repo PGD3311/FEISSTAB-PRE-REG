@@ -4,11 +4,13 @@ import { redirect } from 'next/navigation'
 
 import { createClient } from '@/lib/supabase/server'
 import { expandSyllabus } from '@/lib/engine/syllabus-expander'
+import { startOfLocalDateIso } from '@/lib/timezone'
 import {
   canTransitionListing,
   getListingTransitionBlockReasons,
 } from '@/lib/feis-listing-states'
 import type {
+  LateFeeTier,
   TemplateData,
   SyllabusSelection,
   FeisListing,
@@ -227,7 +229,8 @@ export async function cloneFeis(sourceId: string) {
         prelim_champ_fee_cents: feeSchedule.prelim_champ_fee_cents,
         open_champ_fee_cents: feeSchedule.open_champ_fee_cents,
         family_cap_cents: feeSchedule.family_cap_cents,
-        late_fee_cents: feeSchedule.late_fee_cents,
+        // Late tiers are dated, so the organiser sets them again for the new feis
+        late_fee_tiers: [],
         day_of_surcharge_cents: feeSchedule.day_of_surcharge_cents,
       })
 
@@ -370,6 +373,44 @@ export async function expandAndSaveSyllabus(
   return { success: true as const, count: expanded.length }
 }
 
+interface LateFeeTierInput {
+  date: string
+  fee: string
+  family_max: string
+}
+
+function parseLateFeeTiers(
+  raw: string | null,
+  timeZone: string
+): { tiers: LateFeeTier[] } | { error: string } {
+  if (!raw) return { tiers: [] }
+  let rows: LateFeeTierInput[]
+  try {
+    rows = JSON.parse(raw)
+  } catch {
+    return { error: 'Late fees could not be read. Please try again.' }
+  }
+  const tiers: LateFeeTier[] = []
+  for (const [i, row] of rows.entries()) {
+    const label = `Late fee tier ${i + 1}`
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(row.date)) return { error: `${label} needs a start date` }
+    const fee = parseFloat(row.fee)
+    if (!Number.isFinite(fee) || fee < 0) return { error: `${label} needs an amount` }
+    const max = row.family_max.trim() === '' ? null : parseFloat(row.family_max)
+    if (max !== null && (!Number.isFinite(max) || max < 0)) {
+      return { error: `${label} has an invalid family max` }
+    }
+    tiers.push({
+      starts_at: startOfLocalDateIso(row.date, timeZone),
+      fee_cents: Math.round(fee * 100),
+      family_max_cents: max === null ? null : Math.round(max * 100),
+    })
+  }
+  const starts = new Set(tiers.map((t) => t.starts_at))
+  if (starts.size !== tiers.length) return { error: 'Two late fee tiers start on the same date' }
+  return { tiers }
+}
+
 export async function saveFeeSchedule(
   listingId: string,
   formData: FormData
@@ -381,7 +422,7 @@ export async function saveFeeSchedule(
   // Verify ownership
   const { data: owned } = await supabase
     .from('feis_listings')
-    .select('id')
+    .select('id, timezone')
     .eq('id', listingId)
     .eq('created_by', user.id)
     .single()
@@ -404,8 +445,14 @@ export async function saveFeeSchedule(
   const prelim_champ_fee_cents = toCents('prelim_champ_fee')
   const open_champ_fee_cents = toCents('open_champ_fee')
   const family_cap_cents = toCentsOrNull('family_cap')
-  const late_fee_cents = toCents('late_fee')
   const day_of_surcharge_cents = toCents('day_of_surcharge')
+
+  const tiersResult = parseLateFeeTiers(
+    formData.get('late_fee_tiers') as string | null,
+    owned.timezone ?? 'America/New_York'
+  )
+  if ('error' in tiersResult) return { error: tiersResult.error }
+  const late_fee_tiers = tiersResult.tiers
 
   // Check if fee schedule already exists
   const { data: existing } = await supabase
@@ -423,7 +470,7 @@ export async function saveFeeSchedule(
         prelim_champ_fee_cents,
         open_champ_fee_cents,
         family_cap_cents,
-        late_fee_cents,
+        late_fee_tiers,
         day_of_surcharge_cents,
       })
       .eq('feis_listing_id', listingId)
@@ -440,7 +487,7 @@ export async function saveFeeSchedule(
       prelim_champ_fee_cents,
       open_champ_fee_cents,
       family_cap_cents,
-      late_fee_cents,
+      late_fee_tiers,
       day_of_surcharge_cents,
     })
 

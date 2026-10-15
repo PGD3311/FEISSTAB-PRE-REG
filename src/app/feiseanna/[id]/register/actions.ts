@@ -3,7 +3,12 @@
 import { createClient } from '@/lib/supabase/server'
 import { canTransitionRegistration } from '@/lib/registration-states'
 import { calculateFees } from '@/lib/engine/fee-calculator'
-import type { RegistrationStatus, FeeSchedule, FeeEntry } from '@/lib/types/feis-listing'
+import type {
+  RegistrationStatus,
+  FeeSchedule,
+  FeeEntry,
+  FeeCategoryType
+} from '@/lib/types/feis-listing'
 
 export async function getExistingRegistration(feisListingId: string) {
   const supabase = await createClient()
@@ -136,7 +141,7 @@ export async function createDraftRegistration(input: CreateDraftInput) {
     supabase.from('dancers').select('id').eq('household_id', household.id).in('id', dancerIds),
     supabase
       .from('feis_competitions')
-      .select('id, fee_category')
+      .select('id, fee_category, fee_cents, exclude_from_family_cap')
       .eq('feis_listing_id', input.feisListingId)
       .eq('enabled', true)
       .in('id', compIds),
@@ -150,21 +155,21 @@ export async function createDraftRegistration(input: CreateDraftInput) {
     return { error: 'One or more competitions are not available.' }
   }
 
-  const isLate = listing.reg_closes_at ? now > new Date(listing.reg_closes_at) : false
-
   const compMap = new Map(competitions.map(c => [c.id, c]))
 
   const feeEntries: FeeEntry[] = input.entries.map(e => {
     const comp = compMap.get(e.competitionId)
     return {
       dancer_id: e.dancerId,
-      fee_category: (comp?.fee_category ?? 'solo') as 'solo' | 'prelim_champ' | 'open_champ',
-      is_late: isLate,
+      fee_category: (comp?.fee_category ?? 'solo') as FeeCategoryType,
+      fee_cents_override: comp?.fee_cents ?? null,
+      exclude_from_family_cap: comp?.exclude_from_family_cap ?? false,
       is_day_of: false
     }
   })
 
-  const breakdown = calculateFees(feeSchedule as FeeSchedule, feeEntries)
+  const breakdown = calculateFees(feeSchedule as FeeSchedule, feeEntries, now)
+  const isLate = breakdown.active_late_tier !== null
 
   const holdExpiresAt = new Date(now.getTime() + 30 * 60 * 1000).toISOString()
 
@@ -194,30 +199,17 @@ export async function createDraftRegistration(input: CreateDraftInput) {
     return { error: 'Failed to create registration. You may already have an active registration for this feis.' }
   }
 
-  const lateCharged = new Set<string>()
-  const entryRows = input.entries.map(e => {
-    const comp = compMap.get(e.competitionId)
-    const feeCategory = (comp?.fee_category ?? 'solo') as 'solo' | 'prelim_champ' | 'open_champ'
-    const baseFee = feeCategory === 'prelim_champ'
-      ? feeSchedule.prelim_champ_fee_cents
-      : feeCategory === 'open_champ'
-        ? feeSchedule.open_champ_fee_cents
-        : feeSchedule.solo_fee_cents
-
-    let lateFee = 0
-    if (isLate && !lateCharged.has(e.dancerId)) {
-      lateFee = feeSchedule.late_fee_cents
-      lateCharged.add(e.dancerId)
-    }
-
+  // Line items come back in the same order as input.entries
+  const entryRows = input.entries.map((e, i) => {
+    const item = breakdown.line_items[i]
     return {
       registration_id: reg.id,
       dancer_id: e.dancerId,
       feis_competition_id: e.competitionId,
-      fee_category: feeCategory,
-      base_fee_cents: baseFee,
-      late_fee_cents: lateFee,
-      day_of_surcharge_cents: 0
+      fee_category: feeEntries[i].fee_category,
+      base_fee_cents: item.base_fee_cents,
+      late_fee_cents: item.late_fee_cents,
+      day_of_surcharge_cents: item.day_of_surcharge_cents
     }
   })
 
@@ -297,6 +289,23 @@ export async function createCheckoutSession(registrationId: string) {
             name: 'Event Fee (per family)'
           },
           unit_amount: reg.event_fee_cents
+        },
+        quantity: 1
+      })
+    }
+
+    // Stripe has no negative line items, so when the family max brings the total down
+    // the whole registration is charged as one line at the capped total
+    const itemsTotal = lineItems.reduce(
+      (sum: number, li: { price_data: { unit_amount: number } }) => sum + li.price_data.unit_amount,
+      0
+    )
+    if (itemsTotal !== reg.total_cents) {
+      lineItems.splice(0, lineItems.length, {
+        price_data: {
+          currency: 'usd',
+          product_data: { name: 'Feis entries (family maximum applied)' },
+          unit_amount: reg.total_cents
         },
         quantity: 1
       })

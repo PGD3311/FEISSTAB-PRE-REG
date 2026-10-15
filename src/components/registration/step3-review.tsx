@@ -2,16 +2,19 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
+import { competitionFeeCents } from '@/lib/engine/fee-calculator'
 import { formatCents, formatDate } from '@/lib/format'
 import type {
   FeisListing,
   Dancer,
   FeisCompetition,
-  FeeBreakdown
+  FeeBreakdown,
+  FeeSchedule
 } from '@/lib/types/feis-listing'
 
 interface Step3ReviewProps {
   feis: FeisListing
+  feeSchedule: FeeSchedule | null
   dancers: Dancer[]
   cart: Record<string, string[]>
   competitions: FeisCompetition[]
@@ -74,6 +77,7 @@ function CountdownTimer({ holdExpiresAt }: { holdExpiresAt: string }) {
 
 export function Step3Review({
   feis,
+  feeSchedule,
   dancers,
   cart,
   competitions,
@@ -154,27 +158,13 @@ export function Step3Review({
               </div>
               <ul className="divide-y divide-border">
                 {comps.map(comp => {
-                  const feeCents =
-                    comp.fee_category === 'prelim_champ'
-                      ? feeBreakdown.line_items.find(li => li.dancer_id === dancer.id)?.base_fee_cents ?? 0
-                      : comp.fee_category === 'open_champ'
-                        ? feeBreakdown.line_items.find(li => li.dancer_id === dancer.id)?.base_fee_cents ?? 0
-                        : feeBreakdown.line_items.find(li => li.dancer_id === dancer.id)?.base_fee_cents ?? 0
-
-                  // Find the line item for this specific entry
-                  const lineItem = feeBreakdown.line_items.find(
-                    li => li.dancer_id === dancer.id
-                  )
+                  const feeCents = feeSchedule ? competitionFeeCents(comp, feeSchedule) : 0
 
                   return (
                     <li key={comp.id} className="flex items-center justify-between px-4 py-2.5 text-sm">
                       <span>{comp.display_name}</span>
                       <span className="font-mono text-muted-foreground">
-                        {formatCents(
-                          comp.fee_category === 'prelim_champ'
-                            ? lineItem?.base_fee_cents ?? feeCents
-                            : lineItem?.base_fee_cents ?? feeCents
-                        )}
+                        {formatCents(feeCents)}
                       </span>
                     </li>
                   )
@@ -192,7 +182,13 @@ export function Step3Review({
             <span className="text-muted-foreground">
               {totalEntries} {totalEntries === 1 ? 'competition entry' : 'competition entries'}
             </span>
-            <span>{formatCents(feeBreakdown.subtotal_before_cap_cents - feeBreakdown.event_fee_cents)}</span>
+            <span>
+              {formatCents(
+                feeBreakdown.subtotal_before_cap_cents -
+                  feeBreakdown.event_fee_cents -
+                  feeBreakdown.late_fees_cents
+              )}
+            </span>
           </div>
           {feeBreakdown.event_fee_cents > 0 && (
             <div className="flex justify-between">
@@ -200,10 +196,18 @@ export function Step3Review({
               <span>{formatCents(feeBreakdown.event_fee_cents)}</span>
             </div>
           )}
+          {feeBreakdown.active_late_tier && (
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">
+                Late fee ({formatCents(feeBreakdown.active_late_tier.fee_cents)} per dancer)
+              </span>
+              <span>{formatCents(feeBreakdown.late_fees_cents)}</span>
+            </div>
+          )}
           {feeBreakdown.family_cap_applied && (
             <div className="flex justify-between text-[var(--color-feis-green)]">
-              <span>Family cap discount</span>
-              <span>-{formatCents(feeBreakdown.subtotal_before_cap_cents - feeBreakdown.grand_total_cents)}</span>
+              <span>Family maximum</span>
+              <span>-{formatCents(feeBreakdown.family_cap_savings_cents)}</span>
             </div>
           )}
         </div>
@@ -213,8 +217,7 @@ export function Step3Review({
         </div>
         {feeBreakdown.family_cap_applied && (
           <div className="mt-1.5 text-xs text-[var(--color-feis-green)]">
-            Family cap applied — you saved{' '}
-            {formatCents(feeBreakdown.subtotal_before_cap_cents - feeBreakdown.grand_total_cents)}
+            Family maximum applied — you saved {formatCents(feeBreakdown.family_cap_savings_cents)}
           </div>
         )}
       </div>

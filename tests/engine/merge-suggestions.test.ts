@@ -33,6 +33,8 @@ function makeCompetition(
     competition_type: 'solo',
     championship_key: null,
     fee_category: 'solo',
+    fee_cents: null,
+    exclude_from_family_cap: false,
     display_name: `${ageKey} Novice Reel`,
     capacity_cap: null,
     enabled: true,
