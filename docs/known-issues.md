@@ -11,7 +11,6 @@ Found during the October 2026 restyle and left for later. RunFeis is for Northea
 - **Some organiser buttons still use browser `alert()`** for errors (copy feis, delete draft, status changes).
 
 ## Organiser feis page
-- **Entry counts include expired and cancelled registrations.** `getFeisEntries` in `src/app/organiser/feiseanna/actions.ts` counts every status, so "Dancers" and "Entries" run high. The page labels them "every entry, paid or not" until this is fixed.
 - **The launch page's "Entries are closed" check is hard-coded to passed.** It's true today only because of the redirect above it.
 
 ## Parents

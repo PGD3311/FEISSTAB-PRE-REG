@@ -681,54 +681,71 @@ export async function getFeisEntries(feisListingId: string) {
 
   if (!listing) return { error: 'Listing not found or not authorized' }
 
-  // Fetch entries with dancer name + school only
-  const { data: entries, error } = await supabase
-    .from('registration_entries')
-    .select(`
+  // Entries from paid registrations and families still paying; expired and cancelled ones
+  // never became entries, so they're left out
+  const [entriesResult, statsResult, compsResult, numbersResult] = await Promise.all([
+    supabase
+      .from('registration_entries')
+      .select(
+        `
       id,
       fee_category,
       base_fee_cents,
       late_fee_cents,
       created_at,
       dancer_id,
+      feis_competition_id,
       dancers(first_name, last_name, school_name, date_of_birth, gender),
-      feis_competitions(display_name, age_group_key),
+      feis_competitions(display_name, display_code, age_group_key),
       registrations!inner(
         status,
         confirmation_number,
         total_cents,
         created_at
       )
-    `)
-    .eq('registrations.feis_listing_id', feisListingId)
+    `
+      )
+      .eq('registrations.feis_listing_id', feisListingId)
+      .in('registrations.status', ['paid', 'pending_payment', 'draft']),
+    supabase
+      .from('registrations')
+      .select('status, total_cents')
+      .eq('feis_listing_id', feisListingId),
+    supabase
+      .from('feis_competitions')
+      .select('*')
+      .eq('feis_listing_id', feisListingId)
+      .eq('enabled', true)
+      .order('sort_order', { ascending: true }),
+    supabase
+      .from('competitor_numbers')
+      .select('dancer_id, competitor_number')
+      .eq('feis_listing_id', feisListingId)
+  ])
 
-  if (error) {
-    console.error('Failed to fetch entries:', error)
+  if (entriesResult.error) {
+    console.error('Failed to fetch entries:', entriesResult.error)
     return { error: 'Failed to fetch entries' }
   }
+  for (const r of [statsResult, compsResult, numbersResult]) {
+    if (r.error) console.error('Failed to fetch entry details:', r.error)
+  }
 
-  // Fetch summary stats
-  const { data: stats } = await supabase
-    .from('registrations')
-    .select('status, total_cents')
-    .eq('feis_listing_id', feisListingId)
-
-  const paidRegs = (stats ?? []).filter(s => s.status === 'paid')
-  const pendingRegs = (stats ?? []).filter(
-    s => s.status === 'pending_payment' || s.status === 'draft'
-  )
-
-  // Count unique dancers from entries
-  const uniqueDancerIds = new Set((entries ?? []).map(e => e.dancer_id))
+  const stats = statsResult.data ?? []
+  const paidRegs = stats.filter((s) => s.status === 'paid')
+  const pendingRegs = stats.filter((s) => s.status === 'pending_payment' || s.status === 'draft')
 
   return {
-    entries: entries ?? [],
+    entries: entriesResult.data ?? [],
+    competitions: compsResult.data ?? [],
+    numbers: Object.fromEntries(
+      (numbersResult.data ?? []).map((n) => [n.dancer_id, n.competitor_number])
+    ) as Record<string, number>,
     summary: {
-      totalDancers: uniqueDancerIds.size,
-      totalEntries: entries?.length ?? 0,
+      familiesPaid: paidRegs.length,
       revenueCents: paidRegs.reduce((sum, r) => sum + (r.total_cents ?? 0), 0),
-      pendingCount: pendingRegs.length,
-    },
+      pendingCount: pendingRegs.length
+    }
   }
 }
 
