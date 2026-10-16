@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { REGISTRATION_TRANSITIONS } from '@/lib/registration-states'
 import type { RegistrationStatus } from '@/lib/types/feis-listing'
@@ -12,8 +14,39 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
-  await db.drop()
+  await db?.drop()
 })
+
+// The planned writers' updates (plan Tasks 8 and 9), so these tests hold the guards to what they will send
+/** claim_checkout: all four claim columns at once, and the hold moved to 15 minutes after the checkout's expiry */
+const CLAIM_SQL = `UPDATE registrations SET checkout_claim_id = gen_random_uuid(), checkout_config = '{}',
+    checkout_claimed_at = now(), checkout_expires_at = now() + interval '60 minutes',
+    hold_expires_at = now() + interval '75 minutes'
+  WHERE id = $1`
+/** attach_checkout_session: the claimed draft gets its session and awaits payment */
+const ATTACH_SQL = `UPDATE registrations SET status = 'pending_payment', stripe_checkout_session_id = $2 WHERE id = $1`
+/** _fulfil_order: every payment field with the status, attaching the session if Pay never did */
+const FULFIL_SQL = `UPDATE registrations SET status = 'paid',
+    stripe_checkout_session_id = coalesce(stripe_checkout_session_id, $2),
+    stripe_payment_intent_id = 'pi_' || replace($1::text, '-', ''), stripe_charge_id = 'ch_' || replace($1::text, '-', ''),
+    confirmation_number = 'RF-TEST-' || substr($1::text, 1, 8), paid_at = now(), hold_expires_at = NULL
+  WHERE id = $1`
+
+function newSessionId(): string {
+  return `cs_${randomUUID().replace(/-/g, '')}`
+}
+
+async function claimDraft(id: string): Promise<void> {
+  await asService(db.pool, (c) => c.query(CLAIM_SQL, [id]))
+}
+
+/** A claimed draft with its session attached, as Pay leaves it */
+async function awaitingPayment(id: string): Promise<string> {
+  const sessionId = newSessionId()
+  await claimDraft(id)
+  await asService(db.pool, (c) => c.query(ATTACH_SQL, [id, sessionId]))
+  return sessionId
+}
 
 async function familyWithDraft() {
   const listing = await createListing(db.pool)
@@ -137,6 +170,28 @@ describe('parent access to orders', () => {
       { tbl: 'registrations', grantee: 'authenticated', priv: 'SELECT' },
     ])
   })
+
+  it('leaves anon and authenticated no INSERT or UPDATE on any column, and keeps RLS on', async () => {
+    // has_table_privilege misses column-level grants; has_any_column_privilege sees them
+    const { rows } = await db.pool.query(`
+      SELECT r.role, t.tbl, p.priv
+      FROM unnest(ARRAY['anon', 'authenticated']) AS r(role)
+      CROSS JOIN unnest(ARRAY['registrations', 'registration_entries', 'registration_snapshots']) AS t(tbl)
+      CROSS JOIN unnest(ARRAY['INSERT', 'UPDATE']) AS p(priv)
+      WHERE has_any_column_privilege(r.role, 'pre_registration.' || t.tbl, p.priv)`)
+    expect(rows).toEqual([])
+
+    const { rows: rls } = await db.pool.query(`
+      SELECT relname AS tbl, relrowsecurity AS rls FROM pg_class
+      WHERE relnamespace = 'pre_registration'::regnamespace
+        AND relname IN ('registrations', 'registration_entries', 'registration_snapshots')
+      ORDER BY relname`)
+    expect(rls).toEqual([
+      { tbl: 'registration_entries', rls: true },
+      { tbl: 'registration_snapshots', rls: true },
+      { tbl: 'registrations', rls: true },
+    ])
+  })
 })
 
 describe('organiser access to orders', () => {
@@ -197,7 +252,8 @@ describe('what never changes, for any role', () => {
     const message = await refused(asService(db.pool, async (c) => {
       await c.query(`SELECT set_config('pre_registration.creating_order', $1, true)`, [id])
       await c.query(
-        `INSERT INTO registrations (id, feis_listing_id, household_id, purchase_snapshot) VALUES ($1, $2, $3, '{}')`,
+        `INSERT INTO registrations (id, feis_listing_id, household_id, purchase_snapshot, hold_expires_at)
+         VALUES ($1, $2, $3, '{}', now() + interval '30 minutes')`,
         [id, other.listing.id, family.householdId]
       )
       await c.query(`SELECT set_config('pre_registration.creating_order', $1, true)`, [randomUUID()])
@@ -243,6 +299,7 @@ describe('what never changes, for any role', () => {
       paid_at: 'now()',
       confirmation_number: `'RF-X'`,
       stripe_payment_intent_id: `'pi_x'`,
+      stripe_charge_id: `'ch_x'`,
       stripe_checkout_session_id: `'cs_x'`,
       checkout_claim_id: 'gen_random_uuid()',
       checkout_config: `'{}'`,
@@ -254,8 +311,8 @@ describe('what never changes, for any role', () => {
       const message = await refused(asService(db.pool, async (c) => {
         await c.query(`SELECT set_config('pre_registration.creating_order', $1, true)`, [id])
         return c.query(
-          `INSERT INTO registrations (id, feis_listing_id, household_id, purchase_snapshot, ${column})
-           VALUES ($1, $2, $3, '{}', ${value})`,
+          `INSERT INTO registrations (id, feis_listing_id, household_id, purchase_snapshot, hold_expires_at, ${column})
+           VALUES ($1, $2, $3, '{}', now() + interval '30 minutes', ${value})`,
           [id, other.listing.id, family.householdId]
         )
       }))
@@ -266,15 +323,29 @@ describe('what never changes, for any role', () => {
 
   it("refuses changes to an order's contents", async () => {
     const { draftId } = await familyWithDraft()
+    // Valid values that belong to someone else, so only the guard can be what refuses them
+    const other = await familyWithDraft()
     const before = await orderRow(draftId)
+    // One update per column the guard freezes
     for (const sql of [
       `UPDATE registrations SET total_cents = 1 WHERE id = $1`,
       `UPDATE registrations SET purchase_snapshot = '{"version": 2}' WHERE id = $1`,
       `UPDATE registrations SET consent_ip = '1.1.1.1' WHERE id = $1`,
+      `UPDATE registrations SET id = gen_random_uuid() WHERE id = $1`,
+      `UPDATE registrations SET household_id = '${other.family.householdId}' WHERE id = $1`,
+      `UPDATE registrations SET feis_listing_id = '${other.listing.listing.id}' WHERE id = $1`,
+      `UPDATE registrations SET application_fee_cents = 1 WHERE id = $1`,
+      `UPDATE registrations SET event_fee_cents = 1 WHERE id = $1`,
+      `UPDATE registrations SET is_late = NOT is_late WHERE id = $1`,
+      `UPDATE registrations SET consent_accepted_at = now() WHERE id = $1`,
+      `UPDATE registrations SET consent_version = 'tos-changed' WHERE id = $1`,
+      `UPDATE registrations SET platform_terms_version = 'platform-changed' WHERE id = $1`,
+      `UPDATE registrations SET created_at = created_at - interval '1 day' WHERE id = $1`,
     ]) {
-      expect(await refused(asService(db.pool, (c) => c.query(sql, [draftId])))).toMatch(/contents never change/)
+      expect(await refused(asService(db.pool, (c) => c.query(sql, [draftId]))), sql).toMatch(/contents never change/)
     }
     expect(await orderRow(draftId)).toEqual(before)
+    expect(await countRows('registrations', 'household_id', other.family.householdId)).toBe(1)
   })
 
   it('never deletes an order', async () => {
@@ -284,10 +355,37 @@ describe('what never changes, for any role', () => {
     expect(await orderRow(draftId)).toMatchObject({ id: draftId, status: 'draft' })
   })
 
+  it('refuses TRUNCATE of the order tables, for the service role and for the owner', async () => {
+    const { family, dancer } = await familyWithDraft()
+    const paidListing = await createListing(db.pool)
+    await insertOrderDirect(db.pool, family.householdId, paidListing.listing.id,
+      [{ dancerId: dancer.id, competitionId: paidListing.competitions[0].id }], { status: 'paid' })
+    const tables = ['registrations', 'registration_entries', 'registration_snapshots']
+    const counts = async () => (await db.pool.query(`
+      SELECT (SELECT count(*)::int FROM registrations) AS orders,
+             (SELECT count(*)::int FROM registration_entries) AS entries,
+             (SELECT count(*)::int FROM registration_snapshots) AS snapshots`)).rows[0]
+    const before = await counts()
+    expect(Math.min(before.orders, before.entries, before.snapshots)).toBeGreaterThan(0)
+
+    for (const table of tables) {
+      expect(await refused(asService(db.pool, (c) => c.query(`TRUNCATE ${table}`))), table)
+        .toMatch(new RegExp(`permission denied for table ${table}`))
+    }
+    // The owner keeps every privilege, so only the trigger stands in the way. CASCADE gets past the
+    // foreign keys, which would otherwise refuse TRUNCATE registrations before any trigger runs.
+    for (const table of tables) {
+      expect(await refused(db.pool.query(`TRUNCATE ${table} CASCADE`)), table)
+        .toMatch(new RegExp(`orders are never deleted, so ${table} is never truncated`))
+    }
+    expect(await counts()).toEqual(before)
+  })
+
   it('sets a checkout claim once', async () => {
     const { draftId } = await familyWithDraft()
     await asService(db.pool, (c) => c.query(
-      `UPDATE registrations SET checkout_claim_id = gen_random_uuid(), checkout_config = '{}', checkout_expires_at = now() + interval '1 hour'
+      `UPDATE registrations SET checkout_claim_id = gen_random_uuid(), checkout_config = '{}', checkout_claimed_at = now(),
+         checkout_expires_at = now() + interval '1 hour'
        WHERE id = $1`, [draftId]))
     const claimed = await orderRow(draftId)
     expect(claimed.checkout_claim_id).not.toBeNull()
@@ -297,8 +395,54 @@ describe('what never changes, for any role', () => {
     expect(await orderRow(draftId)).toEqual(claimed)
   })
 
+  it('makes a checkout claim all at once: no details without the claim, no claim without every detail', async () => {
+    const { draftId } = await familyWithDraft()
+    const before = await orderRow(draftId)
+    for (const sql of [
+      // Details while there is no claim
+      `UPDATE registrations SET checkout_config = '{}' WHERE id = $1`,
+      `UPDATE registrations SET checkout_claimed_at = now() WHERE id = $1`,
+      `UPDATE registrations SET checkout_expires_at = now() + interval '60 minutes' WHERE id = $1`,
+      // A claim missing one detail
+      `UPDATE registrations SET checkout_claim_id = gen_random_uuid(), checkout_config = '{}', checkout_claimed_at = now()
+       WHERE id = $1`,
+      `UPDATE registrations SET checkout_claim_id = gen_random_uuid(), checkout_config = '{}',
+         checkout_expires_at = now() + interval '60 minutes' WHERE id = $1`,
+      `UPDATE registrations SET checkout_claim_id = gen_random_uuid(), checkout_claimed_at = now(),
+         checkout_expires_at = now() + interval '60 minutes' WHERE id = $1`,
+      // What claim_checkout would write for a config with no expires_at: no expiry and no hold
+      `UPDATE registrations SET checkout_claim_id = gen_random_uuid(), checkout_config = '{}', checkout_claimed_at = now(),
+         checkout_expires_at = NULL, hold_expires_at = NULL WHERE id = $1`,
+    ]) {
+      expect(await refused(asService(db.pool, (c) => c.query(sql, [draftId]))), sql)
+        .toMatch(/claim time and expiry together/)
+    }
+    expect(await orderRow(draftId)).toEqual(before)
+
+    await claimDraft(draftId)
+    const claimed = await orderRow(draftId)
+    expect(claimed.status).toBe('draft')
+    const claimColumns = ['checkout_claim_id', 'checkout_config', 'checkout_claimed_at', 'checkout_expires_at']
+    for (const column of [...claimColumns, 'hold_expires_at']) {
+      expect(claimed[column], column).not.toBeNull()
+    }
+  })
+
+  it('keeps a hold on every unpaid order', async () => {
+    const draft = await familyWithDraft()
+    const pending = await familyWithDraft()
+    await awaitingPayment(pending.draftId)
+    for (const id of [draft.draftId, pending.draftId]) {
+      const before = await orderRow(id)
+      expect(await refused(asService(db.pool, (c) => c.query(
+        `UPDATE registrations SET hold_expires_at = NULL WHERE id = $1`, [id])))).toMatch(/registrations_unpaid_needs_hold/)
+      expect(await orderRow(id)).toEqual(before)
+    }
+  })
+
   it("attaches a checkout session once and never changes a paid order's payment record", async () => {
     const { family, dancer, draftId } = await familyWithDraft()
+    await claimDraft(draftId)
     await asService(db.pool, (c) => c.query(
       `UPDATE registrations SET stripe_checkout_session_id = 'cs_first' WHERE id = $1`, [draftId]))
     expect(await refused(asService(db.pool, (c) => c.query(
@@ -389,16 +533,37 @@ describe('what never changes, for any role', () => {
 
   it('writes a snapshot only while the marker names the order', async () => {
     const { draftId } = await familyWithDraft()
+    await claimDraft(draftId)
     // The order is paid in this transaction, but the marker names a different order
     expect(await refused(asService(db.pool, async (c) => {
       await c.query(
-        `UPDATE registrations SET status = 'paid', paid_at = now(), confirmation_number = 'RF-X', stripe_payment_intent_id = 'pi_x'
+        `UPDATE registrations SET status = 'paid', paid_at = now(), confirmation_number = 'RF-X', stripe_payment_intent_id = 'pi_x',
+           stripe_checkout_session_id = 'cs_x'
          WHERE id = $1`, [draftId])
       await c.query(`SELECT set_config('pre_registration.fulfilling_order', $1, true)`, [randomUUID()])
       return c.query(`INSERT INTO registration_snapshots (registration_id, snapshot_data) VALUES ($1, '{}')`, [draftId])
     }))).toMatch(/written once/)
     expect(await countRows('registration_snapshots', 'registration_id', draftId)).toBe(0)
     expect((await orderRow(draftId)).status).toBe('draft')
+  })
+
+  it('writes the snapshot when an order created in an earlier transaction is paid', async () => {
+    // The real path: Submit, Pay and confirmation each commit on their own
+    const { draftId } = await familyWithDraft()
+    const sessionId = await awaitingPayment(draftId)
+    await asService(db.pool, async (c) => {
+      await c.query(FULFIL_SQL, [draftId, null])
+      await c.query(`SELECT set_config('pre_registration.fulfilling_order', $1, true)`, [draftId])
+      await c.query(
+        `INSERT INTO registration_snapshots (registration_id, snapshot_data) VALUES ($1, '{"confirmed": true}')`,
+        [draftId]
+      )
+      await c.query(`SELECT set_config('pre_registration.fulfilling_order', '', true)`)
+    })
+    expect(await countRows('registration_snapshots', 'registration_id', draftId)).toBe(1)
+    expect(await orderRow(draftId)).toMatchObject({ status: 'paid', stripe_checkout_session_id: sessionId })
+    const { rows } = await db.pool.query('SELECT created_at < paid_at AS earlier FROM registrations WHERE id = $1', [draftId])
+    expect(rows[0].earlier).toBe(true)
   })
 
   it('requires a purchase snapshot on every unpaid order', async () => {
@@ -410,7 +575,8 @@ describe('what never changes, for any role', () => {
       const { rows } = await client.query('SELECT gen_random_uuid() AS id')
       await client.query(`SELECT set_config('pre_registration.creating_order', $1, true)`, [rows[0].id])
       const message = await refused(client.query(
-        `INSERT INTO registrations (id, feis_listing_id, household_id) VALUES ($1, $2, $3)`,
+        `INSERT INTO registrations (id, feis_listing_id, household_id, hold_expires_at)
+         VALUES ($1, $2, $3, now() + interval '30 minutes')`,
         [rows[0].id, other.listing.id, family.householdId]
       ))
       expect(message).toMatch(/registrations_unpaid_needs_purchase_snapshot/)
@@ -434,5 +600,186 @@ describe('what never changes, for any role', () => {
   it('schedules the hold-expiry job with schema-qualified names', async () => {
     const { rows } = await db.pool.query(`SELECT command FROM cron.job WHERE jobname = 'expire-registration-holds'`)
     expect(rows[0].command).toContain('pre_registration.registrations')
+  })
+
+  it('expires an unpaid order when the stored hold-expiry job runs after its hold has passed, and not before', async () => {
+    const passedDraft = await familyWithDraft()
+    const passedPending = await familyWithDraft()
+    await awaitingPayment(passedPending.draftId)
+    const current = await familyWithDraft()
+    for (const id of [passedDraft.draftId, passedPending.draftId]) {
+      await db.pool.query(`UPDATE registrations SET hold_expires_at = now() - interval '1 minute' WHERE id = $1`, [id])
+    }
+    const { rows } = await db.pool.query(`SELECT command FROM cron.job WHERE jobname = 'expire-registration-holds'`)
+    expect(rows).toHaveLength(1)
+
+    // pg_cron runs a job with the default search_path, so this does too
+    const client = await db.pool.connect()
+    try {
+      await client.query('BEGIN')
+      await client.query(`SET LOCAL search_path TO "$user", public`)
+      await client.query(rows[0].command)
+      await client.query('COMMIT')
+    } catch (err) {
+      await client.query('ROLLBACK')
+      throw err
+    } finally {
+      client.release()
+    }
+
+    expect((await orderRow(passedDraft.draftId)).status).toBe('expired')
+    expect((await orderRow(passedPending.draftId)).status).toBe('expired')
+    expect((await orderRow(current.draftId)).status).toBe('draft')
+  })
+})
+
+describe('payment evidence', () => {
+  async function expectPaid(id: string, sessionId: string) {
+    const row = await orderRow(id)
+    expect(row).toMatchObject({ status: 'paid', stripe_checkout_session_id: sessionId, hold_expires_at: null })
+    for (const column of ['checkout_claim_id', 'paid_at', 'confirmation_number', 'stripe_payment_intent_id']) {
+      expect(row[column], column).not.toBeNull()
+    }
+  }
+
+  it("accepts the planned writers' updates: claim, attach, pay, cancel and expire", async () => {
+    // Paid after Pay attached the session: pending_payment → paid
+    const usual = await familyWithDraft()
+    const usualSession = await awaitingPayment(usual.draftId)
+    expect((await orderRow(usual.draftId)).status).toBe('pending_payment')
+    await asService(db.pool, (c) => c.query(FULFIL_SQL, [usual.draftId, usualSession]))
+    await expectPaid(usual.draftId, usualSession)
+
+    // Paid through the order's own claim before Pay attached the session: draft → paid
+    const early = await familyWithDraft()
+    await claimDraft(early.draftId)
+    const earlySession = newSessionId()
+    await asService(db.pool, (c) => c.query(FULFIL_SQL, [early.draftId, earlySession]))
+    await expectPaid(early.draftId, earlySession)
+
+    // A late payment on the order's own claim after expire_checkout: expired → paid
+    const setStatus = (id: string, status: string) =>
+      asService(db.pool, (c) => c.query(`UPDATE registrations SET status = $2 WHERE id = $1`, [id, status]))
+    const late = await familyWithDraft()
+    const lateSession = await awaitingPayment(late.draftId)
+    await setStatus(late.draftId, 'expired')
+    expect((await orderRow(late.draftId)).status).toBe('expired')
+    await asService(db.pool, (c) => c.query(FULFIL_SQL, [late.draftId, lateSession]))
+    await expectPaid(late.draftId, lateSession)
+
+    // cancel_order on an order awaiting payment
+    const cancelled = await familyWithDraft()
+    await awaitingPayment(cancelled.draftId)
+    await setStatus(cancelled.draftId, 'cancelled')
+    expect((await orderRow(cancelled.draftId)).status).toBe('cancelled')
+  })
+
+  it('refuses to mark an order paid without its claim, session, payment time and confirmation number', async () => {
+    const unclaimed = await familyWithDraft()
+    const claimed = await familyWithDraft()
+    await claimDraft(claimed.draftId)
+    const pending = await familyWithDraft()
+    await awaitingPayment(pending.draftId)
+    const attempts: [string, string][] = [
+      // No claim (a session can only arrive in the same update, since a session needs a claim)
+      [unclaimed.draftId, `UPDATE registrations SET status = 'paid', stripe_checkout_session_id = 'cs_x', paid_at = now(),
+         confirmation_number = 'RF-X' WHERE id = $1`],
+      // No session
+      [claimed.draftId, `UPDATE registrations SET status = 'paid', paid_at = now(), confirmation_number = 'RF-X'
+         WHERE id = $1`],
+      // No payment time
+      [pending.draftId, `UPDATE registrations SET status = 'paid', confirmation_number = 'RF-X' WHERE id = $1`],
+      // No confirmation number
+      [pending.draftId, `UPDATE registrations SET status = 'paid', paid_at = now() WHERE id = $1`],
+    ]
+    for (const [id, sql] of attempts) {
+      const before = await orderRow(id)
+      expect(await refused(asService(db.pool, (c) => c.query(sql, [id]))), sql)
+        .toMatch(/a paid order needs its checkout claim, checkout session, payment time and confirmation number/)
+      expect(await orderRow(id)).toEqual(before)
+    }
+  })
+
+  it('refuses to await payment without a claim and a session', async () => {
+    const unclaimed = await familyWithDraft()
+    const claimed = await familyWithDraft()
+    await claimDraft(claimed.draftId)
+    const attempts: [string, string][] = [
+      // No claim
+      [unclaimed.draftId, `UPDATE registrations SET status = 'pending_payment', stripe_checkout_session_id = 'cs_x'
+         WHERE id = $1`],
+      // No session
+      [claimed.draftId, `UPDATE registrations SET status = 'pending_payment' WHERE id = $1`],
+    ]
+    for (const [id, sql] of attempts) {
+      const before = await orderRow(id)
+      expect(await refused(asService(db.pool, (c) => c.query(sql, [id]))), sql)
+        .toMatch(/awaiting payment needs its checkout claim and checkout session/)
+      expect(await orderRow(id)).toEqual(before)
+    }
+  })
+
+  it('refuses a checkout session on an order with no claim', async () => {
+    const { draftId } = await familyWithDraft()
+    const before = await orderRow(draftId)
+    expect(await refused(asService(db.pool, (c) => c.query(
+      `UPDATE registrations SET stripe_checkout_session_id = 'cs_x' WHERE id = $1`, [draftId]))))
+      .toMatch(/session needs a checkout claim/)
+    expect(await orderRow(draftId)).toEqual(before)
+  })
+})
+
+describe('migration 012', () => {
+  it('applies again cleanly, and sets RLS and grants itself instead of relying on earlier migrations', async () => {
+    const sql = readFileSync(path.join(process.cwd(), 'supabase/migrations/012_order_integrity.sql'), 'utf8')
+    const client = await db.pool.connect()
+    try {
+      await client.query('BEGIN')
+      // A hand-migrated database might have RLS off, grants to PUBLIC, or column-level grants
+      await client.query(`
+        ALTER TABLE registrations DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE registration_entries DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE registration_snapshots DISABLE ROW LEVEL SECURITY;
+        GRANT ALL ON registrations, registration_entries, registration_snapshots TO PUBLIC;
+        GRANT UPDATE (status) ON registrations TO authenticated;
+        GRANT INSERT (registration_id) ON registration_entries TO anon;`)
+      await client.query(sql)
+
+      const { rows: rls } = await client.query(`
+        SELECT relname AS tbl, relrowsecurity AS rls FROM pg_class
+        WHERE relnamespace = 'pre_registration'::regnamespace
+          AND relname IN ('registrations', 'registration_entries', 'registration_snapshots')
+        ORDER BY relname`)
+      expect(rls).toEqual([
+        { tbl: 'registration_entries', rls: true },
+        { tbl: 'registration_snapshots', rls: true },
+        { tbl: 'registrations', rls: true },
+      ])
+      const { rows: grants } = await client.query(`
+        SELECT c.relname AS tbl,
+               CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE a.grantee::regrole::text END AS grantee,
+               a.privilege_type AS priv
+        FROM pg_class c
+        CROSS JOIN LATERAL aclexplode(c.relacl) AS a
+        WHERE c.relnamespace = 'pre_registration'::regnamespace
+          AND c.relname IN ('registrations', 'registration_entries', 'registration_snapshots')
+          AND (a.grantee = 0 OR a.grantee IN ('anon'::regrole, 'authenticated'::regrole))
+        ORDER BY c.relname, grantee, priv`)
+      expect(grants).toEqual([
+        { tbl: 'registration_entries', grantee: 'authenticated', priv: 'SELECT' },
+        { tbl: 'registration_snapshots', grantee: 'authenticated', priv: 'SELECT' },
+        { tbl: 'registrations', grantee: 'authenticated', priv: 'SELECT' },
+      ])
+      const { rows: columnWrites } = await client.query(`
+        SELECT r.role, t.tbl, p.priv
+        FROM unnest(ARRAY['anon', 'authenticated']) AS r(role)
+        CROSS JOIN unnest(ARRAY['registrations', 'registration_entries', 'registration_snapshots']) AS t(tbl)
+        CROSS JOIN unnest(ARRAY['INSERT', 'UPDATE']) AS p(priv)
+        WHERE has_any_column_privilege(r.role, 'pre_registration.' || t.tbl, p.priv)`)
+      expect(columnWrites).toEqual([])
+    } finally {
+      await client.query('ROLLBACK')
+      client.release()
+    }
   })
 })

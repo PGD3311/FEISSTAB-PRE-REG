@@ -28,6 +28,11 @@ ALTER TABLE registrations DROP CONSTRAINT IF EXISTS registrations_unpaid_needs_p
 ALTER TABLE registrations ADD CONSTRAINT registrations_unpaid_needs_purchase_snapshot
   CHECK (status NOT IN ('draft', 'pending_payment') OR purchase_snapshot IS NOT NULL);
 
+-- An unpaid order always has a hold, so the expiry job always ends it
+ALTER TABLE registrations DROP CONSTRAINT IF EXISTS registrations_unpaid_needs_hold;
+ALTER TABLE registrations ADD CONSTRAINT registrations_unpaid_needs_hold
+  CHECK (status NOT IN ('draft', 'pending_payment') OR hold_expires_at IS NOT NULL);
+
 -- ─── Uniqueness that confirmation relies on ───
 CREATE UNIQUE INDEX IF NOT EXISTS idx_registrations_checkout_session_unique
   ON registrations (stripe_checkout_session_id) WHERE stripe_checkout_session_id IS NOT NULL;
@@ -37,6 +42,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_registration_snapshots_one_per_order
   ON registration_snapshots (registration_id);
 
 -- ─── Read-only access for parents and organisers ───
+-- RLS is turned on here as well as in 002: the SELECT grant below depends on it, and the live
+-- database was migrated by hand.
+ALTER TABLE registrations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE registration_entries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE registration_snapshots ENABLE ROW LEVEL SECURITY;
+
 DO $$
 DECLARE
   p record;
@@ -50,41 +61,46 @@ BEGIN
   END LOOP;
 END $$;
 
+-- (SELECT auth.uid()) and (SELECT auth_household_id()), as in 007: evaluated once per query, not once per row
 CREATE POLICY "Parents read own registrations" ON registrations
   FOR SELECT TO authenticated
-  USING (household_id = auth_household_id());
+  USING (household_id = (SELECT auth_household_id()));
 
 CREATE POLICY "Organisers read registrations for their feiseanna" ON registrations
   FOR SELECT TO authenticated
-  USING (feis_listing_id IN (SELECT id FROM feis_listings WHERE created_by = auth.uid()));
+  USING (feis_listing_id IN (SELECT id FROM feis_listings WHERE created_by = (SELECT auth.uid())));
 
 CREATE POLICY "Parents read own entries" ON registration_entries
   FOR SELECT TO authenticated
-  USING (registration_id IN (SELECT id FROM registrations WHERE household_id = auth_household_id()));
+  USING (registration_id IN (SELECT id FROM registrations WHERE household_id = (SELECT auth_household_id())));
 
 CREATE POLICY "Organisers read entries for their feiseanna" ON registration_entries
   FOR SELECT TO authenticated
   USING (registration_id IN (
     SELECT r.id FROM registrations r
     JOIN feis_listings l ON l.id = r.feis_listing_id
-    WHERE l.created_by = auth.uid()
+    WHERE l.created_by = (SELECT auth.uid())
   ));
 
 CREATE POLICY "Parents read own snapshots" ON registration_snapshots
   FOR SELECT TO authenticated
-  USING (registration_id IN (SELECT id FROM registrations WHERE household_id = auth_household_id()));
+  USING (registration_id IN (SELECT id FROM registrations WHERE household_id = (SELECT auth_household_id())));
 
 CREATE POLICY "Organisers read snapshots for their feiseanna" ON registration_snapshots
   FOR SELECT TO authenticated
   USING (registration_id IN (
     SELECT r.id FROM registrations r
     JOIN feis_listings l ON l.id = r.feis_listing_id
-    WHERE l.created_by = auth.uid()
+    WHERE l.created_by = (SELECT auth.uid())
   ));
 
 -- REVOKE ALL, not a list of privileges: Postgres 17 added MAINTAIN, and a list written before it would leave it behind.
-REVOKE ALL ON registrations, registration_entries, registration_snapshots FROM anon, authenticated;
+-- PUBLIC as well: whatever PUBLIC holds, every role holds.
+REVOKE ALL ON registrations, registration_entries, registration_snapshots FROM PUBLIC, anon, authenticated;
 GRANT SELECT ON registrations, registration_entries, registration_snapshots TO authenticated;
+-- Orders are never deleted (spec §3). TRUNCATE skips the row-level delete guards, so the service role
+-- loses it too, and the TRUNCATE triggers below refuse it for every role.
+REVOKE TRUNCATE ON registrations, registration_entries, registration_snapshots FROM service_role;
 
 -- ─── The state machine (mirrors REGISTRATION_TRANSITIONS in src/lib/registration-states.ts) ───
 CREATE OR REPLACE FUNCTION registration_transition_allowed(p_from text, p_to text)
@@ -119,6 +135,7 @@ BEGIN
        OR NEW.checkout_claim_id IS NOT NULL OR NEW.checkout_config IS NOT NULL OR NEW.checkout_claimed_at IS NOT NULL
        OR NEW.checkout_expires_at IS NOT NULL
        OR NEW.stripe_checkout_session_id IS NOT NULL OR NEW.stripe_payment_intent_id IS NOT NULL
+       OR NEW.stripe_charge_id IS NOT NULL
        OR NEW.confirmation_number IS NOT NULL OR NEW.paid_at IS NOT NULL THEN
       RAISE EXCEPTION 'a new order starts as an unpaid draft' USING ERRCODE = '42501';
     END IF;
@@ -141,6 +158,14 @@ BEGIN
     RAISE EXCEPTION 'a checkout claim is set once' USING ERRCODE = '42501';
   END IF;
 
+  -- A claim is all or nothing: no claim details without a claim, and a new claim brings every detail
+  IF (NEW.checkout_claim_id IS NULL
+      AND (NEW.checkout_config IS NOT NULL OR NEW.checkout_claimed_at IS NOT NULL OR NEW.checkout_expires_at IS NOT NULL))
+     OR (OLD.checkout_claim_id IS NULL AND NEW.checkout_claim_id IS NOT NULL
+      AND (NEW.checkout_config IS NULL OR NEW.checkout_claimed_at IS NULL OR NEW.checkout_expires_at IS NULL)) THEN
+    RAISE EXCEPTION 'a checkout claim sets its id, config, claim time and expiry together' USING ERRCODE = '42501';
+  END IF;
+
   IF OLD.stripe_checkout_session_id IS NOT NULL
      AND NEW.stripe_checkout_session_id IS DISTINCT FROM OLD.stripe_checkout_session_id THEN
     RAISE EXCEPTION 'a checkout session is attached once' USING ERRCODE = '42501';
@@ -155,6 +180,24 @@ BEGIN
   IF NEW.status IS DISTINCT FROM OLD.status
      AND NOT registration_transition_allowed(OLD.status, NEW.status) THEN
     RAISE EXCEPTION 'an order cannot move from % to %', OLD.status, NEW.status USING ERRCODE = '42501';
+  END IF;
+
+  -- Payment evidence, checked after the status table so an illegal move still says so
+  IF NEW.status = 'paid' AND OLD.status IS DISTINCT FROM 'paid'
+     AND (NEW.checkout_claim_id IS NULL OR NEW.stripe_checkout_session_id IS NULL
+          OR NEW.paid_at IS NULL OR NEW.confirmation_number IS NULL) THEN
+    RAISE EXCEPTION 'a paid order needs its checkout claim, checkout session, payment time and confirmation number'
+      USING ERRCODE = '42501';
+  END IF;
+
+  IF NEW.status = 'pending_payment' AND OLD.status IS DISTINCT FROM 'pending_payment'
+     AND (NEW.checkout_claim_id IS NULL OR NEW.stripe_checkout_session_id IS NULL) THEN
+    RAISE EXCEPTION 'an order awaiting payment needs its checkout claim and checkout session' USING ERRCODE = '42501';
+  END IF;
+
+  IF OLD.stripe_checkout_session_id IS NULL AND NEW.stripe_checkout_session_id IS NOT NULL
+     AND NEW.checkout_claim_id IS NULL THEN
+    RAISE EXCEPTION 'a checkout session needs a checkout claim' USING ERRCODE = '42501';
   END IF;
 
   RETURN NEW;
@@ -212,6 +255,32 @@ DROP TRIGGER IF EXISTS guard_registration_snapshots ON registration_snapshots;
 CREATE TRIGGER guard_registration_snapshots
   BEFORE INSERT OR UPDATE OR DELETE ON registration_snapshots
   FOR EACH ROW EXECUTE FUNCTION guard_registration_snapshots();
+
+-- ─── TRUNCATE: row-level delete guards don't fire on it, so it is refused for every role ───
+CREATE OR REPLACE FUNCTION guard_order_truncate()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pre_registration, pg_temp
+AS $$
+BEGIN
+  RAISE EXCEPTION 'orders are never deleted, so % is never truncated', TG_TABLE_NAME USING ERRCODE = '42501';
+END;
+$$;
+
+DROP TRIGGER IF EXISTS guard_registrations_truncate ON registrations;
+CREATE TRIGGER guard_registrations_truncate
+  BEFORE TRUNCATE ON registrations
+  FOR EACH STATEMENT EXECUTE FUNCTION guard_order_truncate();
+
+DROP TRIGGER IF EXISTS guard_registration_entries_truncate ON registration_entries;
+CREATE TRIGGER guard_registration_entries_truncate
+  BEFORE TRUNCATE ON registration_entries
+  FOR EACH STATEMENT EXECUTE FUNCTION guard_order_truncate();
+
+DROP TRIGGER IF EXISTS guard_registration_snapshots_truncate ON registration_snapshots;
+CREATE TRIGGER guard_registration_snapshots_truncate
+  BEFORE TRUNCATE ON registration_snapshots
+  FOR EACH STATEMENT EXECUTE FUNCTION guard_order_truncate();
 
 -- ─── Hold expiry ───
 -- pg_cron runs jobs with the default search_path, so the job names its schema.

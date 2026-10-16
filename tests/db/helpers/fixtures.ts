@@ -109,8 +109,9 @@ export async function createDancer(
 }
 
 /**
- * Test-only: writes an order the way create_order will (Task 5), using the same trigger markers.
- * The real app never does this.
+ * Test-only: writes an order the way create_order will (Task 6), using the same trigger markers.
+ * A paid order is then claimed, given a session and paid the way claim_checkout,
+ * attach_checkout_session and _fulfil_order will (Tasks 8 and 9). The real app never does this.
  */
 export async function insertOrderDirect(
   pool: Pool,
@@ -140,8 +141,21 @@ export async function insertOrderDirect(
     await client.query(`SELECT set_config('pre_registration.creating_order', '', true)`)
     if (opts.status === 'paid') {
       await client.query(
+        `UPDATE registrations SET checkout_claim_id = gen_random_uuid(), checkout_config = '{}',
+           checkout_claimed_at = now(), checkout_expires_at = now() + interval '60 minutes',
+           hold_expires_at = now() + interval '75 minutes'
+         WHERE id = $1`,
+        [id]
+      )
+      await client.query(
+        `UPDATE registrations SET status = 'pending_payment',
+           stripe_checkout_session_id = 'cs_' || replace($1::text, '-', '')
+         WHERE id = $1`,
+        [id]
+      )
+      await client.query(
         `UPDATE registrations SET status = 'paid', paid_at = now(), confirmation_number = 'RF-TEST-' || substr($1::text, 1, 5),
-           stripe_payment_intent_id = 'pi_' || replace($1::text, '-', '')
+           stripe_payment_intent_id = 'pi_' || replace($1::text, '-', ''), hold_expires_at = NULL
          WHERE id = $1`,
         [id]
       )
