@@ -252,6 +252,7 @@ export interface DancerDanceLevel {
 }
 
 // ─── Registration types ───
+// The columns of REGISTRATION_COLUMNS the app may read. consent_ip and checkout_config are private to the database.
 export interface Registration {
   id: string
   feis_listing_id: string
@@ -268,7 +269,6 @@ export interface Registration {
   consent_accepted_at: string | null
   consent_version: string | null
   platform_terms_version: string | null
-  consent_ip: string | null
   hold_expires_at: string | null
   created_at: string
   updated_at: string

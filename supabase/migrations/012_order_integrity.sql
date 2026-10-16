@@ -96,8 +96,23 @@ CREATE POLICY "Organisers read snapshots for their feiseanna" ON registration_sn
 
 -- REVOKE ALL, not a list of privileges: Postgres 17 added MAINTAIN, and a list written before it would leave it behind.
 -- PUBLIC as well: whatever PUBLIC holds, every role holds.
+-- On a table, REVOKE ALL also revokes every column-level grant, so a re-run clears the column list below before regranting it.
 REVOKE ALL ON registrations, registration_entries, registration_snapshots FROM PUBLIC, anon, authenticated;
-GRANT SELECT ON registrations, registration_entries, registration_snapshots TO authenticated;
+GRANT SELECT ON registration_entries, registration_snapshots TO authenticated;
+-- registrations is granted column by column, and two columns stay private: consent_ip (the parent's IP address)
+-- and checkout_config (the bound Stripe account, URLs and idempotency key). Column privileges apply to a role,
+-- not to a policy, so organisers can't read them and neither can parents; no parent screen shows them. The payment
+-- code reads them through SECURITY DEFINER functions or the service role.
+-- Every later migration that adds a registrations column must decide whether to grant SELECT on it: add it to this
+-- list and to REGISTRATION_COLUMNS (src/lib/registration-columns.ts), or it stays private.
+GRANT SELECT (
+  id, feis_listing_id, household_id, status, confirmation_number,
+  stripe_checkout_session_id, stripe_payment_intent_id, stripe_charge_id,
+  total_cents, application_fee_cents, event_fee_cents, is_late,
+  consent_accepted_at, consent_version, platform_terms_version,
+  hold_expires_at, created_at, updated_at, paid_at,
+  purchase_snapshot, checkout_claim_id, checkout_claimed_at, checkout_expires_at
+) ON registrations TO authenticated;
 -- Orders are never deleted (spec §3). TRUNCATE skips the row-level delete guards, so the service role
 -- loses it too, and the TRUNCATE triggers below refuse it for every role.
 REVOKE TRUNCATE ON registrations, registration_entries, registration_snapshots FROM service_role;

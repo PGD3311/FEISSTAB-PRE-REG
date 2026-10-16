@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { REGISTRATION_COLUMNS } from '@/lib/registration-columns'
 import { REGISTRATION_TRANSITIONS } from '@/lib/registration-states'
 import type { RegistrationStatus } from '@/lib/types/feis-listing'
 import { asParent, asRole, asService, createTestDatabase, refused, type TestDatabase } from './helpers/db'
@@ -62,6 +63,18 @@ async function orderRow(id: string) {
   const { rows } = await db.pool.query('SELECT * FROM registrations WHERE id = $1', [id])
   return rows[0]
 }
+
+/** The columns the app's code may select on registrations: REGISTRATION_COLUMNS as a list */
+const READABLE_COLUMNS = REGISTRATION_COLUMNS.split(',').map((column) => column.trim())
+/** The columns that stay private to the database */
+const PRIVATE_COLUMNS = ['consent_ip', 'checkout_config']
+
+/** Every column of registrations that a role ($1) may SELECT, through a table-level or a column-level grant */
+const SELECTABLE_COLUMNS_SQL = `
+  SELECT attname::text AS name FROM pg_attribute
+  WHERE attrelid = 'pre_registration.registrations'::regclass AND attnum > 0 AND NOT attisdropped
+    AND has_column_privilege($1, attrelid, attnum, 'SELECT')
+  ORDER BY attname`
 
 async function countRows(table: string, column: string, value: string): Promise<number> {
   const { rows } = await db.pool.query(`SELECT count(*)::int AS n FROM ${table} WHERE ${column} = $1`, [value])
@@ -152,8 +165,9 @@ describe('parent access to orders', () => {
     expect(rows).toEqual([])
   })
 
-  it('grants authenticated SELECT and nothing else on the order tables, and anon and PUBLIC nothing', async () => {
-    // Reads the ACLs themselves, so a privilege a newer Postgres adds (PG17 MAINTAIN) shows up too
+  it('grants authenticated table-level SELECT on entries and snapshots only, and anon and PUBLIC nothing', async () => {
+    // Reads the ACLs themselves, so a privilege a newer Postgres adds (PG17 MAINTAIN) shows up too.
+    // registrations has no table-level grant: authenticated reads it through the column grants below.
     const { rows } = await db.pool.query(`
       SELECT c.relname AS tbl,
              CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE a.grantee::regrole::text END AS grantee,
@@ -167,11 +181,37 @@ describe('parent access to orders', () => {
     expect(rows).toEqual([
       { tbl: 'registration_entries', grantee: 'authenticated', priv: 'SELECT' },
       { tbl: 'registration_snapshots', grantee: 'authenticated', priv: 'SELECT' },
-      { tbl: 'registrations', grantee: 'authenticated', priv: 'SELECT' },
+    ])
+
+    // The column-level ACLs: only authenticated, only SELECT, only on registrations
+    const { rows: columnGrants } = await db.pool.query(`
+      SELECT DISTINCT c.relname AS tbl,
+             CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE a.grantee::regrole::text END AS grantee,
+             a.privilege_type AS priv
+      FROM pg_class c
+      JOIN pg_attribute att ON att.attrelid = c.oid AND att.attnum > 0 AND NOT att.attisdropped
+      CROSS JOIN LATERAL aclexplode(att.attacl) AS a
+      WHERE c.relnamespace = 'pre_registration'::regnamespace
+        AND c.relname IN ('registrations', 'registration_entries', 'registration_snapshots')
+        AND (a.grantee = 0 OR a.grantee IN ('anon'::regrole, 'authenticated'::regrole))
+      ORDER BY c.relname, grantee, priv`)
+    expect(columnGrants).toEqual([{ tbl: 'registrations', grantee: 'authenticated', priv: 'SELECT' }])
+  })
+
+  it('gives authenticated table-level SELECT on entries and snapshots but not on registrations, and anon none', async () => {
+    const { rows } = await db.pool.query(`
+      SELECT r.role, t.tbl
+      FROM unnest(ARRAY['anon', 'authenticated']) AS r(role)
+      CROSS JOIN unnest(ARRAY['registrations', 'registration_entries', 'registration_snapshots']) AS t(tbl)
+      WHERE has_table_privilege(r.role, 'pre_registration.' || t.tbl, 'SELECT')
+      ORDER BY r.role, t.tbl`)
+    expect(rows).toEqual([
+      { role: 'authenticated', tbl: 'registration_entries' },
+      { role: 'authenticated', tbl: 'registration_snapshots' },
     ])
   })
 
-  it('leaves anon and authenticated no INSERT or UPDATE on any column, and keeps RLS on', async () => {
+  it('leaves anon and authenticated no INSERT or UPDATE on any column, SELECT on columns only for authenticated, and keeps RLS on', async () => {
     // has_table_privilege misses column-level grants; has_any_column_privilege sees them
     const { rows } = await db.pool.query(`
       SELECT r.role, t.tbl, p.priv
@@ -180,6 +220,19 @@ describe('parent access to orders', () => {
       CROSS JOIN unnest(ARRAY['INSERT', 'UPDATE']) AS p(priv)
       WHERE has_any_column_privilege(r.role, 'pre_registration.' || t.tbl, p.priv)`)
     expect(rows).toEqual([])
+
+    // SELECT is held through the column grants on registrations, so it shows here though it doesn't at table level
+    const { rows: reads } = await db.pool.query(`
+      SELECT r.role, t.tbl
+      FROM unnest(ARRAY['anon', 'authenticated']) AS r(role)
+      CROSS JOIN unnest(ARRAY['registrations', 'registration_entries', 'registration_snapshots']) AS t(tbl)
+      WHERE has_any_column_privilege(r.role, 'pre_registration.' || t.tbl, 'SELECT')
+      ORDER BY r.role, t.tbl`)
+    expect(reads).toEqual([
+      { role: 'authenticated', tbl: 'registration_entries' },
+      { role: 'authenticated', tbl: 'registration_snapshots' },
+      { role: 'authenticated', tbl: 'registrations' },
+    ])
 
     const { rows: rls } = await db.pool.query(`
       SELECT relname AS tbl, relrowsecurity AS rls FROM pg_class
@@ -214,6 +267,94 @@ describe('organiser access to orders', () => {
 
     expect(await readAs(listing.organiserId)).toEqual({ orders: [draftId, paidId].sort(), entries: 2, snapshots: [paidId] })
     expect(await readAs(elsewhere.organiserId)).toEqual({ orders: [], entries: 0, snapshots: [] })
+  })
+})
+
+describe('private order columns', () => {
+  it('lets authenticated select exactly the columns in REGISTRATION_COLUMNS, and anon none', async () => {
+    const { rows: all } = await db.pool.query(
+      `SELECT attname::text AS name FROM pg_attribute
+       WHERE attrelid = 'pre_registration.registrations'::regclass AND attnum > 0 AND NOT attisdropped`
+    )
+    const tableColumns: string[] = all.map((r) => r.name)
+    const selectable: string[] = (await db.pool.query(SELECTABLE_COLUMNS_SQL, ['authenticated'])).rows.map((r) => r.name)
+
+    expect(new Set(READABLE_COLUMNS).size).toBe(READABLE_COLUMNS.length)
+    expect(selectable).toEqual([...READABLE_COLUMNS].sort())
+    // A column a later migration adds is private until it is granted and added to REGISTRATION_COLUMNS: this fails until then
+    expect(tableColumns.filter((name) => !selectable.includes(name)).sort()).toEqual([...PRIVATE_COLUMNS].sort())
+    expect((await db.pool.query(SELECTABLE_COLUMNS_SQL, ['anon'])).rows).toEqual([])
+  })
+
+  it('refuses a parent consent_ip, checkout_config and SELECT * on their own order', async () => {
+    const { family, draftId } = await familyWithDraft()
+    await claimDraft(draftId)
+    for (const column of PRIVATE_COLUMNS) {
+      expect(
+        await refused(asParent(db.pool, family.userId, (c) =>
+          c.query(`SELECT ${column} FROM registrations WHERE id = $1`, [draftId])
+        )),
+        column
+      ).toMatch(/permission denied/)
+    }
+    expect(await refused(asParent(db.pool, family.userId, (c) =>
+      c.query('SELECT * FROM registrations WHERE id = $1', [draftId])
+    ))).toMatch(/permission denied/)
+    expect(await refused(asParent(db.pool, family.userId, (c) =>
+      c.query(`SELECT ${REGISTRATION_COLUMNS}, consent_ip FROM registrations WHERE id = $1`, [draftId])
+    ))).toMatch(/permission denied/)
+  })
+
+  it('refuses an organiser consent_ip, checkout_config and SELECT * on their feis\'s order', async () => {
+    const { listing, draftId } = await familyWithDraft()
+    await claimDraft(draftId)
+    for (const column of PRIVATE_COLUMNS) {
+      expect(
+        await refused(asRole(db.pool, 'authenticated', listing.organiserId, (c) =>
+          c.query(`SELECT ${column} FROM registrations WHERE id = $1`, [draftId])
+        )),
+        column
+      ).toMatch(/permission denied/)
+    }
+    expect(await refused(asRole(db.pool, 'authenticated', listing.organiserId, (c) =>
+      c.query('SELECT * FROM registrations WHERE id = $1', [draftId])
+    ))).toMatch(/permission denied/)
+  })
+
+  it('refuses the private columns in a filter or a sort too, not just in the select list', async () => {
+    const { family } = await familyWithDraft()
+    for (const column of PRIVATE_COLUMNS) {
+      for (const clause of [`WHERE ${column} IS NOT NULL`, `ORDER BY ${column}`]) {
+        expect(
+          await refused(asParent(db.pool, family.userId, (c) =>
+            c.query(`SELECT id FROM registrations ${clause}`)
+          )),
+          `${column}: ${clause}`
+        ).toMatch(/permission denied/)
+      }
+    }
+  })
+
+  it('lets a parent read their own order with REGISTRATION_COLUMNS', async () => {
+    const { family, draftId } = await familyWithDraft()
+    await claimDraft(draftId)
+    const rows = await asParent(db.pool, family.userId, async (c) =>
+      (await c.query(`SELECT ${REGISTRATION_COLUMNS} FROM registrations WHERE id = $1`, [draftId])).rows
+    )
+    expect(rows).toHaveLength(1)
+    expect(Object.keys(rows[0]).sort()).toEqual([...READABLE_COLUMNS].sort())
+    expect(rows[0]).toMatchObject({ id: draftId, household_id: family.householdId, status: 'draft' })
+    expect(rows[0].checkout_claim_id).not.toBeNull()
+  })
+
+  it("lets an organiser read their feis's order with REGISTRATION_COLUMNS", async () => {
+    const { listing, family, draftId } = await familyWithDraft()
+    const rows = await asRole(db.pool, 'authenticated', listing.organiserId, async (c) =>
+      (await c.query(`SELECT ${REGISTRATION_COLUMNS} FROM registrations WHERE id = $1`, [draftId])).rows
+    )
+    expect(rows).toHaveLength(1)
+    expect(Object.keys(rows[0]).sort()).toEqual([...READABLE_COLUMNS].sort())
+    expect(rows[0]).toMatchObject({ id: draftId, household_id: family.householdId, feis_listing_id: listing.listing.id })
   })
 })
 
@@ -742,7 +883,9 @@ describe('migration 012', () => {
         ALTER TABLE registration_snapshots DISABLE ROW LEVEL SECURITY;
         GRANT ALL ON registrations, registration_entries, registration_snapshots TO PUBLIC;
         GRANT UPDATE (status) ON registrations TO authenticated;
-        GRANT INSERT (registration_id) ON registration_entries TO anon;`)
+        GRANT INSERT (registration_id) ON registration_entries TO anon;
+        GRANT SELECT (consent_ip, checkout_config) ON registrations TO authenticated;
+        GRANT SELECT (consent_ip) ON registrations TO anon;`)
       await client.query(sql)
 
       const { rows: rls } = await client.query(`
@@ -768,8 +911,11 @@ describe('migration 012', () => {
       expect(grants).toEqual([
         { tbl: 'registration_entries', grantee: 'authenticated', priv: 'SELECT' },
         { tbl: 'registration_snapshots', grantee: 'authenticated', priv: 'SELECT' },
-        { tbl: 'registrations', grantee: 'authenticated', priv: 'SELECT' },
       ])
+      // The stale column grants on the private columns are gone, and the column list is the one the app selects
+      expect((await client.query(SELECTABLE_COLUMNS_SQL, ['authenticated'])).rows.map((r) => r.name))
+        .toEqual([...READABLE_COLUMNS].sort())
+      expect((await client.query(SELECTABLE_COLUMNS_SQL, ['anon'])).rows).toEqual([])
       const { rows: columnWrites } = await client.query(`
         SELECT r.role, t.tbl, p.priv
         FROM unnest(ARRAY['anon', 'authenticated']) AS r(role)

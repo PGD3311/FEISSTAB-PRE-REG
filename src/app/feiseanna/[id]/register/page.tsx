@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useSupabase } from '@/hooks/use-supabase'
+import { REGISTRATION_COLUMNS } from '@/lib/registration-columns'
 import { isHouseholdComplete } from '@/lib/household'
 import { getExistingRegistration } from './actions'
 import {
@@ -93,7 +94,7 @@ export default function RegisterPage() {
             getExistingRegistration(feisId),
             supabase
               .from('registrations')
-              .select('*, registration_entries(*)')
+              .select(`${REGISTRATION_COLUMNS}, registration_entries(*)`)
               .eq('feis_listing_id', feisId)
               .eq('household_id', household.id)
               .eq('status', 'paid')

@@ -1,6 +1,7 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
+import { REGISTRATION_COLUMNS } from '@/lib/registration-columns'
 import { canTransitionRegistration } from '@/lib/registration-states'
 import { calculateFees } from '@/lib/engine/fee-calculator'
 import { isHouseholdComplete } from '@/lib/household'
@@ -28,7 +29,7 @@ export async function getExistingRegistration(feisListingId: string) {
 
   const { data: registration } = await supabase
     .from('registrations')
-    .select('*, registration_entries(*)')
+    .select(`${REGISTRATION_COLUMNS}, registration_entries(*)`)
     .eq('feis_listing_id', feisListingId)
     .eq('household_id', household.id)
     .in('status', ['draft', 'pending_payment'])
@@ -248,7 +249,9 @@ export async function createCheckoutSession(registrationId: string) {
 
   const { data: reg, error: regError } = await supabase
     .from('registrations')
-    .select('*, registration_entries(*, dancers(first_name, last_name)), feis_listings(name, stripe_account_id)')
+    .select(
+      `${REGISTRATION_COLUMNS}, registration_entries(*, dancers(first_name, last_name)), feis_listings(name, stripe_account_id)`
+    )
     .eq('id', registrationId)
     .eq('household_id', household.id)
     .single()
@@ -261,7 +264,9 @@ export async function createCheckoutSession(registrationId: string) {
     return { error: 'Registration hold has expired. Please start over.' }
   }
 
-  const connectedAccountId = reg.feis_listings?.stripe_account_id
+  // The client types a to-one embed as an array, but a registration has one feis
+  const feisListing = reg.feis_listings as unknown as { stripe_account_id: string | null } | null
+  const connectedAccountId = feisListing?.stripe_account_id
   if (!connectedAccountId) {
     return { error: 'Organiser has not connected Stripe' }
   }

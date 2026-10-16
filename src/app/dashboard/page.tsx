@@ -2,6 +2,7 @@ import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { formatDate, formatCents } from '@/lib/format'
+import { REGISTRATION_COLUMNS } from '@/lib/registration-columns'
 import { isHouseholdComplete } from '@/lib/household'
 import type { Registration, Dancer, RegistrationStatus } from '@/lib/types/feis-listing'
 import { PageTitle } from '@/components/page-title'
@@ -59,7 +60,7 @@ export default async function DashboardPage() {
       .from('registrations')
       .select(
         `
-        *,
+        ${REGISTRATION_COLUMNS},
         feis_listings(name, feis_date, venue_name),
         registration_entries(dancer_id, feis_competitions(display_name))
       `
@@ -70,7 +71,8 @@ export default async function DashboardPage() {
       .order('created_at', { ascending: false })
   ])
 
-  const typedRegistrations = (registrations ?? []) as (Registration & {
+  // `unknown` first: the client types a to-one embed (feis_listings) as an array, but each registration has one feis
+  const typedRegistrations = (registrations ?? []) as unknown as (Registration & {
     feis_listings: { name: string; feis_date: string; venue_name: string }
     registration_entries: { dancer_id: string; feis_competitions: { display_name: string } }[]
   })[]
