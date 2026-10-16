@@ -1,6 +1,14 @@
 import { randomUUID } from 'node:crypto'
 import type { Pool } from 'pg'
 import type { Dancer, FeeSchedule, FeisCompetition, FeisListing, Level } from '@/lib/types/feis-listing'
+import { createOrderStore } from '@/app/_payments/order-store'
+import { ageCutoffDateFor, type RequestedEntry } from '@/lib/engine/order-validation'
+import {
+  buildCreateOrderPayload,
+  priceOrder,
+  type CreateOrderPayload
+} from '@/lib/engine/purchase-snapshot'
+import { pgRpc } from './pg-rpc'
 
 /** A dancer row plus its levels; the same shape the register page and Submit use. */
 export type FixtureDancer = Dancer & { dance_levels: { dance_key: string; level_key: string }[] }
@@ -172,5 +180,64 @@ export async function insertOrderDirect(
     throw err
   } finally {
     client.release()
+  }
+}
+
+export function buildPayload(input: {
+  listing: ListingFixture
+  dancers: FixtureDancer[]
+  entries: RequestedEntry[]
+  now?: Date
+}): CreateOrderPayload {
+  const now = input.now ?? new Date()
+  const priced = priceOrder({
+    now,
+    ageCutoffDate: ageCutoffDateFor(input.listing.listing, now),
+    levels: LEVELS,
+    feisTermsUrl: input.listing.listing.terms_url,
+    dancers: input.dancers,
+    competitions: input.listing.competitions,
+    entries: input.entries,
+    feeSchedule: input.listing.feeSchedule
+  })
+  // 5% in whole basis points: $40.00 gives an application fee of 200 cents
+  return buildCreateOrderPayload(priced, { applicationFeePercent: 5, consentIp: '203.0.113.7' })
+}
+
+export interface DraftOrderFixture {
+  family: Family
+  listing: ListingFixture
+  dancers: FixtureDancer[]
+  entries: RequestedEntry[]
+  payload: CreateOrderPayload
+  registrationId: string
+}
+
+/** A real draft order made through create_order: Novice Reel and Slip Jig, one dancer, $40.00. */
+export async function createDraftOrder(
+  pool: Pool,
+  opts: { family?: Family; listing?: ListingFixture } = {}
+): Promise<DraftOrderFixture> {
+  const listing = opts.listing ?? (await createListing(pool))
+  const family = opts.family ?? (await createFamily(pool))
+  const dancer = await createDancer(pool, family.householdId)
+  const entries = [
+    { dancerId: dancer.id, competitionId: listing.competitions[0].id },
+    { dancerId: dancer.id, competitionId: listing.competitions[1].id }
+  ]
+  const payload = buildPayload({ listing, dancers: [dancer], entries })
+  const result = await createOrderStore(pgRpc(pool)).createOrder(
+    family.householdId,
+    listing.listing.id,
+    payload
+  )
+  if (result.status !== 'created') throw new Error(`Fixture order was refused: ${result.reason}`)
+  return {
+    family,
+    listing,
+    dancers: [dancer],
+    entries,
+    payload,
+    registrationId: result.registration_id
   }
 }
