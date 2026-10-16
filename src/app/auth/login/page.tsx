@@ -2,6 +2,7 @@
 
 import { Suspense, useState, type FormEvent } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
+import Link from 'next/link'
 import { useSupabase } from '@/hooks/use-supabase'
 import { AuthLayout, AUTH_BUTTON, AUTH_INPUT } from '@/components/auth/auth-layout'
 
@@ -80,9 +81,14 @@ function LoginForm() {
         </div>
 
         <div>
-          <label htmlFor="password" className="feis-label">
-            Password
-          </label>
+          <div className="flex items-baseline justify-between gap-3">
+            <label htmlFor="password" className="feis-label">
+              Password
+            </label>
+            <Link href="/auth/forgot" className="text-[13px] font-semibold text-primary underline">
+              Forgot your password?
+            </Link>
+          </div>
           <input
             id="password"
             type="password"
