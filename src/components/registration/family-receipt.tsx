@@ -31,7 +31,7 @@ function Line({ label, cents, quiet }: ReceiptLine) {
       <span>{label}</span>
       <span className="feis-leader" />
       <span className="tabular-nums">
-        {cents < 0 ? `-${formatCents(-cents)}` : formatCents(cents)}
+        {formatCents(cents)}
       </span>
     </div>
   )

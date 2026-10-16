@@ -223,27 +223,71 @@ export function EntriesView({ entries, competitions, numbers, summary }: Entries
         ) : (
           <>
             <section>
-              <h2 className="feis-display mb-2 text-[22px]">Who&apos;s coming, by level</h2>
-              <div className="feis-entry-form max-w-xl">
-                <div className="grid grid-cols-[minmax(0,1fr)_80px_80px] gap-3 border-b-[1.5px] border-[var(--color-feis-charcoal)] px-4 py-2 text-[13px] font-bold text-muted-foreground">
-                  <span>Level</span>
-                  <span className="text-right">Dancers</span>
-                  <span className="text-right">Entries</span>
-                </div>
-                {stats.byLevel.map((l) => (
-                  <div
-                    key={l.label}
-                    className="grid grid-cols-[minmax(0,1fr)_80px_80px] items-baseline gap-3 border-t border-[#E2DCCD] px-4 py-2 first-of-type:border-t-0"
-                  >
-                    <span className="font-semibold">{l.label}</span>
-                    <span className="feis-narrow text-right text-[24px] leading-none">
-                      {l.dancers}
-                    </span>
-                    <span className="feis-narrow text-right text-[24px] leading-none text-muted-foreground">
-                      {l.entries}
-                    </span>
-                  </div>
-                ))}
+              <h2 className="feis-display mb-1 text-[22px]">Who&apos;s coming</h2>
+              <p className="mb-3 text-sm text-muted-foreground">
+                Dancers in each age group and level. Light orange boxes have only one or two
+                dancers, worth a look when you merge age groups.
+              </p>
+              <div className="feis-entry-form overflow-x-auto">
+                <table className="w-full border-collapse text-sm">
+                  <thead className="feis-thead">
+                    <tr>
+                      <th className="text-left">Age group</th>
+                      {stats.ageLevelGrid.levels.map((level) => (
+                        <th key={level} className="text-right">
+                          {level}
+                        </th>
+                      ))}
+                      <th className="text-right">Dancers</th>
+                    </tr>
+                  </thead>
+                  <tbody className="feis-tbody">
+                    {stats.ageLevelGrid.ageGroups.map((age) => (
+                      <tr key={age}>
+                        <td className="px-4 py-2 font-semibold whitespace-nowrap">{age}</td>
+                        {stats.ageLevelGrid.levels.map((level) => {
+                          const n = stats.ageLevelGrid.cells[`${age}|${level}`] ?? 0
+                          return (
+                            <td
+                              key={level}
+                              className={`px-4 py-2 text-right ${
+                                n > 0 && n <= 2 ? 'bg-[var(--color-feis-orange-light)]' : ''
+                              }`}
+                            >
+                              <span
+                                className={`feis-narrow text-[20px] leading-none ${
+                                  n === 0 ? 'text-[#CFC6B2]' : ''
+                                }`}
+                              >
+                                {n === 0 ? '·' : n}
+                              </span>
+                            </td>
+                          )
+                        })}
+                        <td className="px-4 py-2 text-right">
+                          <span className="feis-narrow text-[20px] leading-none">
+                            {stats.ageLevelGrid.ageTotals[age] ?? 0}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                    <tr className="border-t-[1.5px] border-[var(--color-feis-charcoal)]">
+                      <td className="px-4 py-2 font-bold">All ages</td>
+                      {stats.ageLevelGrid.levels.map((level) => (
+                        <td key={level} className="px-4 py-2 text-right">
+                          <span className="feis-narrow text-[20px] leading-none">
+                            {stats.byLevel.find((l) => l.label === level)?.dancers ?? 0}
+                          </span>
+                        </td>
+                      ))}
+                      <td className="px-4 py-2 text-right">
+                        <span className="feis-narrow text-[20px] leading-none">
+                          {stats.paidDancers}
+                        </span>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
             </section>
 

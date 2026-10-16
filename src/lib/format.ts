@@ -23,8 +23,12 @@ export function parseLocalDate(dateString: string): Date {
 }
 
 /** Format cents as a dollar string (e.g., 1500 → "$15.00"). */
+/** e.g. 312500 → "$3,125.00"; whole-cent integer math, so no float rounding. */
 export function formatCents(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`
+  const sign = cents < 0 ? '-' : ''
+  const abs = Math.abs(Math.round(cents))
+  const dollars = Math.floor(abs / 100).toLocaleString('en-US')
+  return `${sign}$${dollars}.${String(abs % 100).padStart(2, '0')}`
 }
 
 /** Format cents or return a fallback for null values. */

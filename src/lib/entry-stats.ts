@@ -12,6 +12,17 @@ export interface LevelCount {
   entries: number
 }
 
+export interface AgeLevelGrid {
+  /** Age groups that have paid entries, in syllabus order */
+  ageGroups: string[]
+  /** Levels that have paid entries, in syllabus order */
+  levels: string[]
+  /** Distinct dancers per age group and level, keyed `${ageGroup}|${level}` */
+  cells: Record<string, number>
+  /** Distinct dancers per age group, across all levels */
+  ageTotals: Record<string, number>
+}
+
 export interface EntryStats {
   paidEntries: number
   paidDancers: number
@@ -19,6 +30,8 @@ export interface EntryStats {
   dancersByCompetition: Map<string, string[]>
   /** Paid entries and dancers per level, in syllabus order */
   byLevel: LevelCount[]
+  /** Dancers per age group and level, for spotting busy and thin groups */
+  ageLevelGrid: AgeLevelGrid
 }
 
 /** What an organiser calls the "level" of a competition when counting who's coming. */
@@ -75,7 +88,38 @@ export function summariseEntries(
       entries: levels.get(label)?.entries ?? 0
     }))
 
+  // Age group by level: solos and championships only (specials usually span ages)
+  const ageOrder: string[] = []
+  for (const c of competitions) {
+    if (c.competition_type !== 'solo' && c.competition_type !== 'championship') continue
+    const age = c.age_group_label
+    if (age && !ageOrder.includes(age)) ageOrder.push(age)
+  }
+  const cellSets = new Map<string, Set<string>>()
+  const ageSets = new Map<string, Set<string>>()
+  for (const e of paid) {
+    const comp = compById.get(e.competitionId)
+    if (!comp || !comp.age_group_label) continue
+    if (comp.competition_type !== 'solo' && comp.competition_type !== 'championship') continue
+    const key = `${comp.age_group_label}|${levelOf(comp)}`
+    const cell = cellSets.get(key) ?? new Set<string>()
+    cell.add(e.dancerId)
+    cellSets.set(key, cell)
+    const ageSet = ageSets.get(comp.age_group_label) ?? new Set<string>()
+    ageSet.add(e.dancerId)
+    ageSets.set(comp.age_group_label, ageSet)
+  }
+  const gridLevels = levelOrder.filter((label) =>
+    [...cellSets.keys()].some((k) => k.endsWith(`|${label}`))
+  )
+
   return {
+    ageLevelGrid: {
+      ageGroups: ageOrder.filter((a) => ageSets.has(a)),
+      levels: gridLevels,
+      cells: Object.fromEntries([...cellSets].map(([k, v]) => [k, v.size])),
+      ageTotals: Object.fromEntries([...ageSets].map(([k, v]) => [k, v.size]))
+    },
     paidEntries: paid.length,
     paidDancers: new Set(paid.map((e) => e.dancerId)).size,
     dancersByCompetition,

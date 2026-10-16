@@ -29,11 +29,15 @@ function comp(id: string, overrides: Partial<FeisCompetition>): FeisCompetition 
 }
 
 const comps = [
-  comp('bgR', { level_label: 'Beginner' }),
-  comp('novR', { level_label: 'Novice' }),
-  comp('novLJ', { level_label: 'Novice' }),
-  comp('pc12', { competition_type: 'championship', championship_key: 'prelim' }),
-  comp('sp', { competition_type: 'special' })
+  comp('bgR', { level_label: 'Beginner', age_group_label: 'Under 7' }),
+  comp('novR', { level_label: 'Novice', age_group_label: 'Under 12' }),
+  comp('novLJ', { level_label: 'Novice', age_group_label: 'Under 12' }),
+  comp('pc12', {
+    competition_type: 'championship',
+    championship_key: 'prelim',
+    age_group_label: 'Under 12'
+  }),
+  comp('sp', { competition_type: 'special', age_group_label: 'Under 12' })
 ]
 
 describe('levelOf', () => {
@@ -75,5 +79,19 @@ describe('summariseEntries', () => {
       { label: 'Novice', dancers: 2, entries: 3 },
       { label: 'Preliminary championship', dancers: 1, entries: 1 }
     ])
+  })
+
+  it('counts dancers per age group and level, once each, leaving specials out', () => {
+    const stats = summariseEntries(
+      [...entries, { dancerId: 'sean', competitionId: 'sp', status: 'paid' }],
+      comps
+    )
+    expect(stats.ageLevelGrid.ageGroups).toEqual(['Under 12'])
+    expect(stats.ageLevelGrid.levels).toEqual(['Novice', 'Preliminary championship'])
+    expect(stats.ageLevelGrid.cells).toEqual({
+      'Under 12|Novice': 2,
+      'Under 12|Preliminary championship': 1
+    })
+    expect(stats.ageLevelGrid.ageTotals).toEqual({ 'Under 12': 3 })
   })
 })
