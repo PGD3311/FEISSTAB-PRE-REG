@@ -36,7 +36,10 @@ function SignupForm() {
     try {
       const { error: authError } = await supabase.auth.signUp({
         email,
-        password
+        password,
+        // The confirmation link must come back to this site; the shared Supabase project's
+        // default address is the feis-day app
+        options: { emailRedirectTo: `${window.location.origin}/auth/callback` }
       })
 
       if (authError) {
