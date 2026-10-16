@@ -68,10 +68,11 @@ export default async function setup(project: TestProject) {
     { stdio: 'ignore' }
   )
   const port = await freePort()
+  // timezone=UTC as on Supabase; otherwise the server takes the host's zone from initdb
   const server: ChildProcess = spawn(
     pgBin('postgres'),
     ['-D', dataDir, '-p', String(port), '-c', 'listen_addresses=127.0.0.1',
-     '-c', 'unix_socket_directories=', '-c', 'fsync=off'],
+     '-c', 'unix_socket_directories=', '-c', 'fsync=off', '-c', 'timezone=UTC'],
     { stdio: 'ignore' }
   )
 
