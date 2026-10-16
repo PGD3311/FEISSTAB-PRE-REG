@@ -455,3 +455,30 @@
     transform: translateY(-4px);
   }
 }
+
+/* Number cards: one dancer per printed page, no app chrome */
+@media print {
+  @page {
+    size: letter;
+    margin: 0.5in;
+  }
+  body {
+    background: #fff !important;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+  header.feis-cover,
+  nextjs-portal {
+    display: none !important;
+  }
+  main {
+    padding: 0 !important;
+  }
+  .feis-print-sheet {
+    break-after: page;
+  }
+  .feis-print-sheet:last-child {
+    break-after: auto;
+  }
+}
+

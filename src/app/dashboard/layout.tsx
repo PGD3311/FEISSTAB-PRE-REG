@@ -26,7 +26,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
   const hasListings = !!(listings && listings.length > 0)
 
   return (
-    <div className="min-h-screen bg-[var(--color-feis-cream)]">
+    <div className="min-h-screen bg-[var(--color-feis-cream)] print:bg-white">
       <AppBand
         links={[
           { href: '/dashboard', label: 'My entries' },

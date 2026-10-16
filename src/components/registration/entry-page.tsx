@@ -336,6 +336,7 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
             totalCents={paidRegistration.total_cents}
             confirmationNumber={paidRegistration.confirmation_number}
             contactEmail={listing.contact_email}
+            cardsHref={`/dashboard/numbers/${feisId}`}
           />
         ) : deadline.closed && !held ? (
           <aside className="feis-receipt px-[18px] py-5">

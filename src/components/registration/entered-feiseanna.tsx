@@ -58,12 +58,20 @@ export function EnteredFeiseanna({
             <div className="feis-sticker mx-2.5 grid content-start gap-2.5 self-start rounded-b border-t-0 px-4 py-3.5 sm:mx-0 sm:my-3.5 sm:rounded-r sm:rounded-bl-none sm:border-t sm:border-l-0">
               <div className="flex flex-wrap items-baseline justify-between gap-2.5">
                 <b className="text-base [font-stretch:80%]">{e.feisName}</b>
-                <Link
-                  href={`/feiseanna/${e.feisId}/register`}
-                  className="text-sm font-bold text-primary underline underline-offset-[3px]"
-                >
-                  See entry
-                </Link>
+                <span className="flex gap-4">
+                  <Link
+                    href={`/dashboard/numbers/${e.feisId}`}
+                    className="text-sm font-bold text-primary underline underline-offset-[3px]"
+                  >
+                    Print card
+                  </Link>
+                  <Link
+                    href={`/feiseanna/${e.feisId}/register`}
+                    className="text-sm font-bold text-primary underline underline-offset-[3px]"
+                  >
+                    See entry
+                  </Link>
+                </span>
               </div>
               {e.competitions.length > 0 && (
                 <ul className="flex flex-wrap gap-x-4 gap-y-1.5">

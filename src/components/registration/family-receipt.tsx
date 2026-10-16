@@ -196,6 +196,7 @@ interface PaidReceiptProps {
   totalCents: number
   confirmationNumber: string | null
   contactEmail: string | null
+  cardsHref: string
 }
 
 /** Shown once the family has paid: what they paid and how to change anything. */
@@ -203,7 +204,8 @@ export function PaidReceipt({
   familyName,
   totalCents,
   confirmationNumber,
-  contactEmail
+  contactEmail,
+  cardsHref
 }: PaidReceiptProps) {
   return (
     <aside id="family-total" className="feis-receipt px-[18px] pt-5 pb-[18px]">
@@ -220,6 +222,9 @@ export function PaidReceipt({
           Confirmation <span className="feis-narrow text-lg">{confirmationNumber}</span>
         </p>
       )}
+      <Link href={cardsHref} className="feis-btn feis-btn-primary mt-4 w-full py-3">
+        Print number cards
+      </Link>
       <p className="mt-3 text-[13px] text-muted-foreground">
         To add or drop a dance, contact the feis organiser
         {contactEmail ? (
