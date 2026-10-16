@@ -1,6 +1,5 @@
 'use client'
 
-import { useState } from 'react'
 import Link from 'next/link'
 import { competitionFeeCents } from '@/lib/engine/fee-calculator'
 import { groupForEntryForm } from '@/lib/entry-display'
@@ -50,12 +49,10 @@ export function DancerEntry({
   onDone,
   onToggle
 }: DancerEntryProps) {
-  const [showAll, setShowAll] = useState(false)
   const selectedIds = new Set(selected.map((c) => c.id))
   const eligibleCount = eligible.filter((e) => e.eligible).length
-  const visible = showAll
-    ? eligible
-    : eligible.filter((e) => e.eligible || selectedIds.has(e.competition.id))
+  // Only dances the dancer can enter, plus any already chosen
+  const visible = eligible.filter((e) => e.eligible || selectedIds.has(e.competition.id))
   const groups = groupForEntryForm(visible)
   const first = dancer.first_name
 
@@ -78,7 +75,7 @@ export function DancerEntry({
             </span>
           </div>
 
-          {eligibleCount === 0 && !showAll && (
+          {eligibleCount === 0 && (
             <p className="border-t-[1.5px] border-[var(--color-feis-charcoal)] px-4 py-3 text-sm text-muted-foreground">
               No dances at this feis match {first}&apos;s age and levels.{' '}
               <Link
@@ -129,14 +126,7 @@ export function DancerEntry({
             </fieldset>
           ))}
 
-          <div className="flex flex-wrap items-center justify-between gap-3 border-t-[1.5px] border-[var(--color-feis-charcoal)] px-4 py-2.5">
-            <button
-              type="button"
-              onClick={() => setShowAll((v) => !v)}
-              className="text-sm text-muted-foreground underline underline-offset-2 hover:text-foreground"
-            >
-              {showAll ? `Hide dances ${first} can't enter` : `Show dances ${first} can't enter`}
-            </button>
+          <div className="flex justify-end border-t-[1.5px] border-[var(--color-feis-charcoal)] px-4 py-2.5">
             <button
               type="button"
               onClick={onDone}
