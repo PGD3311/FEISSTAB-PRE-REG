@@ -50,7 +50,9 @@ export default function RegisterPage() {
 
         const { data: household, error: householdError } = await supabase
           .from('households')
-          .select('id, first_name, last_name, phone, address_line1, city, state_region, postal_code')
+          .select(
+            'id, first_name, last_name, phone, address_line1, city, state_region, postal_code'
+          )
           .eq('user_id', user.id)
           .single()
 
@@ -61,13 +63,20 @@ export default function RegisterPage() {
 
         // The feis needs a contact name, phone and address before anyone registers
         if (!isHouseholdComplete(household)) {
-          router.push(`/dashboard/account?next=${encodeURIComponent(`/feiseanna/${feisId}/register`)}`)
+          router.push(
+            `/dashboard/account?next=${encodeURIComponent(`/feiseanna/${feisId}/register`)}`
+          )
           return
         }
 
         const [listingResult, feesResult, compsResult, dancersResult, heldResult, paidResult] =
           await Promise.all([
-            supabase.from('feis_listings').select('*').eq('id', feisId).eq('status', 'open').single(),
+            supabase
+              .from('feis_listings')
+              .select('*')
+              .eq('id', feisId)
+              .eq('status', 'open')
+              .single(),
             supabase.from('fee_schedules').select('*').eq('feis_listing_id', feisId).single(),
             supabase
               .from('feis_competitions')
@@ -92,7 +101,10 @@ export default function RegisterPage() {
           ])
 
         if (listingResult.error || !listingResult.data) {
-          setLoadState({ status: 'error', message: 'This feis is no longer taking entries.' })
+          setLoadState({
+            status: 'error',
+            message: 'This feis is no longer taking entries.'
+          })
           return
         }
         for (const result of [compsResult, dancersResult, paidResult]) {
@@ -106,7 +118,10 @@ export default function RegisterPage() {
           .from('competitor_numbers')
           .select('dancer_id, competitor_number')
           .eq('feis_listing_id', feisId)
-          .in('dancer_id', dancers.map((d) => d.id))
+          .in(
+            'dancer_id',
+            dancers.map((d) => d.id)
+          )
         if (numbersResult.error) throw numbersResult.error
 
         const numbers: Record<string, number> = {}
@@ -130,7 +145,10 @@ export default function RegisterPage() {
         })
       } catch (err) {
         console.error('Failed to load the entry page:', err)
-        setLoadState({ status: 'error', message: 'The entry page could not load. Refresh to try again.' })
+        setLoadState({
+          status: 'error',
+          message: 'The entry page could not load. Refresh to try again.'
+        })
       }
     }
 
@@ -162,7 +180,10 @@ export default function RegisterPage() {
           </Link>
           <p className="mt-4 text-sm text-muted-foreground">
             New here?{' '}
-            <Link href={`/auth/signup?redirect=${next}`} className="font-semibold text-primary underline">
+            <Link
+              href={`/auth/signup?redirect=${next}`}
+              className="font-semibold text-primary underline"
+            >
               Create a family account
             </Link>
           </p>

@@ -1,39 +1,60 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
-import { competitionFeeCents } from '@/lib/engine/fee-calculator'
-import { formatDate, formatDateTime, formatCents, formatLateTier, sortLateTiers } from '@/lib/format'
-import type { FeisListing, FeeSchedule, FeisCompetition, CompetitionType } from '@/lib/types/feis-listing'
+import { competitionFeeCents, getActiveLateTier } from '@/lib/engine/fee-calculator'
+import { formatCents, sortLateTiers } from '@/lib/format'
+import { entryDeadline, groupForEntryForm } from '@/lib/entry-display'
+import { FeisCover } from '@/components/feis-cover'
+import type {
+  FeeSchedule,
+  FeisCompetition,
+  FeisListing,
+  LateFeeTier
+} from '@/lib/types/feis-listing'
 
 export const dynamic = 'force-dynamic'
 
-function groupByType(
-  competitions: FeisCompetition[]
-): Record<CompetitionType, FeisCompetition[]> {
-  const groups: Record<CompetitionType, FeisCompetition[]> = {
-    solo: [],
-    championship: [],
-    special: [],
-    custom: [],
-  }
-  for (const comp of competitions) {
-    groups[comp.competition_type].push(comp)
-  }
-  return groups
-}
-
 interface PageParams {
   params: Promise<{ id: string }>
+}
+
+function PriceLine({ label, value, note }: { label: string; value: string; note?: string }) {
+  return (
+    <div className="py-1">
+      <div className="flex items-baseline gap-1.5 text-sm">
+        <span>{label}</span>
+        <span className="feis-leader" />
+        <span className="tabular-nums">{value}</span>
+      </div>
+      {note && <p className="text-[12.5px] text-muted-foreground">{note}</p>}
+    </div>
+  )
+}
+
+function tierStart(tier: LateFeeTier, timeZone: string): string {
+  return new Date(tier.starts_at).toLocaleDateString('en-GB', {
+    timeZone,
+    day: 'numeric',
+    month: 'short'
+  })
+}
+
+function competitionName(comp: FeisCompetition): string {
+  return comp.competition_type === 'solo' && comp.dance_label ? comp.dance_label : comp.display_name
 }
 
 export default async function FeisDetailPage({ params }: PageParams) {
   const { id } = await params
   const supabase = await createClient()
 
-  // Fetch user (optional — page is public) and listing in parallel
-  const [{ data: { user } }, { data: listingData, error: listingError }] = await Promise.all([
+  const [
+    {
+      data: { user }
+    },
+    { data: listingData, error: listingError }
+  ] = await Promise.all([
     supabase.auth.getUser(),
-    supabase.from('feis_listings').select('*').eq('id', id).eq('status', 'open').single(),
+    supabase.from('feis_listings').select('*').eq('id', id).eq('status', 'open').single()
   ])
 
   if (listingError || !listingData) {
@@ -41,257 +62,236 @@ export default async function FeisDetailPage({ params }: PageParams) {
   }
 
   const listing = listingData as FeisListing
+  const timeZone = listing.timezone ?? 'America/New_York'
 
-  // Fetch fee schedule and competitions in parallel
   const [feeResult, compsResult] = await Promise.all([
-    supabase
-      .from('fee_schedules')
-      .select('*')
-      .eq('feis_listing_id', id)
-      .single(),
+    supabase.from('fee_schedules').select('*').eq('feis_listing_id', id).single(),
     supabase
       .from('feis_competitions')
       .select('*')
       .eq('feis_listing_id', id)
       .eq('enabled', true)
-      .order('sort_order', { ascending: true }),
+      .order('sort_order', { ascending: true })
   ])
+
+  if (compsResult.error) {
+    console.error('Failed to load competitions:', compsResult.error)
+  }
 
   const feeSchedule = feeResult.data as FeeSchedule | null
   const competitions = (compsResult.data ?? []) as FeisCompetition[]
-  const grouped = groupByType(competitions)
-
-  const TYPE_LABELS: Record<CompetitionType, string> = {
-    solo: 'Solo Competitions',
-    championship: 'Championships',
-    special: 'Special Competitions',
-    custom: 'Other Competitions',
-  }
+  const groups = groupForEntryForm(
+    competitions.map((competition) => ({
+      competition,
+      eligible: true,
+      reason: ''
+    }))
+  )
+  const deadline = entryDeadline(listing)
+  const activeTier = feeSchedule ? getActiveLateTier(feeSchedule.late_fee_tiers, new Date()) : null
+  const enterHref = `/feiseanna/${listing.id}/register`
 
   return (
     <div className="min-h-screen bg-[var(--color-feis-cream)]">
-      <div className="mx-auto max-w-4xl px-6 py-8">
-        {/* Back link */}
-        <Link
-          href="/feiseanna"
-          className="mb-6 inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
-        >
-          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
-          </svg>
-          All Feiseanna
-        </Link>
+      <FeisCover
+        listing={listing}
+        lateFeeCents={deadline.closed ? null : (activeTier?.fee_cents ?? null)}
+        links={[{ href: '/', label: 'All feiseanna' }]}
+      />
 
-        {/* Header */}
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold">{listing.name}</h1>
-          <p className="mt-2 text-lg text-muted-foreground">
-            {formatDate(listing.feis_date, { weekday: 'long', fallback: '—' })}
-          </p>
-          {listing.venue_name && (
-            <p className="mt-1 text-muted-foreground">
-              {listing.venue_name}
-              {listing.venue_address ? ` — ${listing.venue_address}` : ''}
-            </p>
+      <main className="mx-auto grid max-w-6xl items-start gap-7 px-4 py-7 sm:px-7 lg:grid-cols-[minmax(0,1fr)_300px]">
+        <div className="grid min-w-0 gap-7">
+          {listing.description && (
+            <section>
+              <h2 className="mb-2 text-[22px] font-extrabold [font-stretch:75%]">
+                About this feis
+              </h2>
+              <p className="max-w-[65ch] text-[15px] leading-relaxed whitespace-pre-line">
+                {listing.description}
+              </p>
+            </section>
           )}
+
+          <section>
+            <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+              <h2 className="text-[22px] font-extrabold [font-stretch:75%]">Competitions</h2>
+              <span className="text-sm text-muted-foreground">
+                {competitions.length} in the syllabus. When you enter, each dancer sees only the
+                ones they can dance.
+              </span>
+            </div>
+
+            {competitions.length === 0 ? (
+              <p className="feis-sticker rounded px-4 py-3 text-sm">
+                The organiser hasn&apos;t published the competitions yet.
+              </p>
+            ) : (
+              <div className="feis-entry-form">
+                {groups.map((group, i) => (
+                  <section key={group.label}>
+                    <h3
+                      className={`px-4 pt-2 pb-1 text-[12.5px] font-bold text-muted-foreground ${
+                        i > 0 ? 'border-t-[1.5px] border-[var(--color-feis-charcoal)]' : ''
+                      }`}
+                    >
+                      {group.label}
+                    </h3>
+                    <ul>
+                      {group.items.map(({ competition }) => (
+                        <li
+                          key={competition.id}
+                          className="grid grid-cols-[56px_minmax(0,1fr)_auto] items-center gap-2.5 border-t border-[#E2DCCD] px-4 py-2 sm:grid-cols-[64px_minmax(0,1fr)_auto]"
+                        >
+                          <span className="feis-narrow text-[17px]">
+                            {competition.display_code ?? ''}
+                          </span>
+                          <span className="min-w-0">{competitionName(competition)}</span>
+                          {feeSchedule && (
+                            <span className="text-muted-foreground tabular-nums">
+                              {formatCents(competitionFeeCents(competition, feeSchedule))}
+                            </span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                ))}
+              </div>
+            )}
+          </section>
         </div>
 
-        <div className="space-y-6">
-          {/* Description */}
-          {listing.description && (
-            <div className="feis-card p-5">
-              <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-                About This Feis
-              </h2>
-              <p className="whitespace-pre-line text-sm leading-relaxed">{listing.description}</p>
-            </div>
-          )}
-
-          {/* Registration Timeline */}
-          <div className="feis-card p-5">
-            <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              Registration Timeline
-            </h2>
-            <dl className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <div>
-                <dt className="text-xs text-muted-foreground">Registration Opens</dt>
-                <dd className="mt-0.5 text-sm font-medium">{formatDateTime(listing.reg_opens_at, '—')}</dd>
-              </div>
-              <div>
-                <dt className="text-xs text-muted-foreground">Registration Closes</dt>
-                <dd className="mt-0.5 text-sm font-medium">{formatDateTime(listing.reg_closes_at, '—')}</dd>
-              </div>
-              {listing.late_reg_closes_at && (
-                <div>
-                  <dt className="text-xs text-muted-foreground">Late Registration Closes</dt>
-                  <dd className="mt-0.5 text-sm font-medium">{formatDateTime(listing.late_reg_closes_at, '—')}</dd>
-                </div>
-              )}
-            </dl>
-          </div>
-
-          {/* Fee Schedule */}
-          {feeSchedule && (
-            <div className="feis-card p-5">
-              <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-                Fees
-              </h2>
-              <table className="w-full text-sm">
-                <tbody className="divide-y divide-border">
-                  <tr>
-                    <td className="py-2 text-muted-foreground">Event Fee (per family)</td>
-                    <td className="py-2 text-right font-medium">{formatCents(feeSchedule.event_fee_cents)}</td>
-                  </tr>
-                  <tr>
-                    <td className="py-2 text-muted-foreground">Solo Dance (per dancer)</td>
-                    <td className="py-2 text-right font-medium">{formatCents(feeSchedule.solo_fee_cents)}</td>
-                  </tr>
-                  <tr>
-                    <td className="py-2 text-muted-foreground">Prelim Championship</td>
-                    <td className="py-2 text-right font-medium">
-                      {formatCents(feeSchedule.prelim_champ_fee_cents)}
-                    </td>
-                  </tr>
-                  <tr>
-                    <td className="py-2 text-muted-foreground">Open Championship</td>
-                    <td className="py-2 text-right font-medium">
-                      {formatCents(feeSchedule.open_champ_fee_cents)}
-                    </td>
-                  </tr>
-                  {feeSchedule.family_cap_cents !== null && (
-                    <tr>
-                      <td className="py-2 text-muted-foreground">
-                        Competition Entry Max (per family)
-                        <span className="block text-xs">
-                          Does not include the event fee or late fees
-                        </span>
-                      </td>
-                      <td className="py-2 text-right font-medium">
-                        {formatCents(feeSchedule.family_cap_cents)}
-                      </td>
-                    </tr>
-                  )}
-                  {sortLateTiers(feeSchedule.late_fee_tiers).map((tier, i) => (
-                    <tr key={tier.starts_at}>
-                      <td className="py-2 text-muted-foreground">Late Fee, Tier {i + 1}</td>
-                      <td className="py-2 text-right font-medium text-[var(--color-feis-orange)]">
-                        {formatLateTier(tier, listing.timezone ?? 'America/New_York')}
-                      </td>
-                    </tr>
-                  ))}
-                  {feeSchedule.day_of_surcharge_cents > 0 && (
-                    <tr>
-                      <td className="py-2 text-muted-foreground">Day-of Surcharge</td>
-                      <td className="py-2 text-right font-medium text-[var(--color-feis-orange)]">
-                        +{formatCents(feeSchedule.day_of_surcharge_cents)}
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {/* Competition List */}
-          {competitions.length > 0 && (
-            <div className="feis-card p-5">
-              <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-                Competitions ({competitions.length} total)
-              </h2>
-              <div className="space-y-5">
-                {(Object.entries(grouped) as [CompetitionType, FeisCompetition[]][])
-                  .filter(([, comps]) => comps.length > 0)
-                  .map(([type, comps]) => (
-                    <div key={type}>
-                      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                        {TYPE_LABELS[type]} ({comps.length})
-                      </h3>
-                      <ul className="divide-y divide-border">
-                        {comps.map((comp) => (
-                          <li key={comp.id} className="flex items-baseline gap-3 py-1.5 text-sm">
-                            <span className="w-16 shrink-0 font-mono text-xs text-muted-foreground">
-                              {comp.display_code ?? ''}
-                            </span>
-                            <span className="flex-1 text-foreground">
-                              {comp.display_name}
-                              {comp.competition_type === 'custom' && comp.age_group_label && (
-                                <span className="text-muted-foreground"> · {comp.age_group_label}</span>
-                              )}
-                            </span>
-                            {feeSchedule && (
-                              <span className="font-mono text-xs text-muted-foreground">
-                                {formatCents(competitionFeeCents(comp, feeSchedule))}
-                              </span>
-                            )}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  ))}
-              </div>
-            </div>
-          )}
-
-          {/* Contact */}
-          {listing.show_contact_publicly && (listing.contact_email || listing.contact_phone) && (
-            <div className="feis-card p-5">
-              <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-                Contact
-              </h2>
-              <dl className="space-y-1 text-sm">
-                {listing.contact_email && (
-                  <div>
-                    <dt className="inline text-muted-foreground">Email: </dt>
-                    <dd className="inline">
-                      <a
-                        href={`mailto:${listing.contact_email}`}
-                        className="text-primary hover:underline"
-                      >
-                        {listing.contact_email}
-                      </a>
-                    </dd>
-                  </div>
-                )}
-                {listing.contact_phone && (
-                  <div>
-                    <dt className="inline text-muted-foreground">Phone: </dt>
-                    <dd className="inline">{listing.contact_phone}</dd>
-                  </div>
-                )}
-              </dl>
-            </div>
-          )}
-
-          {/* Register CTA */}
-          <div className="rounded-lg border border-[var(--color-feis-green-light)] bg-[var(--color-feis-green-light)] p-6 text-center">
-            {user ? (
+        <aside className="grid gap-7 lg:sticky lg:top-6">
+          <div className="feis-receipt px-[18px] pt-5 pb-[18px]">
+            {deadline.closed ? (
               <>
-                <p className="mb-4 text-sm text-muted-foreground">
-                  Ready to register your dancer(s) for this feis?
+                <h2 className="text-[22px] font-extrabold [font-stretch:75%]">
+                  Entries are closed
+                </h2>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  This feis isn&apos;t taking entries any more. Families who entered can see their
+                  numbers and dances by signing in.
                 </p>
-                <Link
-                  href={`/feiseanna/${listing.id}/register`}
-                  className="inline-block rounded-md bg-primary px-8 py-3 font-medium text-primary-foreground transition-colors hover:bg-[var(--color-feis-green-600)]"
-                >
-                  Register Now
-                </Link>
+                {user && (
+                  <Link
+                    href={enterHref}
+                    className="mt-3 inline-block text-sm font-bold text-primary underline underline-offset-[3px]"
+                  >
+                    See your entries
+                  </Link>
+                )}
               </>
             ) : (
               <>
-                <p className="mb-4 text-sm text-muted-foreground">
-                  Sign in to register your dancer(s) for this feis.
+                <h2 className="text-[22px] font-extrabold [font-stretch:75%]">
+                  Enter your dancers
+                </h2>
+                <p className="mt-1 mb-4 text-sm text-muted-foreground">
+                  Pick dances for each child, see the family total and pay by card.
                 </p>
-                <Link
-                  href={`/auth/login?redirect=/feiseanna/${listing.id}/register`}
-                  className="inline-block rounded-md bg-primary px-8 py-3 font-medium text-primary-foreground transition-colors hover:bg-[var(--color-feis-green-600)]"
-                >
-                  Sign In to Register
-                </Link>
+                {user ? (
+                  <Link
+                    href={enterHref}
+                    className="block w-full rounded-[3px] bg-primary py-3 text-center text-[17px] font-extrabold text-primary-foreground [font-stretch:85%] hover:bg-[var(--color-feis-green-600)]"
+                  >
+                    Enter dancers
+                  </Link>
+                ) : (
+                  <>
+                    <Link
+                      href={`/auth/login?redirect=${encodeURIComponent(enterHref)}`}
+                      className="block w-full rounded-[3px] bg-primary py-3 text-center text-[17px] font-extrabold text-primary-foreground [font-stretch:85%] hover:bg-[var(--color-feis-green-600)]"
+                    >
+                      Sign in to enter
+                    </Link>
+                    <p className="mt-3 text-sm text-muted-foreground">
+                      New here?{' '}
+                      <Link
+                        href={`/auth/signup?redirect=${encodeURIComponent(enterHref)}`}
+                        className="font-semibold text-primary underline"
+                      >
+                        Create a family account
+                      </Link>
+                    </p>
+                  </>
+                )}
               </>
             )}
           </div>
-        </div>
-      </div>
+
+          {feeSchedule && (
+            <section className="feis-receipt px-[18px] pt-5 pb-[18px]">
+              <h2 className="mb-2 text-[22px] font-extrabold [font-stretch:75%]">Fees</h2>
+              {feeSchedule.event_fee_cents > 0 && (
+                <PriceLine label="Family fee" value={formatCents(feeSchedule.event_fee_cents)} />
+              )}
+              <PriceLine label="Each solo dance" value={formatCents(feeSchedule.solo_fee_cents)} />
+              {competitions.some((c) => c.fee_category === 'prelim_champ') && (
+                <PriceLine
+                  label="Preliminary championship"
+                  value={formatCents(feeSchedule.prelim_champ_fee_cents)}
+                />
+              )}
+              {competitions.some((c) => c.fee_category === 'open_champ') && (
+                <PriceLine
+                  label="Open championship"
+                  value={formatCents(feeSchedule.open_champ_fee_cents)}
+                />
+              )}
+              {feeSchedule.family_cap_cents !== null && (
+                <PriceLine
+                  label="Most a family pays for entries"
+                  value={formatCents(feeSchedule.family_cap_cents)}
+                  note="The family fee and late fees are on top of this."
+                />
+              )}
+              {sortLateTiers(feeSchedule.late_fee_tiers).map((tier) => {
+                const appliesNow = !deadline.closed && tier.starts_at === activeTier?.starts_at
+                const notes = [
+                  'Per dancer',
+                  tier.family_max_cents === null
+                    ? null
+                    : `no more than ${formatCents(tier.family_max_cents)} a family`,
+                  appliesNow ? 'applies now' : null
+                ].filter(Boolean)
+                return (
+                  <PriceLine
+                    key={tier.starts_at}
+                    label={`Late fee from ${tierStart(tier, timeZone)}`}
+                    value={formatCents(tier.fee_cents)}
+                    note={`${notes.join(', ')}.`}
+                  />
+                )
+              })}
+              {feeSchedule.day_of_surcharge_cents > 0 && (
+                <PriceLine
+                  label="Entering on the day"
+                  value={`+${formatCents(feeSchedule.day_of_surcharge_cents)}`}
+                  note="Per dancer."
+                />
+              )}
+            </section>
+          )}
+
+          {listing.show_contact_publicly && (listing.contact_email || listing.contact_phone) && (
+            <section className="text-sm">
+              <h2 className="mb-1 text-base font-extrabold [font-stretch:80%]">Questions</h2>
+              <p className="text-muted-foreground">Contact the organiser:</p>
+              {listing.contact_email && (
+                <p>
+                  <a
+                    href={`mailto:${listing.contact_email}`}
+                    className="font-semibold text-primary underline"
+                  >
+                    {listing.contact_email}
+                  </a>
+                </p>
+              )}
+              {listing.contact_phone && <p className="select-all">{listing.contact_phone}</p>}
+            </section>
+          )}
+        </aside>
+      </main>
     </div>
   )
 }

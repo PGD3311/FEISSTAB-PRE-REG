@@ -52,7 +52,7 @@ export function groupForEntryForm(items: EligibleCompetition[]): CompetitionGrou
     const label =
       comp.competition_type === 'solo'
         ? [comp.level_label, comp.age_group_label].filter(Boolean).join(', ') || 'Solo dances'
-        : TYPE_LABELS[comp.competition_type] ?? 'Other'
+        : (TYPE_LABELS[comp.competition_type] ?? 'Other')
     const group = groups.get(label) ?? { label, items: [] }
     group.items.push(item)
     groups.set(label, group)
@@ -90,7 +90,11 @@ export function formatDeadline(isoString: string, timeZone: string): string {
     month: 'short'
   })
   const time = date
-    .toLocaleTimeString('en-US', { timeZone, hour: 'numeric', minute: '2-digit' })
+    .toLocaleTimeString('en-US', {
+      timeZone,
+      hour: 'numeric',
+      minute: '2-digit'
+    })
     .toLowerCase()
   return `${day}, ${time}`
 }

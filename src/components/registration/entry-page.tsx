@@ -2,22 +2,22 @@
 
 import { useMemo, useState } from 'react'
 import Link from 'next/link'
-import { formatCents, formatDate, parseLocalDate } from '@/lib/format'
-import { calculateFees } from '@/lib/engine/fee-calculator'
+import { formatCents, parseLocalDate } from '@/lib/format'
+import { calculateFees, getActiveLateTier } from '@/lib/engine/fee-calculator'
 import { calculateAgeOnDate, getEligibleCompetitions } from '@/lib/engine/eligibility'
-import {
-  dancerLevelSummary,
-  entryDeadline,
-  entryFeesPerDancer,
-  formatDeadline
-} from '@/lib/entry-display'
+import { dancerLevelSummary, entryDeadline, entryFeesPerDancer } from '@/lib/entry-display'
 import {
   createDraftRegistration,
   createCheckoutSession,
   cancelRegistration
 } from '@/app/feiseanna/[id]/register/actions'
+import { FeisCover } from '@/components/feis-cover'
 import { DancerEntry } from '@/components/registration/dancer-entry'
-import { FamilyReceipt, PaidReceipt, type ReceiptLine } from '@/components/registration/family-receipt'
+import {
+  FamilyReceipt,
+  PaidReceipt,
+  type ReceiptLine
+} from '@/components/registration/family-receipt'
 import type {
   Dancer,
   DancerDanceLevel,
@@ -32,7 +32,9 @@ import type {
 } from '@/lib/types/feis-listing'
 
 export type DancerWithLevels = Dancer & { dance_levels: DancerDanceLevel[] }
-export type RegistrationWithEntries = Registration & { registration_entries: RegistrationEntry[] }
+export type RegistrationWithEntries = Registration & {
+  registration_entries: RegistrationEntry[]
+}
 type Cart = Record<string, string[]>
 
 export type EntryPageData = {
@@ -74,16 +76,15 @@ function ageCutoffOf(listing: FeisListing): Date {
 
 export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: string }) {
   const { listing, feeSchedule, competitions, dancers, paidRegistration, numbers } = data
-  const timeZone = listing.timezone ?? 'America/New_York'
   const levels = listing.syllabus_snapshot?.levels ?? []
   const ageCutoffDate = ageCutoffOf(listing)
   const deadline = entryDeadline(listing)
 
-  const [cart, setCart] = useState<Cart>(() =>
-    cartFrom(paidRegistration ?? data.heldRegistration)
-  )
+  const [cart, setCart] = useState<Cart>(() => cartFrom(paidRegistration ?? data.heldRegistration))
   const [editingId, setEditingId] = useState<string | null>(null)
-  const [registrationId, setRegistrationId] = useState<string | null>(data.heldRegistration?.id ?? null)
+  const [registrationId, setRegistrationId] = useState<string | null>(
+    data.heldRegistration?.id ?? null
+  )
   const [holdExpiresAt, setHoldExpiresAt] = useState<string | null>(
     data.heldRegistration?.hold_expires_at ?? null
   )
@@ -97,17 +98,19 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
   const held = registrationId !== null
   const canEdit = !paid && !held && !deadline.closed && feeSchedule !== null
 
-  const competitionById = useMemo(
-    () => new Map(competitions.map((c) => [c.id, c])),
-    [competitions]
-  )
+  const competitionById = useMemo(() => new Map(competitions.map((c) => [c.id, c])), [competitions])
 
   const eligibleByDancer = useMemo(() => {
     const map: Record<string, EligibleCompetition[]> = {}
     const cutoff = ageCutoffOf(listing)
     const syllabusLevels = listing.syllabus_snapshot?.levels ?? []
     for (const dancer of dancers) {
-      map[dancer.id] = getEligibleCompetitions(profileOf(dancer), competitions, cutoff, syllabusLevels)
+      map[dancer.id] = getEligibleCompetitions(
+        profileOf(dancer),
+        competitions,
+        cutoff,
+        syllabusLevels
+      )
     }
     return map
   }, [dancers, competitions, listing])
@@ -154,9 +157,16 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
       lines.push({ label: 'Late fee', cents: breakdown.late_fees_cents })
     }
     if (breakdown.family_cap_applied) {
-      lines.push({ label: 'Family max applied', cents: -breakdown.family_cap_savings_cents })
+      lines.push({
+        label: 'Family max applied',
+        cents: -breakdown.family_cap_savings_cents
+      })
     } else if (feeSchedule.family_cap_cents !== null) {
-      lines.push({ label: 'Entries are capped at', cents: feeSchedule.family_cap_cents, quiet: true })
+      lines.push({
+        label: 'Entries are capped at',
+        cents: feeSchedule.family_cap_cents,
+        quiet: true
+      })
     }
     return lines
   }, [breakdown, feeSchedule, dancers, cart])
@@ -235,42 +245,17 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
     }
   }
 
-  const activeLateTier = breakdown?.active_late_tier ?? null
+  const activeLateTier = feeSchedule
+    ? getActiveLateTier(feeSchedule.late_fee_tiers, new Date())
+    : null
 
   return (
     <div className="min-h-screen bg-[var(--color-feis-cream)] pb-24 lg:pb-0">
-      <header className="feis-cover">
-        <div className="mx-auto grid max-w-6xl gap-x-6 gap-y-2 px-4 pt-4 pb-6 sm:px-7 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
-          <div className="flex items-center justify-between gap-4 text-sm md:col-span-2">
-            <Link href="/" className="font-extrabold italic opacity-80 hover:opacity-100">
-              RunFeis
-            </Link>
-            <Link href={`/feiseanna/${feisId}`} className="opacity-80 underline-offset-2 hover:underline hover:opacity-100">
-              Feis details and fees
-            </Link>
-          </div>
-          <div className="min-w-0 pt-3">
-            <h1 className="feis-cover-title text-[clamp(34px,6vw,56px)]">{listing.name}</h1>
-            <p className="mt-1.5 opacity-85">
-              {formatDate(listing.feis_date, { weekday: 'long', fallback: 'Date to be announced' })}
-              {listing.venue_name ? `, ${listing.venue_name}` : ''}
-            </p>
-          </div>
-          {deadline.closesAt && (
-            <div className="text-sm md:text-right">
-              {deadline.closed ? 'Entries' : 'Entries close'}
-              <strong className="block text-[22px] leading-tight font-extrabold text-[#E9C77F] [font-stretch:75%]">
-                {deadline.closed ? 'Closed' : formatDeadline(deadline.closesAt, timeZone)}
-              </strong>
-              {activeLateTier && !deadline.closed && (
-                <span className="text-[13px] opacity-85">
-                  Late fee of {formatCents(activeLateTier.fee_cents)} per dancer now applies
-                </span>
-              )}
-            </div>
-          )}
-        </div>
-      </header>
+      <FeisCover
+        listing={listing}
+        lateFeeCents={activeLateTier?.fee_cents ?? null}
+        links={[{ href: `/feiseanna/${feisId}`, label: 'Feis details and fees' }]}
+      />
 
       <main className="mx-auto grid max-w-6xl items-start gap-7 px-4 py-7 sm:px-7 lg:grid-cols-[minmax(0,1fr)_300px]">
         <section className="min-w-0">
@@ -301,13 +286,20 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
             <div className="grid gap-5">
               {dancers.map((dancer) => {
                 const age = calculateAgeOnDate(parseLocalDate(dancer.date_of_birth), ageCutoffDate)
-                const level = dancerLevelSummary(dancer.dance_levels, levels, dancer.championship_status)
+                const level = dancerLevelSummary(
+                  dancer.dance_levels,
+                  levels,
+                  dancer.championship_status
+                )
                 return (
                   <DancerEntry
                     key={dancer.id}
                     dancer={dancer}
                     feisName={listing.name ?? ''}
-                    details={[`${level}, age ${age}`, ...(dancer.school_name ? [dancer.school_name] : [])]}
+                    details={[
+                      `${level}, age ${age}`,
+                      ...(dancer.school_name ? [dancer.school_name] : [])
+                    ]}
                     number={numbers[dancer.id] ?? null}
                     eligible={eligibleByDancer[dancer.id] ?? []}
                     selected={(cart[dancer.id] ?? [])
@@ -347,14 +339,17 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
             <h2 className="text-[22px] font-extrabold [font-stretch:75%]">Entries are closed</h2>
             <p className="mt-2 text-sm text-muted-foreground">
               This feis isn&apos;t taking entries any more.
-              {listing.contact_email ? ` To ask about a late entry, email ${listing.contact_email}.` : ''}
+              {listing.contact_email
+                ? ` To ask about a late entry, email ${listing.contact_email}.`
+                : ''}
             </p>
           </aside>
         ) : !feeSchedule ? (
           <aside className="feis-receipt px-[18px] py-5">
             <h2 className="text-[22px] font-extrabold [font-stretch:75%]">Fees not set yet</h2>
             <p className="mt-2 text-sm text-muted-foreground">
-              The organiser hasn&apos;t finished setting the fees, so entries can&apos;t be paid yet.
+              The organiser hasn&apos;t finished setting the fees, so entries can&apos;t be paid
+              yet.
             </p>
           </aside>
         ) : (

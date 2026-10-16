@@ -25,10 +25,14 @@ interface FamilyReceiptProps {
 
 function Line({ label, cents, quiet }: ReceiptLine) {
   return (
-    <div className={`flex items-baseline gap-1.5 py-0.5 ${quiet ? 'text-[13px] text-muted-foreground' : 'text-sm'}`}>
+    <div
+      className={`flex items-baseline gap-1.5 py-0.5 ${quiet ? 'text-[13px] text-muted-foreground' : 'text-sm'}`}
+    >
       <span>{label}</span>
       <span className="feis-leader" />
-      <span className="tabular-nums">{cents < 0 ? `-${formatCents(-cents)}` : formatCents(cents)}</span>
+      <span className="tabular-nums">
+        {cents < 0 ? `-${formatCents(-cents)}` : formatCents(cents)}
+      </span>
     </div>
   )
 }
@@ -57,7 +61,9 @@ function HoldCountdown({ holdExpiresAt }: { holdExpiresAt: string }) {
 
   const seconds = Math.floor(remaining / 1000)
   return (
-    <p className={`text-[13px] ${remaining < 5 * 60 * 1000 ? 'text-[var(--color-feis-orange-ink)]' : 'text-muted-foreground'}`}>
+    <p
+      className={`text-[13px] ${remaining < 5 * 60 * 1000 ? 'text-[var(--color-feis-orange-ink)]' : 'text-muted-foreground'}`}
+    >
       Your places are held for{' '}
       <span className="font-semibold tabular-nums">
         {Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, '0')}
@@ -106,8 +112,8 @@ export function FamilyReceipt({
 
       {paymentStarted ? (
         <p className="mt-3.5 text-[13px] text-muted-foreground">
-          A payment was started for these entries. If you closed the payment page without
-          paying, choose Change entries to start again.
+          A payment was started for these entries. If you closed the payment page without paying,
+          choose Change entries to start again.
         </p>
       ) : (
         <label className="mt-3.5 mb-3 flex items-start gap-2 text-[12.5px] text-muted-foreground">
@@ -128,8 +134,14 @@ export function FamilyReceipt({
             </Link>
             {termsUrl && (
               <>
-                {' '}and the{' '}
-                <a href={termsUrl} target="_blank" rel="noopener noreferrer" className="font-semibold text-primary underline">
+                {' '}
+                and the{' '}
+                <a
+                  href={termsUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-semibold text-primary underline"
+                >
                   feis terms
                 </a>
               </>
@@ -152,7 +164,11 @@ export function FamilyReceipt({
         </button>
       )}
 
-      {error && <p className="mt-2.5 text-[13px] text-destructive" role="alert">{error}</p>}
+      {error && (
+        <p className="mt-2.5 text-[13px] text-destructive" role="alert">
+          {error}
+        </p>
+      )}
 
       {held && (
         <button
@@ -167,8 +183,8 @@ export function FamilyReceipt({
 
       {!held && !nothingChosen && (
         <p className="mt-2.5 text-[12.5px] text-muted-foreground">
-          Payment is by card on a secure Stripe page. Competitor numbers are given out as soon as
-          it goes through.
+          Payment is by card on a secure Stripe page. Competitor numbers are given out as soon as it
+          goes through.
         </p>
       )}
     </aside>
@@ -183,7 +199,12 @@ interface PaidReceiptProps {
 }
 
 /** Shown once the family has paid: what they paid and how to change anything. */
-export function PaidReceipt({ familyName, totalCents, confirmationNumber, contactEmail }: PaidReceiptProps) {
+export function PaidReceipt({
+  familyName,
+  totalCents,
+  confirmationNumber,
+  contactEmail
+}: PaidReceiptProps) {
   return (
     <aside id="family-total" className="feis-receipt px-[18px] pt-5 pb-[18px]">
       <h2 className="text-[22px] leading-tight font-extrabold [font-stretch:75%]">Paid</h2>
@@ -203,7 +224,8 @@ export function PaidReceipt({ familyName, totalCents, confirmationNumber, contac
         To add or drop a dance, contact the feis organiser
         {contactEmail ? (
           <>
-            {' '}at <span className="font-semibold text-foreground select-all">{contactEmail}</span>
+            {' '}
+            at <span className="font-semibold text-foreground select-all">{contactEmail}</span>
           </>
         ) : null}
         .

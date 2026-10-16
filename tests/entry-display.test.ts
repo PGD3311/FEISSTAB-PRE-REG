@@ -6,7 +6,12 @@ import {
   entryDeadline,
   formatDeadline
 } from '@/lib/entry-display'
-import type { EligibleCompetition, FeeBreakdown, FeisCompetition, Level } from '@/lib/types/feis-listing'
+import type {
+  EligibleCompetition,
+  FeeBreakdown,
+  FeisCompetition,
+  Level
+} from '@/lib/types/feis-listing'
 
 const LEVELS: Level[] = [
   { key: 'BG', label: 'Beginner', rank: 1 },
@@ -109,7 +114,10 @@ describe('entryDeadline', () => {
   it('uses the late deadline when there is one', () => {
     expect(
       entryDeadline(
-        { reg_closes_at: '2027-02-19T04:59:00Z', late_reg_closes_at: '2027-02-27T04:59:00Z' },
+        {
+          reg_closes_at: '2027-02-19T04:59:00Z',
+          late_reg_closes_at: '2027-02-27T04:59:00Z'
+        },
         now
       )
     ).toEqual({ closesAt: '2027-02-27T04:59:00Z', closed: false })

@@ -50,7 +50,9 @@ export function DancerEntry({
   const [showAll, setShowAll] = useState(false)
   const selectedIds = new Set(selected.map((c) => c.id))
   const eligibleCount = eligible.filter((e) => e.eligible).length
-  const visible = showAll ? eligible : eligible.filter((e) => e.eligible || selectedIds.has(e.competition.id))
+  const visible = showAll
+    ? eligible
+    : eligible.filter((e) => e.eligible || selectedIds.has(e.competition.id))
   const groups = groupForEntryForm(visible)
   const first = dancer.first_name
 
@@ -76,7 +78,10 @@ export function DancerEntry({
           {eligibleCount === 0 && !showAll && (
             <p className="border-t-[1.5px] border-[var(--color-feis-charcoal)] px-4 py-3 text-sm text-muted-foreground">
               No dances at this feis match {first}&apos;s age and levels.{' '}
-              <Link href={`/dashboard/dancers/${dancer.id}`} className="font-semibold text-primary underline">
+              <Link
+                href={`/dashboard/dancers/${dancer.id}`}
+                className="font-semibold text-primary underline"
+              >
                 Check {first}&apos;s levels
               </Link>
             </p>
@@ -103,13 +108,17 @@ export function DancerEntry({
                       disabled={!canEnter && !checked}
                       onChange={() => onToggle(competition.id)}
                     />
-                    <span className="feis-narrow text-[17px]">{competition.display_code ?? ''}</span>
+                    <span className="feis-narrow text-[17px]">
+                      {competition.display_code ?? ''}
+                    </span>
                     <span className="min-w-0">
                       {competitionName(competition)}
                       {!canEnter && <span className="block text-xs">{reason}</span>}
                     </span>
                     <span className="text-muted-foreground tabular-nums">
-                      {feeSchedule ? formatCents(competitionFeeCents(competition, feeSchedule)) : ''}
+                      {feeSchedule
+                        ? formatCents(competitionFeeCents(competition, feeSchedule))
+                        : ''}
                     </span>
                   </label>
                 )
