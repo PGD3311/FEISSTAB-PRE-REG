@@ -1,10 +1,14 @@
 import type { RegistrationStatus } from '@/lib/types/feis-listing'
 
-const VALID_TRANSITIONS: Record<RegistrationStatus, RegistrationStatus[]> = {
-  draft: ['pending_payment', 'cancelled', 'expired'],
+// Mirrors registration_transition_allowed() in supabase/migrations/012_order_integrity.sql.
+// tests/db/order-integrity.test.ts checks that the two agree.
+export const REGISTRATION_TRANSITIONS: Record<RegistrationStatus, RegistrationStatus[]> = {
+  // draft → paid: the payment came through the order's own checkout claim before Pay attached the session
+  draft: ['pending_payment', 'cancelled', 'expired', 'paid'],
   pending_payment: ['paid', 'expired', 'cancelled'],
   paid: [],
-  expired: [],
+  // expired → paid: a late payment on the order's own claim, confirmed by the database
+  expired: ['paid'],
   cancelled: [],
 }
 
@@ -12,11 +16,11 @@ export function canTransitionRegistration(
   from: RegistrationStatus,
   to: RegistrationStatus
 ): boolean {
-  return VALID_TRANSITIONS[from]?.includes(to) ?? false
+  return REGISTRATION_TRANSITIONS[from]?.includes(to) ?? false
 }
 
 export function getNextRegistrationStates(
   current: RegistrationStatus
 ): RegistrationStatus[] {
-  return VALID_TRANSITIONS[current] ?? []
+  return REGISTRATION_TRANSITIONS[current] ?? []
 }
