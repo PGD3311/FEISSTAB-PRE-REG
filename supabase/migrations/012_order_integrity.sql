@@ -82,9 +82,8 @@ CREATE POLICY "Organisers read snapshots for their feiseanna" ON registration_sn
     WHERE l.created_by = auth.uid()
   ));
 
-REVOKE ALL ON registrations, registration_entries, registration_snapshots FROM anon;
-REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER
-  ON registrations, registration_entries, registration_snapshots FROM authenticated;
+-- REVOKE ALL, not a list of privileges: Postgres 17 added MAINTAIN, and a list written before it would leave it behind.
+REVOKE ALL ON registrations, registration_entries, registration_snapshots FROM anon, authenticated;
 GRANT SELECT ON registrations, registration_entries, registration_snapshots TO authenticated;
 
 -- ─── The state machine (mirrors REGISTRATION_TRANSITIONS in src/lib/registration-states.ts) ───
@@ -118,6 +117,7 @@ BEGIN
     END IF;
     IF NEW.status <> 'draft'
        OR NEW.checkout_claim_id IS NOT NULL OR NEW.checkout_config IS NOT NULL OR NEW.checkout_claimed_at IS NOT NULL
+       OR NEW.checkout_expires_at IS NOT NULL
        OR NEW.stripe_checkout_session_id IS NOT NULL OR NEW.stripe_payment_intent_id IS NOT NULL
        OR NEW.confirmation_number IS NOT NULL OR NEW.paid_at IS NOT NULL THEN
       RAISE EXCEPTION 'a new order starts as an unpaid draft' USING ERRCODE = '42501';
@@ -167,6 +167,8 @@ CREATE TRIGGER guard_registrations
   FOR EACH ROW EXECUTE FUNCTION guard_registrations();
 
 -- ─── Entries: written once, inside create_order ───
+-- The marker names the order being created, and that order must have been created in this very transaction:
+-- created_at defaults to now() (the transaction's start time) and never changes.
 CREATE OR REPLACE FUNCTION guard_registration_entries()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -174,7 +176,8 @@ SET search_path = pre_registration, pg_temp
 AS $$
 BEGIN
   IF TG_OP = 'INSERT'
-     AND current_setting('pre_registration.creating_order', true) = NEW.registration_id::text THEN
+     AND current_setting('pre_registration.creating_order', true) = NEW.registration_id::text
+     AND EXISTS (SELECT 1 FROM registrations r WHERE r.id = NEW.registration_id AND r.created_at = now()) THEN
     RETURN NEW;
   END IF;
   RAISE EXCEPTION 'order entries are fixed when the order is created' USING ERRCODE = '42501';
@@ -187,6 +190,8 @@ CREATE TRIGGER guard_registration_entries
   FOR EACH ROW EXECUTE FUNCTION guard_registration_entries();
 
 -- ─── Snapshots: written once, at confirmation ───
+-- The marker names the order being fulfilled, and that order must have been marked paid in this very
+-- transaction (paid_at = now(); a paid order's payment record never changes afterwards).
 CREATE OR REPLACE FUNCTION guard_registration_snapshots()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -194,7 +199,9 @@ SET search_path = pre_registration, pg_temp
 AS $$
 BEGIN
   IF TG_OP = 'INSERT'
-     AND current_setting('pre_registration.fulfilling_order', true) = NEW.registration_id::text THEN
+     AND current_setting('pre_registration.fulfilling_order', true) = NEW.registration_id::text
+     AND EXISTS (SELECT 1 FROM registrations r
+                 WHERE r.id = NEW.registration_id AND r.status = 'paid' AND r.paid_at = now()) THEN
     RETURN NEW;
   END IF;
   RAISE EXCEPTION 'order snapshots are written once, at confirmation' USING ERRCODE = '42501';

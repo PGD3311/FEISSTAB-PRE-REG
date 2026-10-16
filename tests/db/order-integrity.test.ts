@@ -118,6 +118,48 @@ describe('parent access to orders', () => {
       WHERE has_table_privilege(r.role, 'pre_registration.' || t.tbl, p.priv)`)
     expect(rows).toEqual([])
   })
+
+  it('grants authenticated SELECT and nothing else on the order tables, and anon and PUBLIC nothing', async () => {
+    // Reads the ACLs themselves, so a privilege a newer Postgres adds (PG17 MAINTAIN) shows up too
+    const { rows } = await db.pool.query(`
+      SELECT c.relname AS tbl,
+             CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE a.grantee::regrole::text END AS grantee,
+             a.privilege_type AS priv
+      FROM pg_class c
+      CROSS JOIN LATERAL aclexplode(c.relacl) AS a
+      WHERE c.relnamespace = 'pre_registration'::regnamespace
+        AND c.relname IN ('registrations', 'registration_entries', 'registration_snapshots')
+        AND (a.grantee = 0 OR a.grantee IN ('anon'::regrole, 'authenticated'::regrole))
+      ORDER BY c.relname, grantee, priv`)
+    expect(rows).toEqual([
+      { tbl: 'registration_entries', grantee: 'authenticated', priv: 'SELECT' },
+      { tbl: 'registration_snapshots', grantee: 'authenticated', priv: 'SELECT' },
+      { tbl: 'registrations', grantee: 'authenticated', priv: 'SELECT' },
+    ])
+  })
+})
+
+describe('organiser access to orders', () => {
+  it('lets the organiser of a feis read its orders, entries and snapshots, and no other organiser', async () => {
+    const { listing, draftId } = await familyWithDraft()
+    const otherFamily = await createFamily(db.pool)
+    const otherDancer = await createDancer(db.pool, otherFamily.householdId)
+    const paidId = await insertOrderDirect(
+      db.pool, otherFamily.householdId, listing.listing.id,
+      [{ dancerId: otherDancer.id, competitionId: listing.competitions[1].id }],
+      { status: 'paid' }
+    )
+    const elsewhere = await createListing(db.pool)
+
+    const readAs = (userId: string) => asRole(db.pool, 'authenticated', userId, async (c) => ({
+      orders: (await c.query('SELECT id FROM registrations')).rows.map((r) => r.id).sort(),
+      entries: (await c.query('SELECT registration_id FROM registration_entries')).rowCount,
+      snapshots: (await c.query('SELECT registration_id FROM registration_snapshots')).rows.map((r) => r.registration_id),
+    }))
+
+    expect(await readAs(listing.organiserId)).toEqual({ orders: [draftId, paidId].sort(), entries: 2, snapshots: [paidId] })
+    expect(await readAs(elsewhere.organiserId)).toEqual({ orders: [], entries: 0, snapshots: [] })
+  })
 })
 
 describe('what never changes, for any role', () => {
@@ -130,6 +172,43 @@ describe('what never changes, for any role', () => {
     )))
     expect(message).toMatch(/entries are fixed/)
     expect(await countRows('registration_entries', 'registration_id', draftId)).toBe(1)
+  })
+
+  it('adds entries only to an order created in the same transaction', async () => {
+    const { dancer, listing, draftId } = await familyWithDraft()
+    // The marker names an order that was created in an earlier transaction
+    const message = await refused(asService(db.pool, async (c) => {
+      await c.query(`SELECT set_config('pre_registration.creating_order', $1, true)`, [draftId])
+      return c.query(
+        `INSERT INTO registration_entries (registration_id, dancer_id, feis_competition_id, fee_category, base_fee_cents)
+         VALUES ($1, $2, $3, 'solo', 1500)`,
+        [draftId, dancer.id, listing.competitions[1].id]
+      )
+    }))
+    expect(message).toMatch(/entries are fixed/)
+    expect(await countRows('registration_entries', 'registration_id', draftId)).toBe(1)
+  })
+
+  it('adds entries only while the marker names the order', async () => {
+    const { family, dancer } = await familyWithDraft()
+    const other = await createListing(db.pool)
+    const id = randomUUID()
+    // The order is created in this transaction, but the marker names a different order
+    const message = await refused(asService(db.pool, async (c) => {
+      await c.query(`SELECT set_config('pre_registration.creating_order', $1, true)`, [id])
+      await c.query(
+        `INSERT INTO registrations (id, feis_listing_id, household_id, purchase_snapshot) VALUES ($1, $2, $3, '{}')`,
+        [id, other.listing.id, family.householdId]
+      )
+      await c.query(`SELECT set_config('pre_registration.creating_order', $1, true)`, [randomUUID()])
+      return c.query(
+        `INSERT INTO registration_entries (registration_id, dancer_id, feis_competition_id, fee_category, base_fee_cents)
+         VALUES ($1, $2, $3, 'solo', 1500)`,
+        [id, dancer.id, other.competitions[0].id]
+      )
+    }))
+    expect(message).toMatch(/entries are fixed/)
+    expect(await countRows('registrations', 'feis_listing_id', other.listing.id)).toBe(0)
   })
 
   it('refuses changes to and deletes of entries, even by the service role', async () => {
@@ -168,6 +247,7 @@ describe('what never changes, for any role', () => {
       checkout_claim_id: 'gen_random_uuid()',
       checkout_config: `'{}'`,
       checkout_claimed_at: 'now()',
+      checkout_expires_at: `now() + interval '1 hour'`,
     }
     for (const [column, value] of Object.entries(presets)) {
       const id = randomUUID()
@@ -281,6 +361,44 @@ describe('what never changes, for any role', () => {
       return c.query(`INSERT INTO registration_snapshots (registration_id, snapshot_data) VALUES ($1, '{}')`, [draftId])
     }))).toMatch(/written once/)
     expect(await countRows('registration_snapshots', 'registration_id', draftId)).toBe(0)
+  })
+
+  it('writes a snapshot only for an order paid in the same transaction', async () => {
+    const { family, dancer, draftId } = await familyWithDraft()
+    const paidListing = await createListing(db.pool)
+    const paidId = await insertOrderDirect(db.pool, family.householdId, paidListing.listing.id,
+      [{ dancerId: dancer.id, competitionId: paidListing.competitions[0].id }], { status: 'paid' })
+
+    // The marker names an order paid in an earlier transaction. It already has its snapshot, and the
+    // guard (not the one-snapshot-per-order index) must be what refuses.
+    expect(await refused(asService(db.pool, async (c) => {
+      await c.query(`SELECT set_config('pre_registration.fulfilling_order', $1, true)`, [paidId])
+      return c.query(`INSERT INTO registration_snapshots (registration_id, snapshot_data) VALUES ($1, '{}')`, [paidId])
+    }))).toMatch(/written once/)
+    expect(await countRows('registration_snapshots', 'registration_id', paidId)).toBe(1)
+
+    // An unpaid order is refused too, even when its paid_at is set in the same transaction
+    expect(await refused(asService(db.pool, async (c) => {
+      await c.query(`UPDATE registrations SET paid_at = now() WHERE id = $1`, [draftId])
+      await c.query(`SELECT set_config('pre_registration.fulfilling_order', $1, true)`, [draftId])
+      return c.query(`INSERT INTO registration_snapshots (registration_id, snapshot_data) VALUES ($1, '{}')`, [draftId])
+    }))).toMatch(/written once/)
+    expect(await countRows('registration_snapshots', 'registration_id', draftId)).toBe(0)
+    expect((await orderRow(draftId)).paid_at).toBeNull()
+  })
+
+  it('writes a snapshot only while the marker names the order', async () => {
+    const { draftId } = await familyWithDraft()
+    // The order is paid in this transaction, but the marker names a different order
+    expect(await refused(asService(db.pool, async (c) => {
+      await c.query(
+        `UPDATE registrations SET status = 'paid', paid_at = now(), confirmation_number = 'RF-X', stripe_payment_intent_id = 'pi_x'
+         WHERE id = $1`, [draftId])
+      await c.query(`SELECT set_config('pre_registration.fulfilling_order', $1, true)`, [randomUUID()])
+      return c.query(`INSERT INTO registration_snapshots (registration_id, snapshot_data) VALUES ($1, '{}')`, [draftId])
+    }))).toMatch(/written once/)
+    expect(await countRows('registration_snapshots', 'registration_id', draftId)).toBe(0)
+    expect((await orderRow(draftId)).status).toBe('draft')
   })
 
   it('requires a purchase snapshot on every unpaid order', async () => {
