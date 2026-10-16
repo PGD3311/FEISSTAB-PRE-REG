@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { formatCents, parseLocalDate } from '@/lib/format'
 import { calculateFees, getActiveLateTier } from '@/lib/engine/fee-calculator'
@@ -106,6 +106,21 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
     data.heldRegistration?.status === 'pending_payment'
   )
   const [loading, setLoading] = useState(false)
+  // The pinned total bar hides while the full receipt is on screen
+  const [receiptVisible, setReceiptVisible] = useState(false)
+
+  useEffect(() => {
+    const receipt = document.getElementById('family-total')
+    if (!receipt || typeof IntersectionObserver === 'undefined') return
+    const observer = new IntersectionObserver(
+      ([entry]) => setReceiptVisible(entry.isIntersecting),
+      {
+        threshold: 0.15
+      }
+    )
+    observer.observe(receipt)
+    return () => observer.disconnect()
+  }, [])
   const [error, setError] = useState<string | null>(null)
 
   const paid = paidRegistration !== null
@@ -326,6 +341,11 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
                     feeSchedule={feeSchedule}
                     editing={canEdit && editingId === dancer.id}
                     canEdit={canEdit}
+                    lockedNote={
+                      held
+                        ? 'To add dances, choose Change entries under the family total.'
+                        : undefined
+                    }
                     onEdit={() => setEditingId(dancer.id)}
                     onDone={() => setEditingId(null)}
                     onToggle={(compId) => toggle(dancer.id, compId)}
@@ -389,7 +409,7 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
         )}
       </main>
 
-      {!paid && dancesChosen > 0 && (
+      {!paid && dancesChosen > 0 && !receiptVisible && (
         <div className="fixed inset-x-0 bottom-0 flex items-center justify-between gap-3 bg-[var(--color-feis-charcoal)] px-4 pt-3 pb-[max(12px,env(safe-area-inset-bottom))] text-white lg:hidden">
           <div>
             <span className="block text-xs opacity-70">

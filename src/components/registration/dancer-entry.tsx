@@ -23,6 +23,8 @@ interface DancerEntryProps {
   feeSchedule: FeeSchedule | null
   editing: boolean
   canEdit: boolean
+  /** Shown on the sticker when editing is locked, e.g. while places are held for payment */
+  lockedNote?: string
   onEdit: () => void
   onDone: () => void
   onToggle: (competitionId: string) => void
@@ -43,6 +45,7 @@ export function DancerEntry({
   feeSchedule,
   editing,
   canEdit,
+  lockedNote,
   onEdit,
   onDone,
   onToggle
@@ -161,6 +164,9 @@ export function DancerEntry({
               </button>
             )}
           </div>
+          {!canEdit && lockedNote && selected.length === 0 && (
+            <p className="text-[13px] text-muted-foreground">{lockedNote}</p>
+          )}
           {selected.length > 0 && (
             <ul className="flex flex-wrap gap-x-4 gap-y-1.5">
               {selected.map((comp) => (
