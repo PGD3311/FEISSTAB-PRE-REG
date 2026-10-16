@@ -26,3 +26,8 @@ React 19.2's dev mode records the value of every `await` in a server component. 
 
 ## Fixed: parts of pages never came to life in development (stuck "Loading entries…")
 The `loading.tsx` files added during the restyle wrapped pages in a loading boundary. In development with Next 16.2.0, the browser waited forever on a debug-data chunk the server never sent, so the parts of pages inside that boundary never hydrated. The organiser's Entries tab showed "Loading entries…" indefinitely. The loading files were removed (the original app had none); client pages keep their own loading messages. Don't add `loading.tsx` back without checking that the page still hydrates in development.
+
+## From the end-to-end run as a new parent (Oct 16)
+- **Team dances (ceili, figure) have no team entry.** They were offered to each dancer at the solo price, so they're switched off in the demo feis until Steve says how teams are entered.
+- **The pinned total bar on phones stays visible while the receipt is on screen**, so the total shows twice and the bar can cover the form's Done button until you scroll.
+- **Organiser late entries and changes after paying** wait on the payment-hardening order step (its Task 6), so they're built once on the new model.
