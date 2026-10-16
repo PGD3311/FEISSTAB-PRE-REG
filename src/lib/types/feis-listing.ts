@@ -231,6 +231,10 @@ export interface Dancer {
   date_of_birth: string  // ISO date
   gender: 'female' | 'male'
   school_name: string | null
+  /** Link to the shared schools list (migration 018); school_name stays the stored name */
+  school_id?: string | null
+  /** 'guest' = someone else's child the account holder enters (migration 018) */
+  relationship?: 'household' | 'guest'
   tcrg_name: string | null
   championship_status: ChampionshipStatus
   is_active: boolean

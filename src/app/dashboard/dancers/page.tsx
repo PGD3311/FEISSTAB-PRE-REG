@@ -99,6 +99,11 @@ export default async function DancersPage() {
                 <div className="min-w-0">
                   <p className="text-[20px] leading-tight font-extrabold [font-stretch:75%] group-hover:underline">
                     {dancer.first_name} {dancer.last_name}
+                    {dancer.relationship === 'guest' && (
+                      <span className="ml-2 inline-block rounded-[2px] bg-[var(--color-feis-cream-dark)] px-1.5 py-0.5 align-middle text-xs font-bold text-muted-foreground [font-stretch:100%]">
+                        Guest
+                      </span>
+                    )}
                   </p>
                   <p className="mt-0.5 text-sm text-muted-foreground">
                     Age {calcAge(dancer.date_of_birth)}

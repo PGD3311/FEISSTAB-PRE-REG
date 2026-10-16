@@ -4,6 +4,7 @@ import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { PageTitle } from '@/components/page-title'
+import { SchoolPicker } from '@/components/registration/school-picker'
 import { createDancer } from '../actions'
 
 const STANDARD_DANCES = [
@@ -30,7 +31,8 @@ export default function NewDancerPage() {
   const [lastName, setLastName] = useState('')
   const [dateOfBirth, setDateOfBirth] = useState('')
   const [gender, setGender] = useState<'female' | 'male'>('female')
-  const [schoolName, setSchoolName] = useState('')
+  const [school, setSchool] = useState<{ id: string | null; name: string }>({ id: null, name: '' })
+  const [relationship, setRelationship] = useState<'household' | 'guest'>('household')
   const [tcrgName, setTcrgName] = useState('')
   const [championshipStatus, setChampionshipStatus] = useState<'none' | 'prelim' | 'open'>('none')
   const [defaultLevel, setDefaultLevel] = useState('NOV')
@@ -67,7 +69,9 @@ export default function NewDancerPage() {
         last_name: lastName.trim(),
         date_of_birth: dateOfBirth,
         gender,
-        school_name: schoolName.trim() || null,
+        school_name: school.name.trim() || null,
+        school_id: school.id,
+        relationship,
         tcrg_name: tcrgName.trim() || null,
         championship_status: championshipStatus,
         default_level: defaultLevel,
@@ -162,24 +166,41 @@ export default function NewDancerPage() {
                 </div>
               </fieldset>
             </div>
+            <fieldset className="mt-5">
+              <legend className="feis-label">Who is this dancer?</legend>
+              <div className="mt-1 grid gap-2 sm:grid-cols-2">
+                {(
+                  [
+                    ['household', 'Part of my family'],
+                    ['guest', 'Someone else’s child I’m entering']
+                  ] as const
+                ).map(([value, label]) => (
+                  <label
+                    key={value}
+                    className={`flex cursor-pointer items-center gap-2.5 rounded-[3px] border-[1.5px] px-3 py-2.5 text-sm ${
+                      relationship === value
+                        ? 'border-[var(--color-feis-green)] bg-[var(--color-feis-green-light)]'
+                        : 'border-[var(--input)] bg-white'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="relationship"
+                      checked={relationship === value}
+                      onChange={() => setRelationship(value)}
+                      className="accent-[var(--color-feis-green)]"
+                    />
+                    {label}
+                  </label>
+                ))}
+              </div>
+            </fieldset>
           </section>
 
           <section className="border-t-[1.5px] border-[var(--color-feis-charcoal)] px-5 py-6 sm:px-7">
             <h2 className="feis-display mb-4 text-[22px]">School and teacher</h2>
             <div className="grid gap-4 sm:grid-cols-2">
-              <div>
-                <label className="feis-label" htmlFor="schoolName">
-                  School <span className="font-normal text-muted-foreground">(optional)</span>
-                </label>
-                <input
-                  id="schoolName"
-                  type="text"
-                  value={schoolName}
-                  onChange={(e) => setSchoolName(e.target.value)}
-                  className="feis-input"
-                  placeholder="Scoil Rince na Gréine"
-                />
-              </div>
+              <SchoolPicker value={school} onChange={setSchool} />
               <div>
                 <label className="feis-label" htmlFor="tcrgName">
                   Teacher (TCRG){' '}
