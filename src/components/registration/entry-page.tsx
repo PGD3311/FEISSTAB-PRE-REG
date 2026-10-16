@@ -68,10 +68,13 @@ function profileOf(dancer: DancerWithLevels): DancerProfile {
   }
 }
 
+/** Feis age is the dancer's age on January 1 of the feis year. */
 function ageCutoffOf(listing: FeisListing): Date {
   if (listing.age_cutoff_date) return parseLocalDate(listing.age_cutoff_date)
-  if (listing.feis_date) return parseLocalDate(listing.feis_date)
-  return new Date()
+  const year = listing.feis_date
+    ? parseLocalDate(listing.feis_date).getFullYear()
+    : new Date().getFullYear()
+  return new Date(year, 0, 1)
 }
 
 export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: string }) {

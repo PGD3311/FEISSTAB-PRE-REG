@@ -25,7 +25,61 @@ function ageMatches(
   return true
 }
 
+/**
+ * How closely a competition's age group fits: lower is tighter. "Under 12" (max 11) fits an
+ * 11-year-old more tightly than "Under 13"; for open-ended groups like "18 & Over" vs
+ * "21 & Over", the higher minimum is tighter.
+ */
+function ageGroupTightness(comp: FeisCompetition): number {
+  if (comp.age_max_jan1 !== null) return comp.age_max_jan1
+  if (comp.age_min_jan1 !== null) return 1000 - comp.age_min_jan1
+  return 2000
+}
+
+/**
+ * A dancer dances in their own age group (their age on January 1), not in older ones.
+ * Among solo and championship competitions the dancer could otherwise enter, only those in the
+ * tightest-fitting age group for each dance, level and championship stay eligible.
+ */
+function keepOwnAgeGroup(results: EligibleCompetition[]): EligibleCompetition[] {
+  const kindOf = (c: FeisCompetition) =>
+    [c.competition_type, c.dance_key, c.level_key, c.championship_key].join('|')
+  const best = new Map<string, EligibleCompetition>()
+  for (const r of results) {
+    const c = r.competition
+    if (!r.eligible || (c.competition_type !== 'solo' && c.competition_type !== 'championship')) {
+      continue
+    }
+    const current = best.get(kindOf(c))
+    if (!current || ageGroupTightness(c) < ageGroupTightness(current.competition)) {
+      best.set(kindOf(c), r)
+    }
+  }
+
+  return results.map((r) => {
+    const c = r.competition
+    const own = best.get(kindOf(c))
+    if (!r.eligible || !own || ageGroupTightness(c) === ageGroupTightness(own.competition)) {
+      return r
+    }
+    return {
+      competition: c,
+      eligible: false,
+      reason: `Dances in their own age group (${own.competition.age_group_label ?? 'a younger group'})`
+    }
+  })
+}
+
 export function getEligibleCompetitions(
+  dancer: DancerProfile,
+  competitions: FeisCompetition[],
+  ageCutoffDate: Date,
+  levels: Level[]
+): EligibleCompetition[] {
+  return keepOwnAgeGroup(checkEachCompetition(dancer, competitions, ageCutoffDate, levels))
+}
+
+function checkEachCompetition(
   dancer: DancerProfile,
   competitions: FeisCompetition[],
   ageCutoffDate: Date,
@@ -38,9 +92,9 @@ export function getEligibleCompetitions(
     levelRankMap[level.key] = level.rank
   }
 
-  const enabledComps = competitions.filter(c => c.enabled)
+  const enabledComps = competitions.filter((c) => c.enabled)
 
-  return enabledComps.map(comp => {
+  return enabledComps.map((comp) => {
     const ageMatch = ageMatches(dancerAge, comp.age_max_jan1, comp.age_min_jan1)
 
     if (!ageMatch) {
@@ -98,7 +152,8 @@ export function getEligibleCompetitions(
 
       case 'championship': {
         if (comp.championship_key === 'prelim') {
-          const eligible = dancer.championshipStatus === 'prelim' || dancer.championshipStatus === 'open'
+          // Open champions have moved up from prelim and don't go back
+          const eligible = dancer.championshipStatus === 'prelim'
           return {
             competition: comp,
             eligible,
@@ -119,7 +174,11 @@ export function getEligibleCompetitions(
           }
         }
 
-        return { competition: comp, eligible: false, reason: `Unknown championship type: ${comp.championship_key}` }
+        return {
+          competition: comp,
+          eligible: false,
+          reason: `Unknown championship type: ${comp.championship_key}`
+        }
       }
 
       case 'special': {
@@ -127,11 +186,19 @@ export function getEligibleCompetitions(
       }
 
       case 'custom': {
-        return { competition: comp, eligible: true, reason: 'Custom competition — no eligibility restrictions' }
+        return {
+          competition: comp,
+          eligible: true,
+          reason: 'Custom competition — no eligibility restrictions'
+        }
       }
 
       default: {
-        return { competition: comp, eligible: false, reason: `Unknown competition type: ${comp.competition_type}` }
+        return {
+          competition: comp,
+          eligible: false,
+          reason: `Unknown competition type: ${comp.competition_type}`
+        }
       }
     }
   })
