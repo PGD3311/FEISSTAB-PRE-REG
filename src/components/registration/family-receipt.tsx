@@ -124,7 +124,8 @@ export function FamilyReceipt({
             className="mt-0.5 h-4 w-4 shrink-0 accent-primary"
           />
           <span>
-            I&apos;m the parent or guardian of these dancers. I accept the RunFeis{' '}
+            I&apos;m the parent or guardian of these dancers, or I&apos;m entering them with their
+            parent or guardian&apos;s permission. I accept the RunFeis{' '}
             <Link href="/terms" target="_blank" className="font-semibold text-primary underline">
               terms
             </Link>{' '}

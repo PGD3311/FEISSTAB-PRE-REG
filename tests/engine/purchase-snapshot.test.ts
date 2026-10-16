@@ -96,7 +96,7 @@ describe('priceOrder', () => {
   it('records the RunFeis terms each order was placed under', () => {
     const { snapshot } = priceOrder(input())
     expect(snapshot.rules).toMatchObject({
-      consent_version: 'consent-2026-10-16',
+      consent_version: 'consent-2026-10-16b',
       platform_terms_version: 'runfeis-terms-2026-10-16/privacy-2026-10-16',
     })
   })
@@ -135,7 +135,7 @@ describe('buildCreateOrderPayload', () => {
 
   it('carries the current RunFeis consent and terms versions', () => {
     const payload = buildCreateOrderPayload(priceOrder(input()), { applicationFeePercent: 5, consentIp: null })
-    expect(payload.consent_version).toBe('consent-2026-10-16')
+    expect(payload.consent_version).toBe('consent-2026-10-16b')
     expect(payload.platform_terms_version).toBe('runfeis-terms-2026-10-16/privacy-2026-10-16')
   })
 

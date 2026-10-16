@@ -18,8 +18,12 @@ import type {
 
 export const PRICING_VERSION = 'pricing-2026-10-16'
 export const ELIGIBILITY_VERSION = 'eligibility-2026-10-16'
-/** The consent checkbox wording in family-receipt.tsx; must change in the same commit as it */
-export const CONSENT_VERSION = 'consent-2026-10-16'
+/**
+ * The consent checkbox wording in family-receipt.tsx: the person entering the dancers is their parent or guardian,
+ * or is entering them with that parent or guardian's permission, and accepts the RunFeis terms and privacy policy
+ * (and the feis's terms); entry fees aren't refundable. Must change in the same commit as the wording.
+ */
+export const CONSENT_VERSION = 'consent-2026-10-16b'
 /** The RunFeis /terms and /privacy pages; must change in the same commit as either page */
 export const PLATFORM_TERMS_VERSION = 'runfeis-terms-2026-10-16/privacy-2026-10-16'
 
