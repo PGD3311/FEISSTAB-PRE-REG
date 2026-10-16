@@ -22,7 +22,31 @@
 - node-postgres (`pg`), for the database tests
 - Homebrew `postgresql@17`
 
-**Spec:** `docs/2026-10-16-payment-hardening-design.md` (revision 2). Read it before you start. "§n" below means section n of the spec.
+**Spec:** `docs/2026-10-16-payment-hardening-design.md` (revision 4). Read it before you start. "§n" below means section n of the spec.
+
+## Progress (2026-10-16)
+
+- **Tasks 1–4 are built, reviewed and fixed:** commits `e9f05f3..284ca4f` on `payment-hardening`, rebased onto the redesigned `main` (337ab01).
+  - Their task text below is the plan as first written. The code on the branch is the record of what was built.
+  - Every decision taken while building is in the ledger, `.superpowers/sdd/2026-10-16-payment-hardening/progress.md`.
+- **What building them changed** (all reviewed; spec revision 4 records the same):
+  - **Migration 001:** its seed rows now apply to an empty database.
+  - **Migration 012** goes further than Task 3's text:
+    - It revokes everything from `PUBLIC`, `anon` and `authenticated` before granting `SELECT`.
+    - It turns row-level security on itself.
+    - It refuses `TRUNCATE` for every role.
+    - It makes a checkout claim all-or-nothing and never null.
+    - It requires a hold on every unpaid order, and payment evidence for `paid` and `pending_payment`.
+    - It lets entries and snapshots be written only in the transaction that creates or pays the order.
+    - Its policies call `(SELECT auth.uid())` and `(SELECT auth_household_id())`.
+  - **The test harness** runs Postgres in UTC and tests its own helpers.
+  - **The Submit engine:**
+    - It judges eligibility over every competition of the feis, as the redesigned entry page does.
+    - The age cutoff falls back to 1 January of the feis year.
+    - The snapshot freezes each competition's labels, age bounds and flags, and the feis's own terms link (`priceOrder` takes `feisTermsUrl`).
+    - The application fee is computed in basis points from a validated percentage.
+    - `CONSENT_VERSION` and `PLATFORM_TERMS_VERSION` name the current checkbox wording and the RunFeis terms and privacy pages (Daniel's decision).
+- **Tasks 5–16 are revised** to fit the as-built code and the redesigned registration pages. Tasks 7 and 12 were rewritten for the new entry page, success page and dashboard.
 
 ## Global Constraints
 
@@ -57,7 +81,12 @@
   - backoff of 5 min, 15 min, 1 h, 3 h, 6 h, then 12 h, for 6 attempts in total
   - an uncertain delivery is never retried more than 23 hours after its first attempt; it becomes `needs_check`
   - the provider idempotency key is `<dedupe_key>:<send_generation>`
-- **Code style:** match the surrounding code. Single quotes, no semicolons, 2-space indent.
+- **Code style:** match the surrounding code: single quotes, no semicolons, no trailing commas, 2-space indent, 100 columns. The repo has no Prettier config, so run Prettier with `--single-quote --no-semi --trailing-comma none --print-width 100`.
+- **Migrations:** this plan owns 012–017. Migration 018 belongs to the schools work on `feisweb-layout`, so any extra migration starts at 019.
+- **Migration 012 as built:** every later function and every test setup must satisfy its rules (see Progress). Create test states the way the real functions do, or the way `tests/db/helpers/fixtures.ts` does.
+- **Next 16.2 dev traps** (`docs/known-issues.md`):
+  - Never add `loading.tsx` files.
+  - In public server pages, read the signed-in user with `getSignedInUser()` from `src/lib/supabase/server.ts`.
 - **Finishing a task:** run its tests, `npm test`, and (where noted) `npm run test:db` and `npm run build`. They must pass before you mark the task done.
 
 ## Review Focus
@@ -130,7 +159,7 @@ These five inputs aren't covered by the spec's own tests, but they're the ones m
 
 ---
 
-### Task 1: Local Postgres test harness
+### Task 1: Local Postgres test harness (done)
 
 **Files:**
 - Modify: `package.json` (scripts and dev dependencies)
@@ -540,7 +569,7 @@ git commit -m "test: local Postgres harness for database tests"
 
 ---
 
-### Task 2: Registration state table in TypeScript
+### Task 2: Registration state table in TypeScript (done)
 
 **Files:**
 - Modify: `src/lib/registration-states.ts`
@@ -659,7 +688,7 @@ git commit -m "feat: registration transitions for late and claim-matched payment
 
 ---
 
-### Task 3: Migration 012, order integrity
+### Task 3: Migration 012, order integrity (done)
 
 **Files:**
 - Create: `supabase/migrations/012_order_integrity.sql`
@@ -1317,7 +1346,7 @@ git commit -m "feat: read-only parent access and immutable orders (migration 012
 
 ---
 
-### Task 4: Submit's checks and the frozen purchase details (pure)
+### Task 4: Submit's checks and the frozen purchase details (pure) (done)
 
 **Files:**
 - Create: `src/lib/engine/order-validation.ts`
@@ -1969,7 +1998,7 @@ git commit -m "feat: server-side order checks and frozen purchase details"
 - Test: `tests/engine/checkout-config.test.ts`, `tests/engine/checkout-policy.test.ts`, `tests/engine/stripe-errors.test.ts`
 
 **Interfaces:**
-- Consumes: `PurchaseSnapshot` (Task 4) and `ListingStatus` (`src/lib/types/feis-listing.ts`).
+- Consumes: `PurchaseSnapshot` (Task 4) and `ListingStatus` (`src/lib/types/feis-listing.ts`). The tests also price a real order with `priceOrder` and `buildCreateOrderPayload` (Task 4).
 - Produces:
   - **The checkout request:**
     - `CheckoutConfig` and `CheckoutLineItem`
@@ -1988,20 +2017,26 @@ Create `tests/engine/checkout-config.test.ts`:
 ```ts
 import { describe, expect, it } from 'vitest'
 import { buildCheckoutConfig, checkoutLineItems, type CheckoutConfigInput } from '@/lib/engine/checkout-config'
-import type { PurchaseSnapshot } from '@/lib/engine/purchase-snapshot'
+import type { OrderDancer } from '@/lib/engine/order-validation'
+import { buildCreateOrderPayload, priceOrder, type PurchaseSnapshot } from '@/lib/engine/purchase-snapshot'
+import { parseLocalDate } from '@/lib/format'
+import type { FeeSchedule, FeisCompetition } from '@/lib/types/feis-listing'
 
+/** A frozen purchase with one dancer and one solo per fee, with every field priceOrder freezes */
 function snapshot(fees: number[]): PurchaseSnapshot {
   return {
     version: 1,
     dancers: [{ id: 'd1', first_name: 'Aoife', last_name: 'Walsh', school_name: null, tcrg_name: null,
       date_of_birth: '2018-05-01', gender: 'female', championship_status: 'none', dance_levels: {}, competition_age: 8 }],
-    competitions: fees.map((_, i) => ({ id: `c${i}`, display_code: `21${i}R`, display_name: `Comp ${i}`, age_group_key: null,
-      level_key: null, dance_key: null, competition_type: 'solo', championship_key: null, fee_category: 'solo' as const, fee_cents: null })),
+    competitions: fees.map((_, i) => ({ id: `c${i}`, display_code: `21${i}R`, display_name: `Comp ${i}`,
+      age_group_key: null, age_group_label: null, age_min_jan1: null, age_max_jan1: null, level_key: null,
+      level_label: null, dance_key: null, dance_label: null, competition_type: 'solo', championship_key: null,
+      grades_only: false, fee_category: 'solo' as const, fee_cents: null, exclude_from_family_cap: false })),
     entries: fees.map((fee, i) => ({ dancer_id: 'd1', competition_id: `c${i}`, fee_category: 'solo' as const,
       base_fee_cents: fee, late_fee_cents: 0, day_of_surcharge_cents: 0 })),
     pricing: { fee_schedule: {} as never, breakdown: {} as never, priced_at: '2026-11-01T12:00:00.000Z' },
     rules: { age_cutoff_date: '2027-01-01', levels: [], consent_version: 'x', platform_terms_version: 'y',
-      pricing_version: 'p', eligibility_version: 'e' },
+      feis_terms_url: null, pricing_version: 'p', eligibility_version: 'e' },
   }
 }
 
@@ -2052,6 +2087,49 @@ describe('checkoutLineItems', () => {
     expect(checkoutLineItems(snapshot([1500, 0]), 0, 1500)).toEqual([
       { name: 'Aoife: 210R Comp 0', amount_cents: 1500 },
     ])
+  })
+})
+
+describe('the checkout for an order Submit priced', () => {
+  // Two solos and a late fee, priced and frozen by the engine (Task 4)
+  const schedule: FeeSchedule = {
+    id: 's1', feis_listing_id: 'f1', event_fee_cents: 1000, solo_fee_cents: 1500, prelim_champ_fee_cents: 5000,
+    open_champ_fee_cents: 6000, family_cap_cents: null, day_of_surcharge_cents: 0,
+    late_fee_tiers: [{ starts_at: '2026-10-15T00:00:00Z', fee_cents: 2500, family_max_cents: null }],
+  }
+  const aoife: OrderDancer = {
+    id: 'd1', household_id: 'h1', first_name: 'Aoife', last_name: 'Walsh', date_of_birth: '2018-05-01',
+    gender: 'female', school_name: null, tcrg_name: null, championship_status: 'none', is_active: true,
+    dance_levels: [{ dance_key: 'reel', level_key: 'NOV' }, { dance_key: 'slip_jig', level_key: 'NOV' }],
+  }
+  const solo = (id: string, code: string, dance: string): FeisCompetition => ({
+    id, feis_listing_id: 'f1', age_group_key: 'U10', age_group_label: 'Under 10', age_max_jan1: 9, age_min_jan1: null,
+    level_key: 'NOV', level_label: 'Novice', dance_key: dance, dance_label: dance, competition_type: 'solo',
+    championship_key: null, fee_category: 'solo', fee_cents: null, exclude_from_family_cap: false, grades_only: false,
+    display_name: `Novice ${dance} U10`, display_code: code, capacity_cap: null, enabled: true,
+  })
+
+  it("adds up to the total the family was quoted, with each fee on its own entry and the order's own application fee", () => {
+    const priced = priceOrder({
+      now: new Date('2026-11-01T12:00:00Z'), ageCutoffDate: parseLocalDate('2027-01-01'),
+      levels: [{ key: 'NOV', label: 'Novice', rank: 3 }], feisTermsUrl: null, dancers: [aoife],
+      competitions: [solo('c1', '210R', 'reel'), solo('c2', '210SJ', 'slip_jig')],
+      entries: [{ dancerId: 'd1', competitionId: 'c1' }, { dancerId: 'd1', competitionId: 'c2' }],
+      feeSchedule: schedule,
+    })
+    const order = buildCreateOrderPayload(priced, { applicationFeePercent: 2.9, consentIp: null })
+    const config = buildCheckoutConfig(configInput({
+      totalCents: order.total_cents, applicationFeeCents: order.application_fee_cents,
+      eventFeeCents: order.event_fee_cents, snapshot: order.purchase_snapshot,
+    }))
+    expect(config.line_items).toEqual([
+      { name: 'Event fee (per family)', amount_cents: 1000 },
+      { name: 'Aoife: 210R Novice reel U10', amount_cents: 4000 },
+      { name: 'Aoife: 210SJ Novice slip_jig U10', amount_cents: 1500 },
+    ])
+    // The config carries the fee Submit worked out in whole basis points: 2.9% of $65.00 is 188.5 cents,
+    // so 189 (a float percent gives 188)
+    expect(config).toMatchObject({ total_cents: 6500, application_fee_cents: 189 })
   })
 })
 ```
@@ -2443,11 +2521,13 @@ export function buildPayload(input: {
     now,
     ageCutoffDate: ageCutoffDateFor(input.listing.listing, now),
     levels: LEVELS,
+    feisTermsUrl: input.listing.listing.terms_url,
     dancers: input.dancers,
     competitions: input.listing.competitions,
     entries: input.entries,
     feeSchedule: input.listing.feeSchedule,
   })
+  // 5% in whole basis points: $40.00 gives an application fee of 200 cents
   return buildCreateOrderPayload(priced, { applicationFeePercent: 5, consentIp: '203.0.113.7' })
 }
 
@@ -2486,6 +2566,7 @@ Create `tests/db/create-order.test.ts`:
 ```ts
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createOrderStore } from '@/app/_payments/order-store'
+import { CONSENT_VERSION, PLATFORM_TERMS_VERSION } from '@/lib/engine/purchase-snapshot'
 import { asParent, createTestDatabase, refused, type TestDatabase } from './helpers/db'
 import { buildPayload, createDancer, createDraftOrder, createFamily, createListing } from './helpers/fixtures'
 import { pgRpc } from './helpers/pg-rpc'
@@ -2499,7 +2580,7 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
-  await db.drop()
+  await db?.drop()
 })
 
 async function ordersFor(householdId: string): Promise<number> {
@@ -2511,9 +2592,13 @@ describe('create_order', () => {
   it('creates the order, its entries and its frozen details in one step', async () => {
     const order = await createDraftOrder(db.pool)
     const { rows: [row] } = await db.pool.query('SELECT * FROM registrations WHERE id = $1', [order.registrationId])
-    expect(row).toMatchObject({ status: 'draft', total_cents: 4000, application_fee_cents: 200, event_fee_cents: 1000, consent_ip: '203.0.113.7' })
+    expect(row).toMatchObject({
+      status: 'draft', total_cents: 4000, application_fee_cents: 200, event_fee_cents: 1000, consent_ip: '203.0.113.7',
+      consent_version: CONSENT_VERSION, platform_terms_version: PLATFORM_TERMS_VERSION,
+    })
     expect(row.purchase_snapshot).toEqual(order.payload.purchase_snapshot)
-    expect(row.consent_accepted_at).not.toBeNull()
+    // create_order stamps the consent time itself, when it creates the order: the payload carries none
+    expect(row.consent_accepted_at).toBe(row.created_at)
     const holdMinutes = (new Date(row.hold_expires_at).getTime() - Date.now()) / 60_000
     expect(holdMinutes).toBeGreaterThan(29)
     expect(holdMinutes).toBeLessThanOrEqual(30)
@@ -2690,6 +2775,10 @@ BEGIN
     RETURN jsonb_build_object('status', 'refused', 'reason', 'active_order_exists', 'registration_id', v_existing);
   END IF;
 
+  -- Migration 012 lets an order and its entries in only while this marker names that order, and only
+  -- in the transaction that created it, so created_at is left to its default (now()). The order starts
+  -- as a draft with a 30-minute hold and no checkout or payment details, and the consent time is
+  -- stamped here: the payload carries none.
   PERFORM set_config('pre_registration.creating_order', v_id::text, true);
 
   INSERT INTO registrations (id, feis_listing_id, household_id, status, total_cents, application_fee_cents,
@@ -2820,95 +2909,392 @@ git commit -m "feat: create orders in one transaction, checked against their fro
 ### Task 7: Submit action and the register page
 
 **Files:**
-- Modify: `src/lib/types/feis-listing.ts` (add the new `Registration` fields)
-- Modify: `src/app/feiseanna/[id]/register/actions.ts`: `getExistingRegistration` and `createDraftRegistration`. `createCheckoutSession` and `cancelRegistration` stay as they are until Task 12.
-- Modify: `src/app/feiseanna/[id]/register/page.tsx`
+- Create: `src/lib/fetch-all-rows.ts`
+- Modify: `src/lib/types/feis-listing.ts` (the new `Registration` fields)
+- Modify: `src/app/feiseanna/[id]/register/actions.ts`: Submit (`createDraftRegistration`) and the resume lookup (`getExistingRegistration`). `cancelRegistration` moves below Submit unchanged, and `createCheckoutSession` stays as it is; Task 12 replaces both.
+- Modify: `src/app/feiseanna/[id]/register/page.tsx` (competitions read in pages)
+- Modify: `src/components/registration/entry-page.tsx` (the engine's rules instead of its own copies, the agreement sent as a yes, the frozen price)
+- Modify: `src/components/registration/family-receipt.tsx` (Pay reports the agreement box; the wording is tied to `CONSENT_VERSION`)
+- Test: `tests/fetch-all-rows.test.ts` (create); `tests/engine/order-validation.test.ts` and `tests/engine/purchase-snapshot.test.ts` (modify)
 - Local only (never committed): `.env.local`
 
 **Interfaces:**
 - Consumes:
-  - `validateOrderRequest` and `OrderDancer`, `priceOrder` and `buildCreateOrderPayload`, `clientIpFrom` (Task 4)
-  - `supabaseRpc` and `createOrderStore` (Task 6)
+  - `validateOrderRequest`, `ageCutoffDateFor`, `toDancerProfile`, `OrderDancer` and `RequestedEntry` (Task 4, `order-validation.ts`)
+  - `priceOrder` (its input includes `feisTermsUrl`), `buildCreateOrderPayload`, `feeEntriesFor`, `CreateOrderPayload` and `CONSENT_VERSION` (Task 4, `purchase-snapshot.ts`)
+  - `clientIpFrom` (Task 4)
+  - `supabaseRpc`, `createOrderStore` and `CreateOrderResult` (Task 6)
+  - `getSignedInUser` (`src/lib/supabase/server.ts`); `isHouseholdComplete` and `REQUIRED_HOUSEHOLD_FIELDS` (`src/lib/household.ts`)
 - Produces:
   - `createDraftRegistration({ feisListingId, entries, consentAccepted }): Promise<{ error: string } | { registrationId: string; totalCents: number; holdExpiresAt: string; breakdown: FeeBreakdown }>`
-  - `getExistingRegistration(feisListingId)`. It is now read-only, and returns `{ registration }`, `{ registration: null, expired?: true }` or `{ error }`.
+  - `getExistingRegistration(feisListingId)`, now read-only. It resolves to `{ registration }`, `{ registration: null, expired?: true }` or `{ error }`.
+  - `currentHousehold(): Promise<HouseholdContext>`, private to `actions.ts`. Task 12's Pay and Cancel use it.
+  - `fetchAllRows<Row>(fetchPage, pageSize?): Promise<Row[]>`, `RowPage<Row>` and `ROWS_PER_PAGE` (`src/lib/fetch-all-rows.ts`)
+  - `Registration` gains `purchase_snapshot`, `checkout_claim_id`, `checkout_expires_at` and `paid_at`.
+  - On the entry page, `requestedEntries` and the `orderBreakdown` state (with `setOrderBreakdown`), which Task 12's handlers use. `FamilyReceipt`'s `onPay` becomes `(consentAccepted: boolean) => void`.
 
-No new automated tests: the page is UI (project rule §5), and everything the action calls is already tested. This task ends with the build and a manual run.
+The entry page and Submit must apply one rule. The page imports `ageCutoffDateFor`, `toDancerProfile` and `feeEntriesFor` from the engine and deletes its own copies (`ageCutoffOf`, `profileOf` and its fee-entry builder). So a dance the page offers, and the total it shows, are the ones Submit accepts and charges. The page now sends only `consentAccepted`: its made-up `consentAcceptedAt` and `consentIp: '0.0.0.0'` go. The old consent literals in `actions.ts` go too, since `buildCreateOrderPayload` records `CONSENT_VERSION` and `PLATFORM_TERMS_VERSION`.
 
-- [ ] **Step 1: Give the server its database key locally**
+PostgREST returns at most 1000 rows per request: `max_rows` in `supabase/config.toml`, and Supabase's default. A large syllabus can pass that, and a short list would change which age group counts as a dancer's own. So Submit and the page read competitions through `fetchAllRows`. The helper never touches Supabase: the caller passes the query, so queries stay in the page and the action.
 
-Pre-reg and the feis-day app share one Supabase project, so the service key is the one already in `.env.local` under `PHASE1_`:
+`handlePay` keeps its one click: it submits the order, then calls the old `createCheckoutSession`, which Task 12 replaces. Components need no tests (project rule §5). The paging helper is tested, and the two engine functions the page now shares get direct tests.
+
+No browser run in this task. `.env.local` points at the live project, which gets migrations 012–017 only in Task 16 Step 6, so `create_order` doesn't exist there yet. Task 16 Step 10 runs the whole flow.
+
+- [ ] **Step 1: Give the server its database key and fee percentage locally**
+
+Pre-reg and the feis-day app share one Supabase project, so the service key is the one already in `.env.local` under `PHASE1_`. Submit now refuses to price an order while `STRIPE_APPLICATION_FEE_PERCENT` is missing (spec §4), so set it locally to 5, the value the old code fell back to. Task 16 confirms the live value.
 ```bash
 cd ~/FEISSTAB-PRE-REG
 grep -q '^SUPABASE_SERVICE_ROLE_KEY=' .env.local || grep '^PHASE1_SUPABASE_SERVICE_ROLE_KEY=' .env.local | sed 's/^PHASE1_//' >> .env.local
-grep -c '^SUPABASE_SERVICE_ROLE_KEY=' .env.local
+grep -q '^STRIPE_APPLICATION_FEE_PERCENT=' .env.local || echo 'STRIPE_APPLICATION_FEE_PERCENT=5' >> .env.local
+grep -cE '^(SUPABASE_SERVICE_ROLE_KEY|STRIPE_APPLICATION_FEE_PERCENT)=' .env.local
 ```
-Expected: `1`. Don't print the value.
+Expected: `2`. Don't print the values.
 
-- [ ] **Step 2: Add the new order fields to the shared type**
+- [ ] **Step 2: Write the failing paging tests**
 
-In `src/lib/types/feis-listing.ts`, add this import at the top of the file:
+Create `tests/fetch-all-rows.test.ts`:
+```ts
+import { describe, expect, it } from 'vitest'
+import { fetchAllRows, type RowPage } from '@/lib/fetch-all-rows'
+
+type Row = { id: number }
+
+/** A table of `total` rows behind a server that sends at most `maxRows` per request */
+function table(total: number, maxRows: number) {
+  const rows: Row[] = Array.from({ length: total }, (_, id) => ({ id }))
+  const asked: [number, number][] = []
+  async function fetchPage(from: number, to: number): Promise<RowPage<Row>> {
+    asked.push([from, to])
+    return { data: rows.slice(from, Math.min(to + 1, from + maxRows)), error: null, count: total }
+  }
+  return { rows, asked, fetchPage }
+}
+
+describe('fetchAllRows', () => {
+  it('reads past the 1000-row limit a page at a time', async () => {
+    const t = table(2500, 1000)
+    expect(await fetchAllRows(t.fetchPage)).toEqual(t.rows)
+    expect(t.asked).toEqual([
+      [0, 999],
+      [1000, 1999],
+      [2000, 2999]
+    ])
+  })
+
+  it('asks once when every row fits in the first page', async () => {
+    const t = table(40, 1000)
+    expect(await fetchAllRows(t.fetchPage)).toEqual(t.rows)
+    expect(t.asked).toEqual([[0, 999]])
+  })
+
+  it('keeps going when the server sends fewer rows than asked for', async () => {
+    const t = table(1200, 500)
+    expect(await fetchAllRows(t.fetchPage)).toEqual(t.rows)
+    expect(t.asked).toEqual([
+      [0, 999],
+      [500, 1499],
+      [1000, 1999]
+    ])
+  })
+
+  it('returns no rows for an empty result', async () => {
+    expect(await fetchAllRows(table(0, 1000).fetchPage)).toEqual([])
+  })
+
+  it('stops when rows disappear while it reads', async () => {
+    const t = table(1000, 1000)
+    // The count says 1500, but only 1000 rows are left when the second page is read
+    const shrinking = async (from: number, to: number) => ({
+      ...(await t.fetchPage(from, to)),
+      count: 1500
+    })
+    expect(await fetchAllRows(shrinking)).toHaveLength(1000)
+    expect(t.asked).toHaveLength(2)
+  })
+
+  it("throws the query's error", async () => {
+    const failing = async () => ({
+      data: null,
+      error: { message: 'permission denied' },
+      count: null
+    })
+    await expect(fetchAllRows(failing)).rejects.toThrow('permission denied')
+  })
+
+  it('refuses a query that was not asked for its row count', async () => {
+    const uncounted = async () => ({ data: [], error: null, count: null })
+    await expect(fetchAllRows(uncounted)).rejects.toThrow(/count: 'exact'/)
+  })
+})
+```
+
+Run: `npx vitest run tests/fetch-all-rows.test.ts`
+Expected: FAIL, because `@/lib/fetch-all-rows` doesn't exist yet.
+
+- [ ] **Step 3: Write the paging helper**
+
+Create `src/lib/fetch-all-rows.ts`:
+```ts
+/** One page of a query, as supabase-js returns it when the query asks for `{ count: 'exact' }` */
+export interface RowPage<Row> {
+  data: Row[] | null
+  error: { message: string } | null
+  count: number | null
+}
+
+/** Rows asked for per request: Supabase's default `max-rows` */
+export const ROWS_PER_PAGE = 1000
+
+/**
+ * Every row of a query, read a page at a time. PostgREST sends at most `max-rows` rows per
+ * request (1000 on Supabase), whatever range is asked for, so a single select can silently stop
+ * short. `fetchPage(from, to)` runs the query with `{ count: 'exact' }`, a stable order and
+ * `.range(from, to)`; the query itself stays in the page or action that calls this.
+ */
+export async function fetchAllRows<Row>(
+  fetchPage: (from: number, to: number) => PromiseLike<RowPage<Row>>,
+  pageSize = ROWS_PER_PAGE
+): Promise<Row[]> {
+  const rows: Row[] = []
+  for (;;) {
+    const { data, error, count } = await fetchPage(rows.length, rows.length + pageSize - 1)
+    if (error) throw new Error(error.message)
+    if (count === null) {
+      throw new Error("fetchAllRows needs the query's row count ({ count: 'exact' })")
+    }
+    const page = data ?? []
+    rows.push(...page)
+    // A page can come back shorter than asked when the server's limit is lower, so keep going
+    // until every counted row is in. An empty page means rows were removed while reading.
+    if (rows.length >= count || page.length === 0) return rows
+  }
+}
+```
+
+Run: `npx vitest run tests/fetch-all-rows.test.ts`
+Expected: PASS (7 tests).
+
+- [ ] **Step 4: Pin the engine functions the entry page will share**
+
+In `tests/engine/order-validation.test.ts`:
+
+(a) Replace:
+```ts
+import {
+  ageCutoffDateFor,
+  validateOrderRequest,
+```
+with:
+```ts
+import {
+  ageCutoffDateFor,
+  toDancerProfile,
+  validateOrderRequest,
+```
+
+(b) Append to `tests/engine/order-validation.test.ts`:
+```ts
+// The entry page builds each dancer's eligibility profile with this too, so the two can't drift
+describe('toDancerProfile', () => {
+  it('reads the date of birth as a local date and maps each dance to its level', () => {
+    const profile = toDancerProfile(
+      dancer({
+        championship_status: 'prelim',
+        dance_levels: [
+          { dance_key: 'reel', level_key: 'NOV' },
+          { dance_key: 'treble_jig', level_key: 'PW' }
+        ]
+      })
+    )
+    expect(profile).toEqual({
+      dob: new Date(2018, 4, 1),
+      gender: 'female',
+      championshipStatus: 'prelim',
+      danceLevels: { reel: 'NOV', treble_jig: 'PW' }
+    })
+  })
+})
+```
+
+In `tests/engine/purchase-snapshot.test.ts`:
+
+(c) Replace:
+```ts
+import {
+  buildCreateOrderPayload,
+  CONSENT_VERSION,
+```
+with:
+```ts
+import {
+  buildCreateOrderPayload,
+  CONSENT_VERSION,
+  feeEntriesFor,
+```
+
+(d) Append to `tests/engine/purchase-snapshot.test.ts`:
+```ts
+// The entry page prices its cart with this too, so the total it shows is the one Submit charges
+describe('feeEntriesFor', () => {
+  it("copies each competition's category, own fee and family-max flag, in entry order", () => {
+    const champ: FeisCompetition = {
+      ...comp('c3', 'PC1', 'reel'),
+      competition_type: 'championship',
+      fee_category: 'prelim_champ'
+    }
+    const special: FeisCompetition = {
+      ...comp('c4', 'SP1', 'reel'),
+      competition_type: 'special',
+      fee_cents: 2000,
+      exclude_from_family_cap: true
+    }
+    const competitions = new Map([champ, special].map((c) => [c.id, c]))
+    const entries = [
+      { dancerId: 'd2', competitionId: 'c4' },
+      { dancerId: 'd1', competitionId: 'c3' }
+    ]
+    expect(feeEntriesFor(entries, competitions)).toEqual([
+      {
+        dancer_id: 'd2',
+        fee_category: 'solo',
+        fee_cents_override: 2000,
+        exclude_from_family_cap: true,
+        is_day_of: false
+      },
+      {
+        dancer_id: 'd1',
+        fee_category: 'prelim_champ',
+        fee_cents_override: null,
+        exclude_from_family_cap: false,
+        is_day_of: false
+      }
+    ])
+  })
+})
+```
+
+Run: `npx vitest run tests/engine/order-validation.test.ts tests/engine/purchase-snapshot.test.ts`
+Expected: PASS. Both functions already exist (Task 4). These tests pin them now that the entry page depends on them as well as Submit.
+
+- [ ] **Step 5: Add the new order fields to the shared type**
+
+In `src/lib/types/feis-listing.ts`:
+
+(a) Replace:
+```ts
+// Listing status
+export type ListingStatus = 'draft' | 'open' | 'closed' | 'launched'
+```
+with:
 ```ts
 import type { PurchaseSnapshot } from '@/lib/engine/purchase-snapshot'
+
+// Listing status
+export type ListingStatus = 'draft' | 'open' | 'closed' | 'launched'
 ```
-Then add these fields to `interface Registration`, after `hold_expires_at: string | null`:
+
+(b) Replace (in `interface Registration`):
 ```ts
+  hold_expires_at: string | null
+  created_at: string
+```
+with:
+```ts
+  hold_expires_at: string | null
+  /** What the order was checked and priced on, frozen at Submit; null on orders from before that */
   purchase_snapshot: PurchaseSnapshot | null
   checkout_claim_id: string | null
   checkout_expires_at: string | null
   paid_at: string | null
+  created_at: string
 ```
 
-- [ ] **Step 3: Rewrite Submit and the resume lookup**
+The type-only import cycle with `purchase-snapshot.ts` is fine; both sides import types only.
 
-In `src/app/feiseanna/[id]/register/actions.ts`, replace everything from the imports down to the end of `createDraftRegistration` with the code below. Leave `createCheckoutSession` exactly as it is.
+- [ ] **Step 6: Rewrite Submit and the resume lookup**
+
+In `src/app/feiseanna/[id]/register/actions.ts`, replace everything above `export async function createCheckoutSession` with the code below. That is the imports, `getExistingRegistration`, `cancelRegistration`, `CreateDraftInput` and `createDraftRegistration`. The code below includes `cancelRegistration` unchanged, moved below Submit, so Task 12 can replace it and `createCheckoutSession` in one piece. Leave `createCheckoutSession` exactly as it is. Until Task 12, those two still write `registrations` directly, which 012 refuses. Nothing deploys before Task 16, and Task 12 replaces them well before that.
 ```ts
 'use server'
 
 import { headers } from 'next/headers'
-import { createClient } from '@/lib/supabase/server'
-import { createServiceClient } from '@/lib/supabase/service'
+import { createClient, getSignedInUser } from '@/lib/supabase/server'
+import { createServiceClient, type ServiceClient } from '@/lib/supabase/service'
 import { canTransitionRegistration } from '@/lib/registration-states'
 import { clientIpFrom } from '@/lib/engine/consent'
-import { validateOrderRequest, type OrderDancer, type RequestedEntry } from '@/lib/engine/order-validation'
-import { buildCreateOrderPayload, priceOrder } from '@/lib/engine/purchase-snapshot'
-import { isHouseholdComplete } from '@/lib/household'
+import {
+  validateOrderRequest,
+  type OrderDancer,
+  type RequestedEntry
+} from '@/lib/engine/order-validation'
+import {
+  buildCreateOrderPayload,
+  priceOrder,
+  type CreateOrderPayload
+} from '@/lib/engine/purchase-snapshot'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
+import { isHouseholdComplete, REQUIRED_HOUSEHOLD_FIELDS } from '@/lib/household'
+import { createOrderStore, type CreateOrderResult } from '@/app/_payments/order-store'
 import { supabaseRpc } from '@/app/_payments/rpc'
-import { createOrderStore } from '@/app/_payments/order-store'
 import type {
   FeeBreakdown,
   FeeSchedule,
   FeisCompetition,
   FeisListing,
+  Household,
   Registration,
   RegistrationEntry,
   RegistrationStatus
 } from '@/lib/types/feis-listing'
 
-const REFUSAL_MESSAGES: Record<'listing_closed' | 'outside_window' | 'active_order_exists', string> = {
+type RefusalReason = Extract<CreateOrderResult, { status: 'refused' }>['reason']
+
+/** What a family is told when create_order refuses after the checks here have passed */
+const REFUSAL_MESSAGES: Record<RefusalReason, string> = {
   listing_closed: 'Registration for this feis is not open.',
   outside_window: 'Registration for this feis has closed.',
-  active_order_exists: 'You already have a registration in progress for this feis.'
+  active_order_exists: 'You already have entries for this feis. Reload this page to see them.'
 }
 
-async function currentHousehold() {
+type HouseholdContext =
+  | { error: string }
+  | {
+      supabase: Awaited<ReturnType<typeof createClient>>
+      household: Pick<Household, 'id' | (typeof REQUIRED_HOUSEHOLD_FIELDS)[number]>
+    }
+
+/**
+ * The signed-in parent's household, read with their own client: this is what proves an order
+ * is theirs (spec §4, §6, §7).
+ */
+async function currentHousehold(): Promise<HouseholdContext> {
   const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) return { error: 'Not authenticated' as const }
+  const user = await getSignedInUser(supabase)
+  if (!user) return { error: 'Please sign in again to continue.' }
 
   const { data: household, error } = await supabase
     .from('households')
     .select('id, first_name, last_name, phone, address_line1, city, state_region, postal_code')
     .eq('user_id', user.id)
-    .single()
-  if (error || !household) return { error: 'Household not found' as const }
-
+    .maybeSingle()
+  if (error) return { error: 'Your family details could not be loaded. Please try again.' }
+  if (!household) return { error: 'Please finish setting up your family account first.' }
   return { supabase, household }
 }
 
-export async function getExistingRegistration(feisListingId: string) {
+/**
+ * The family's unpaid order for this feis while it still holds its places. Read-only: a hold
+ * that has passed already counts as expired here, and the expiry job makes the change (spec §13).
+ */
+export async function getExistingRegistration(feisListingId: string): Promise<
+  | { error: string }
+  | {
+      registration: (Registration & { registration_entries: RegistrationEntry[] }) | null
+      expired?: true
+    }
+> {
   const ctx = await currentHousehold()
   if ('error' in ctx) return { error: ctx.error }
 
@@ -2919,25 +3305,58 @@ export async function getExistingRegistration(feisListingId: string) {
     .eq('household_id', ctx.household.id)
     .in('status', ['draft', 'pending_payment'])
     .maybeSingle()
-
-  if (error) return { error: 'Could not load your registration.' }
+  if (error) return { error: 'Your entries could not be loaded. Please try again.' }
   if (!registration) return { registration: null }
 
-  // The expiry job makes the change; until it runs, a passed hold already counts as expired
-  if (registration.hold_expires_at && new Date(registration.hold_expires_at) < new Date()) {
+  if (registration.hold_expires_at && new Date(registration.hold_expires_at) <= new Date()) {
     return { registration: null, expired: true }
   }
+  return {
+    registration: registration as Registration & { registration_entries: RegistrationEntry[] }
+  }
+}
 
-  return { registration: registration as Registration & { registration_entries: RegistrationEntry[] } }
+/** What Submit checks and prices an order against, read fresh with the service role */
+async function loadOrderInputs(service: ServiceClient, feisListingId: string, householdId: string) {
+  const [listing, feeSchedule, dancers, competitions] = await Promise.all([
+    service.from('feis_listings').select('*').eq('id', feisListingId).maybeSingle(),
+    service.from('fee_schedules').select('*').eq('feis_listing_id', feisListingId).maybeSingle(),
+    service
+      .from('dancers')
+      .select('*, dance_levels:dancer_dance_levels(dance_key, level_key)')
+      .eq('household_id', householdId),
+    // Every competition of this feis, enabled or not, since eligibility is judged against the
+    // whole list. Read in pages: PostgREST returns at most 1000 rows per request.
+    fetchAllRows<FeisCompetition>((from, to) =>
+      service
+        .from('feis_competitions')
+        .select('*', { count: 'exact' })
+        .eq('feis_listing_id', feisListingId)
+        .order('id', { ascending: true })
+        .range(from, to)
+    )
+  ])
+  const failed = listing.error ?? feeSchedule.error ?? dancers.error
+  if (failed) throw new Error(failed.message)
+  return {
+    listing: listing.data as FeisListing | null,
+    feeSchedule: feeSchedule.data as FeeSchedule | null,
+    dancers: (dancers.data ?? []) as OrderDancer[],
+    competitions
+  }
 }
 
 interface CreateDraftInput {
   feisListingId: string
   entries: RequestedEntry[]
+  /** The family ticked the agreement. The server records when, and from which address. */
   consentAccepted: boolean
 }
 
-export async function createDraftRegistration(input: CreateDraftInput): Promise<
+/** Submit (spec §4): check, price and create the order on the server, in one database step */
+export async function createDraftRegistration(
+  input: CreateDraftInput
+): Promise<
   | { error: string }
   | { registrationId: string; totalCents: number; holdExpiresAt: string; breakdown: FeeBreakdown }
 > {
@@ -2950,27 +3369,19 @@ export async function createDraftRegistration(input: CreateDraftInput): Promise<
   }
 
   const service = createServiceClient()
-  const [listingResult, feeResult, competitionsResult, dancersResult] = await Promise.all([
-    service.from('feis_listings').select('*').eq('id', input.feisListingId).single(),
-    service.from('fee_schedules').select('*').eq('feis_listing_id', input.feisListingId).single(),
-    service.from('feis_competitions').select('*').eq('feis_listing_id', input.feisListingId),
-    service
-      .from('dancers')
-      .select('*, dance_levels:dancer_dance_levels(dance_key, level_key)')
-      .eq('household_id', ctx.household.id),
-  ])
-  if (listingResult.error || !listingResult.data) return { error: 'Feis listing not found' }
-  if (feeResult.error || !feeResult.data) return { error: 'Fee schedule not found' }
-  if (competitionsResult.error || dancersResult.error) {
-    return { error: 'Could not load the feis details. Please try again.' }
-  }
+  const loaded = await loadOrderInputs(service, input.feisListingId, ctx.household.id).catch(
+    (err: unknown) => {
+      console.error('Submit could not load the feis:', err)
+      return null
+    }
+  )
+  if (!loaded) return { error: 'The feis details could not be loaded. Please try again.' }
+  const { listing, feeSchedule, dancers, competitions } = loaded
+  if (!listing) return { error: 'This feis could not be found.' }
+  if (!feeSchedule) return { error: "This feis hasn't set its fees yet, so entries can't be paid." }
 
   const now = new Date()
-  const listing = listingResult.data as FeisListing
   const levels = listing.syllabus_snapshot?.levels ?? []
-  const competitions = (competitionsResult.data ?? []) as FeisCompetition[]
-  const dancers = (dancersResult.data ?? []) as OrderDancer[]
-
   const validation = validateOrderRequest({
     now,
     householdId: ctx.household.id,
@@ -2981,19 +3392,30 @@ export async function createDraftRegistration(input: CreateDraftInput): Promise<
   })
   if (!validation.ok) return { error: validation.error }
 
-  const priced = priceOrder({
-    now,
-    ageCutoffDate: validation.ageCutoffDate,
-    levels,
-    dancers,
-    competitions,
-    entries: input.entries,
-    feeSchedule: feeResult.data as FeeSchedule
-  })
-  const payload = buildCreateOrderPayload(priced, {
-    applicationFeePercent: Number.parseFloat(process.env.STRIPE_APPLICATION_FEE_PERCENT ?? '5'),
-    consentIp: clientIpFrom(await headers())
-  })
+  let payload: CreateOrderPayload
+  let breakdown: FeeBreakdown
+  try {
+    const priced = priceOrder({
+      now,
+      ageCutoffDate: validation.ageCutoffDate,
+      levels,
+      feisTermsUrl: listing.terms_url,
+      dancers,
+      competitions,
+      entries: input.entries,
+      feeSchedule
+    })
+    payload = buildCreateOrderPayload(priced, {
+      // parseFloat keeps a fractional percent. Missing, it parses as NaN, which the engine refuses
+      // like any value outside 0 to 100, so Submit stops instead of pricing wrongly (spec §4)
+      applicationFeePercent: Number.parseFloat(process.env.STRIPE_APPLICATION_FEE_PERCENT ?? ''),
+      consentIp: clientIpFrom(await headers())
+    })
+    breakdown = priced.breakdown
+  } catch (err) {
+    console.error('Submit could not price the order:', err)
+    return { error: 'Your entries could not be priced. Please try again later.' }
+  }
 
   try {
     const result = await createOrderStore(supabaseRpc(service)).createOrder(
@@ -3006,141 +3428,451 @@ export async function createDraftRegistration(input: CreateDraftInput): Promise<
       registrationId: result.registration_id,
       totalCents: payload.total_cents,
       holdExpiresAt: result.hold_expires_at,
-      breakdown: priced.breakdown
+      breakdown
     }
   } catch (err) {
     console.error('create_order failed:', err)
-    return { error: 'Failed to create your registration. Please try again.' }
+    return { error: 'Your entries could not be saved. Please try again.' }
   }
 }
-```
-`cancelRegistration` and `createCheckoutSession` still need `canTransitionRegistration` and `RegistrationStatus` until Task 12, so those imports stay.
 
-- [ ] **Step 4: Update the register page: new payload, resume, frozen price, change entries**
+export async function cancelRegistration(registrationId: string) {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { error: 'Not authenticated' }
+
+  const { data: household } = await supabase
+    .from('households')
+    .select('id')
+    .eq('user_id', user.id)
+    .single()
+  if (!household) return { error: 'Household not found' }
+
+  const { data: reg, error: fetchError } = await supabase
+    .from('registrations')
+    .select('status')
+    .eq('id', registrationId)
+    .eq('household_id', household.id)
+    .single()
+
+  if (fetchError || !reg) return { error: 'Registration not found' }
+
+  const currentStatus = reg.status as RegistrationStatus
+  if (!canTransitionRegistration(currentStatus, 'cancelled')) {
+    return { error: `Cannot cancel registration in ${currentStatus} state` }
+  }
+
+  const { error } = await supabase
+    .from('registrations')
+    .update({ status: 'cancelled' })
+    .eq('id', registrationId)
+
+  if (error) {
+    console.error('Failed to cancel registration:', error)
+    return { error: 'Failed to cancel registration' }
+  }
+
+  return { success: true as const }
+}
+```
+Keep one blank line between the end of `cancelRegistration` and `export async function createCheckoutSession`.
+
+What changed, and why:
+- `getExistingRegistration` no longer writes. A passed hold counts as expired here; the expiry job makes the change (spec §13).
+- The household is read with the parent's own client, which proves the order is theirs. The listing, fees, dancers and every competition of the feis are read with the service role, scoped by `feis_listing_id` and `household_id`. The competitions are ordered by `id`, so the pages are stable.
+- `STRIPE_APPLICATION_FEE_PERCENT` is read with `parseFloat`, so a fractional percent such as `2.9` is kept. There is no fallback any more: a missing value parses as `NaN`, and `buildCreateOrderPayload` throws on anything that isn't a number from 0 up to 100. Submit then refuses with a message instead of creating an order (spec §4). Task 16 confirms the live value is set.
+- `currentHousehold()` has an explicit return type. Without it, TypeScript adds `error?: undefined` to the success shape, and `'error' in ctx` no longer narrows.
+- The refusal messages are keyed by `CreateOrderResult`'s reasons, so a reason added to `create_order` won't compile until it has a message. `create_order` counts a paid order as active too, so its message covers both cases.
+
+- [ ] **Step 7: Read every competition on the register page**
 
 In `src/app/feiseanna/[id]/register/page.tsx`:
 
-(a) Add `RegistrationEntry` to the existing `@/lib/types/feis-listing` type import, if it isn't there already.
-
-(b) Directly above `function RegistrationFlow`, add:
+(a) Replace:
 ```tsx
-function cartFromEntries(entries: RegistrationEntry[]): Record<string, string[]> {
-  const cart: Record<string, string[]> = {}
-  for (const entry of entries) {
-    const competitionIds = cart[entry.dancer_id] ?? []
-    competitionIds.push(entry.feis_competition_id)
-    cart[entry.dancer_id] = competitionIds
+import { isHouseholdComplete } from '@/lib/household'
+```
+with:
+```tsx
+import { fetchAllRows } from '@/lib/fetch-all-rows'
+import { isHouseholdComplete } from '@/lib/household'
+```
+
+(b) Replace:
+```tsx
+        const [listingResult, feesResult, compsResult, dancersResult, heldResult, paidResult] =
+```
+with:
+```tsx
+        const [listingResult, feesResult, competitions, dancersResult, heldResult, paidResult] =
+```
+
+(c) Replace:
+```tsx
+            supabase
+              .from('feis_competitions')
+              .select('*')
+              .eq('feis_listing_id', feisId)
+              .eq('enabled', true)
+              .order('sort_order', { ascending: true }),
+```
+with:
+```tsx
+            // Every enabled competition, read in pages: PostgREST returns at most 1000 rows per
+            // request, and Submit judges eligibility against the feis's whole list
+            fetchAllRows<FeisCompetition>((from, to) =>
+              supabase
+                .from('feis_competitions')
+                .select('*', { count: 'exact' })
+                .eq('feis_listing_id', feisId)
+                .eq('enabled', true)
+                .order('sort_order', { ascending: true })
+                .order('id', { ascending: true })
+                .range(from, to)
+            ),
+```
+
+(d) Replace:
+```tsx
+        for (const result of [compsResult, dancersResult, paidResult]) {
+```
+with:
+```tsx
+        for (const result of [dancersResult, paidResult]) {
+```
+
+(e) Replace:
+```tsx
+            competitions: (compsResult.data ?? []) as FeisCompetition[],
+```
+with:
+```tsx
+            competitions,
+```
+
+`fetchAllRows` throws on a query error, and the page's existing `catch` turns that into its "could not load" message. Loading only the enabled competitions here is fine: `getEligibleCompetitions` judges only enabled ones, so the page and Submit, which passes the full list, reach the same answer.
+
+- [ ] **Step 8: The entry page uses the engine's rules and sends only the agreement**
+
+In `src/components/registration/entry-page.tsx`:
+
+(a) Replace:
+```tsx
+import { calculateAgeOnDate, getEligibleCompetitions } from '@/lib/engine/eligibility'
+```
+with:
+```tsx
+import { calculateAgeOnDate, getEligibleCompetitions } from '@/lib/engine/eligibility'
+import {
+  ageCutoffDateFor,
+  toDancerProfile,
+  type RequestedEntry
+} from '@/lib/engine/order-validation'
+import { feeEntriesFor } from '@/lib/engine/purchase-snapshot'
+```
+
+(b) Replace:
+```tsx
+import type {
+  Dancer,
+  DancerDanceLevel,
+  DancerProfile,
+  EligibleCompetition,
+  FeeEntry,
+  FeeSchedule,
+```
+with:
+```tsx
+import type {
+  Dancer,
+  DancerDanceLevel,
+  EligibleCompetition,
+  FeeBreakdown,
+  FeeSchedule,
+```
+
+(c) Delete the page's own copies of the engine rules. Replace:
+```tsx
+function profileOf(dancer: DancerWithLevels): DancerProfile {
+  const danceLevels: Record<string, string> = {}
+  for (const dl of dancer.dance_levels) danceLevels[dl.dance_key] = dl.level_key
+  return {
+    dob: parseLocalDate(dancer.date_of_birth),
+    gender: dancer.gender,
+    championshipStatus: dancer.championship_status,
+    danceLevels
   }
-  return cart
 }
+
+/** Feis age is the dancer's age on January 1 of the feis year. */
+function ageCutoffOf(listing: FeisListing): Date {
+  if (listing.age_cutoff_date) return parseLocalDate(listing.age_cutoff_date)
+  const year = listing.feis_date
+    ? parseLocalDate(listing.feis_date).getFullYear()
+    : new Date().getFullYear()
+  return new Date(year, 0, 1)
+}
+
+export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: string }) {
+```
+with:
+```tsx
+export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: string }) {
 ```
 
-(c) Replace the start of `RegistrationFlow`, from the destructuring line down to `const [loading, setLoading] = useState(false)`, with:
+(d) Replace:
 ```tsx
-  const { listing, feeSchedule, competitions, dancers, expiredHold, existingRegistration } = data
+  const ageCutoffDate = ageCutoffOf(listing)
+```
+with:
+```tsx
+  // The cutoff Submit uses: the organiser's date, otherwise January 1 of the feis year
+  const ageCutoffDate = useMemo(() => ageCutoffDateFor(listing, new Date()), [listing])
+```
 
-  // A family with an order in progress picks up where they left off, at Review & Pay
-  const [step, setStep] = useState(existingRegistration ? 3 : 1)
-  const [selectedDancerIds, setSelectedDancerIds] = useState<string[]>(() =>
-    existingRegistration
-      ? [...new Set(existingRegistration.registration_entries.map((e) => e.dancer_id))]
-      : []
+(e) Replace:
+```tsx
+  const [paymentStarted, setPaymentStarted] = useState(
+    data.heldRegistration?.status === 'pending_payment'
   )
-  const [cart, setCart] = useState<Record<string, string[]>>(() =>
-    existingRegistration ? cartFromEntries(existingRegistration.registration_entries) : {}
+```
+with:
+```tsx
+  const [paymentStarted, setPaymentStarted] = useState(
+    data.heldRegistration?.status === 'pending_payment'
   )
-  const [registrationId, setRegistrationId] = useState<string | null>(existingRegistration?.id ?? null)
-  const [holdExpiresAt, setHoldExpiresAt] = useState<string | null>(
-    existingRegistration?.hold_expires_at ?? null
-  )
-  // The price the server froze for this order; it replaces the cart's own estimate once it exists
+  // The price the server froze for the order in progress; the cart's own sum is an estimate
   const [orderBreakdown, setOrderBreakdown] = useState<FeeBreakdown | null>(
-    existingRegistration?.purchase_snapshot?.pricing.breakdown ?? null
+    data.heldRegistration?.purchase_snapshot?.pricing.breakdown ?? null
   )
-  const [notice, setNotice] = useState<string | null>(null)
-  const [loading, setLoading] = useState(false)
 ```
 
-(d) Rename the memoised breakdown from `const feeBreakdown: FeeBreakdown = useMemo(` to `const cartBreakdown: FeeBreakdown = useMemo(`. Directly after its closing `}, [cart, competitions, feeSchedule])`, add:
+(f) Replace:
 ```tsx
-  const feeBreakdown = orderBreakdown ?? cartBreakdown
-```
-
-(e) In `handleCreateDraft`, replace the `createDraftRegistration` call and the code after it, down to `setHoldExpiresAt(result.holdExpiresAt)`, with:
-```tsx
-      const result = await createDraftRegistration({
-        feisListingId: feisId,
-        entries,
-        consentAccepted: true
-      })
-
-      if ('error' in result) {
-        setNotice(result.error)
-        return
-      }
-
-      setNotice(null)
-      setRegistrationId(result.registrationId)
-      setHoldExpiresAt(result.holdExpiresAt)
-      setOrderBreakdown(result.breakdown)
-```
-
-(f) After `handleCancel`, add `handleChangeEntries`. In `handleCancel` itself, add `setOrderBreakdown(null)` next to `setHoldExpiresAt(null)`.
-```tsx
-  async function handleChangeEntries() {
-    // A submitted order never changes: going back cancels it, and Continue makes a new one
-    if (!registrationId) {
-      setStep(2)
-      return
+  const eligibleByDancer = useMemo(() => {
+    const map: Record<string, EligibleCompetition[]> = {}
+    const cutoff = ageCutoffOf(listing)
+    const syllabusLevels = listing.syllabus_snapshot?.levels ?? []
+    for (const dancer of dancers) {
+      map[dancer.id] = getEligibleCompetitions(
+        profileOf(dancer),
+        competitions,
+        cutoff,
+        syllabusLevels
+      )
     }
-    if (!confirm('Change your entries? This cancels the registration you started, and you can submit a new one.')) return
+    return map
+  }, [dancers, competitions, listing])
+```
+with:
+```tsx
+  const eligibleByDancer = useMemo(() => {
+    const map: Record<string, EligibleCompetition[]> = {}
+    const syllabusLevels = listing.syllabus_snapshot?.levels ?? []
+    for (const dancer of dancers) {
+      map[dancer.id] = getEligibleCompetitions(
+        toDancerProfile(dancer),
+        competitions,
+        ageCutoffDate,
+        syllabusLevels
+      )
+    }
+    return map
+  }, [dancers, competitions, listing, ageCutoffDate])
+```
+
+(g) Replace:
+```tsx
+  const feeEntries: FeeEntry[] = useMemo(() => {
+    const entries: FeeEntry[] = []
+    for (const dancer of dancers) {
+      for (const compId of cart[dancer.id] ?? []) {
+        const comp = competitionById.get(compId)
+        if (!comp) continue
+        entries.push({
+          dancer_id: dancer.id,
+          fee_category: comp.fee_category,
+          fee_cents_override: comp.fee_cents,
+          exclude_from_family_cap: comp.exclude_from_family_cap,
+          is_day_of: false
+        })
+      }
+    }
+    return entries
+  }, [cart, dancers, competitionById])
+
+  const breakdown = useMemo(
+    () => (feeSchedule && feeEntries.length > 0 ? calculateFees(feeSchedule, feeEntries) : null),
+    [feeSchedule, feeEntries]
+  )
+```
+with:
+```tsx
+  // What Pay submits: each dancer's chosen dances that this feis still offers
+  const requestedEntries: RequestedEntry[] = useMemo(
+    () =>
+      dancers.flatMap((dancer) =>
+        (cart[dancer.id] ?? [])
+          .filter((competitionId) => competitionById.has(competitionId))
+          .map((competitionId) => ({ dancerId: dancer.id, competitionId }))
+      ),
+    [cart, dancers, competitionById]
+  )
+
+  // Priced the way Submit prices it; once Submit has run, its frozen price is shown instead
+  const cartBreakdown = useMemo(
+    () =>
+      feeSchedule && requestedEntries.length > 0
+        ? calculateFees(feeSchedule, feeEntriesFor(requestedEntries, competitionById))
+        : null,
+    [feeSchedule, requestedEntries, competitionById]
+  )
+  const breakdown = orderBreakdown ?? cartBreakdown
+```
+
+(h) Replace:
+```tsx
+  const dancesChosen = feeEntries.length
+```
+with:
+```tsx
+  const dancesChosen = requestedEntries.length
+```
+
+(i) Replace:
+```tsx
+  async function handlePay() {
+    setError(null)
     setLoading(true)
     try {
-      const result = await cancelRegistration(registrationId)
-      if ('error' in result) {
-        setNotice(result.error ?? 'Could not change your entries. Please try again.')
-        return
+      let regId: string | null = registrationId
+      if (regId === null) {
+        const result = await createDraftRegistration({
+          feisListingId: feisId,
+          entries: Object.entries(cart).flatMap(([dancerId, compIds]) =>
+            compIds.map((competitionId) => ({ dancerId, competitionId }))
+          ),
+          consentAcceptedAt: new Date().toISOString(),
+          consentIp: '0.0.0.0'
+        })
+        if ('error' in result) {
+          setError(result.error ?? 'Your entries could not be saved. Try again.')
+          return
+        }
+        regId = result.registrationId
+        setRegistrationId(regId)
+        setHoldExpiresAt(result.holdExpiresAt)
+        setEditingId(null)
       }
-      setNotice(null)
+      if (regId === null) return
+```
+with:
+```tsx
+  async function handlePay(consentAccepted: boolean) {
+    setError(null)
+    setLoading(true)
+    try {
+      let regId: string | null = registrationId
+      if (regId === null) {
+        // The browser says only that the family agreed; the server records when and from where
+        const order = await createDraftRegistration({
+          feisListingId: feisId,
+          entries: requestedEntries,
+          consentAccepted
+        })
+        if ('error' in order) {
+          setError(order.error)
+          return
+        }
+        regId = order.registrationId
+        setRegistrationId(regId)
+        setHoldExpiresAt(order.holdExpiresAt)
+        setOrderBreakdown(order.breakdown)
+        setEditingId(null)
+      }
+```
+
+(j) In `handleChangeEntries`, replace:
+```tsx
       setRegistrationId(null)
       setHoldExpiresAt(null)
-      setOrderBreakdown(null)
-      setStep(2)
-    } finally {
-      setLoading(false)
-    }
-  }
+      setPaymentStarted(false)
 ```
-
-(g) In the JSX, after the `{expiredHold && (...)}` block, add:
+with:
 ```tsx
-        {notice && (
-          <div
-            role="status"
-            className="mb-6 rounded-md border border-orange-200 bg-orange-50 px-4 py-3 text-sm text-orange-800"
-          >
-            {notice}
-          </div>
-        )}
+      setRegistrationId(null)
+      setHoldExpiresAt(null)
+      setPaymentStarted(false)
+      setOrderBreakdown(null)
 ```
 
-(h) In `<Step3Review ... />`, change `onBack={() => setStep(2)}` to `onBack={handleChangeEntries}`.
+`<FamilyReceipt onPay={handlePay} … />` stays as it is: Step 9 changes the prop's type to match. The rest of `handlePay` (the old `createCheckoutSession` call) stays until Task 12. `requestedEntries` is both what the page prices and what Pay submits. So a competition the cart remembers but this feis no longer offers is left out of both. Before, it was left out of the price but still submitted.
 
-- [ ] **Step 5: Type-check and build**
+- [ ] **Step 9: Pay reports the agreement box**
 
-Run: `npx tsc --noEmit && npm run build`
-Expected: both succeed.
+In `src/components/registration/family-receipt.tsx`:
 
-- [ ] **Step 6: Run all tests**
+(a) Replace:
+```tsx
+import Link from 'next/link'
+import { formatCents } from '@/lib/format'
+```
+with:
+```tsx
+import Link from 'next/link'
+import { CONSENT_VERSION } from '@/lib/engine/purchase-snapshot'
+import { formatCents } from '@/lib/format'
+```
+
+(b) Replace:
+```tsx
+  onPay: () => void
+```
+with:
+```tsx
+  /** Pay, with whether the agreement is ticked; Submit records that agreement on a new order */
+  onPay: (consentAccepted: boolean) => void
+```
+
+(c) Replace:
+```tsx
+        <label className="mt-3.5 mb-3 flex items-start gap-2 text-[12.5px] text-muted-foreground">
+```
+with:
+```tsx
+        <label
+          // This wording is CONSENT_VERSION: change the two in the same commit
+          data-consent-version={CONSENT_VERSION}
+          className="mt-3.5 mb-3 flex items-start gap-2 text-[12.5px] text-muted-foreground"
+        >
+```
+
+(d) Replace:
+```tsx
+          onClick={onPay}
+```
+with:
+```tsx
+          onClick={() => onPay(agreed)}
+```
+
+`CONSENT_VERSION`'s comment already says the checkbox wording here must change with it. The attribute makes the link visible where the wording lives, and in the page itself.
+
+- [ ] **Step 10: Type-check, lint and build**
+
+Run: `npx tsc --noEmit && npm run lint && npm run build`
+Expected: all three succeed. `npm run lint` reports no errors; the one warning, in `feis-wizard-step2.tsx`, was there before.
+
+- [ ] **Step 11: Run all tests**
 
 Run: `npm test && npm run test:db`
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 12: Commit**
 
 ```bash
-git add src/lib/types/feis-listing.ts 'src/app/feiseanna/[id]/register/actions.ts' 'src/app/feiseanna/[id]/register/page.tsx'
-git commit -m "feat: submit checks, prices and creates orders on the server; families resume an order in progress"
+git add src/lib/fetch-all-rows.ts tests/fetch-all-rows.test.ts tests/engine/order-validation.test.ts tests/engine/purchase-snapshot.test.ts src/lib/types/feis-listing.ts 'src/app/feiseanna/[id]/register/actions.ts' 'src/app/feiseanna/[id]/register/page.tsx' src/components/registration/entry-page.tsx src/components/registration/family-receipt.tsx
+git commit -m "feat: submit checks, prices and creates orders on the server, by the entry page's own rules"
 ```
 
 ---
@@ -3270,7 +4002,7 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
-  await db.drop()
+  await db?.drop()
 })
 
 function configFor(order: DraftOrderFixture, claimId: string) {
@@ -3360,6 +4092,24 @@ describe('claim_checkout', () => {
     expect((await orderRow(order.registrationId)).checkout_claim_id).toBeNull()
   })
 
+  it('refuses a request with no expiry, or a claim with no id, and leaves the order as it was', async () => {
+    const order = await createDraftOrder(db.pool)
+    const before = await orderRow(order.registrationId)
+    const claimId = randomUUID()
+    // Straight to the function: the store's types never allow either
+    const rpc = pgRpc(db.pool)
+    for (const args of [
+      { p_claim_id: claimId, p_config: { ...configFor(order, claimId), expires_at: null } },
+      { p_claim_id: null, p_config: configFor(order, claimId) },
+    ]) {
+      const message = await refused(rpc('claim_checkout', {
+        p_registration_id: order.registrationId, p_household_id: order.family.householdId, ...args,
+      }))
+      expect(message).toMatch(/does not match order/)
+    }
+    expect(await orderRow(order.registrationId)).toEqual(before)
+  })
+
   it('will not claim once the hold has passed', async () => {
     const order = await createDraftOrder(db.pool)
     await db.pool.query(`UPDATE registrations SET hold_expires_at = now() - interval '1 minute' WHERE id = $1`, [order.registrationId])
@@ -3401,6 +4151,25 @@ describe('attach_checkout_session', () => {
       .toEqual({ result: 'already_attached', status: 'pending_payment' })
     expect(await store.attachCheckoutSession(order.registrationId, claimed.claim_id, 'cs_2'))
       .toEqual({ result: 'not_attachable', status: 'pending_payment', session_id: 'cs_1' })
+  })
+
+  it('refuses to attach without a claim id or a session id, and leaves the order as it was', async () => {
+    const unclaimed = await createDraftOrder(db.pool)
+    const claimedOrder = await createDraftOrder(db.pool)
+    const claimed = await claim(claimedOrder)
+    if (claimed.result !== 'claimed') throw new Error('expected a claim')
+    const rpc = pgRpc(db.pool)
+    const attempts: [DraftOrderFixture, Record<string, unknown>][] = [
+      // An unclaimed draft and no claim id: nothing in the order to compare against
+      [unclaimed, { p_claim_id: null, p_session_id: 'cs_no_claim' }],
+      [claimedOrder, { p_claim_id: claimed.claim_id, p_session_id: null }],
+    ]
+    for (const [order, args] of attempts) {
+      const before = await orderRow(order.registrationId)
+      expect(await refused(rpc('attach_checkout_session', { p_registration_id: order.registrationId, ...args })))
+        .toMatch(/needs the claim id and the session id/)
+      expect(await orderRow(order.registrationId)).toEqual(before)
+    }
   })
 })
 
@@ -3539,11 +4308,15 @@ BEGIN
     RETURN jsonb_build_object('result', 'blocked', 'reason', 'amount_too_small');
   END IF;
 
-  -- The frozen request must describe this order exactly, on the feis's current Stripe account
+  -- The frozen request must describe this order exactly, on the feis's current Stripe account. A claim
+  -- with no id or no expiry is refused here: 012 only takes a claim whose id, config, claim time and
+  -- expiry all arrive together, and an unpaid order must keep a hold.
   v_expires := to_timestamp((p_config ->> 'expires_at')::bigint);
   SELECT coalesce(sum((item ->> 'amount_cents')::integer), -1)::integer INTO v_line_total
   FROM jsonb_array_elements(coalesce(p_config -> 'line_items', '[]'::jsonb)) AS item;
-  IF p_config ->> 'account' IS DISTINCT FROM v_listing.stripe_account_id
+  IF p_claim_id IS NULL
+     OR v_expires IS NULL
+     OR p_config ->> 'account' IS DISTINCT FROM v_listing.stripe_account_id
      OR p_config ->> 'currency' IS DISTINCT FROM 'usd'
      OR (p_config ->> 'total_cents')::integer IS DISTINCT FROM v_order.total_cents
      OR v_line_total IS DISTINCT FROM v_order.total_cents
@@ -3578,6 +4351,12 @@ AS $$
 DECLARE
   v_order registrations%ROWTYPE;
 BEGIN
+  -- Pay always names its claim and the session that claim made. Refuse anything less here, rather than
+  -- leave it to 012 (a session needs a claim, and an order awaiting payment needs both)
+  IF p_claim_id IS NULL OR p_session_id IS NULL THEN
+    RAISE EXCEPTION 'attach_checkout_session needs the claim id and the session id';
+  END IF;
+
   SELECT * INTO v_order FROM registrations WHERE id = p_registration_id FOR UPDATE;
   IF NOT FOUND THEN
     RETURN jsonb_build_object('result', 'not_found');
@@ -3702,7 +4481,7 @@ git commit -m "feat: one frozen checkout claim per order, with the organiser's s
   - `payment_exceptions`
   - `notifications`, with every column §12 needs: `kind`, `dedupe_key`, `registration_id`, `exception_id`, `related_notification_id`, `recipient`, `payload`, `status`, `attempts`, `send_generation`, `last_outcome`, `first_attempt_at`, `next_attempt_at`, `claim_token`, `claimed_at`, `provider_message_id`, `last_error`, `sent_at` and `created_at`
 - Produces SQL functions:
-  - internal: `_random_code`, `new_confirmation_number`, `new_support_ref`, `_record_payment_exception(...) → text` (the support reference) and `_fulfil_order(...) → text` (the confirmation number)
+  - internal: `_random_code`, `new_confirmation_number(p_at timestamptz DEFAULT now())` (the year as it is in Eastern time at `p_at`), `new_support_ref`, `_record_payment_exception(...) → text` (the support reference) and `_fulfil_order(...) → text` (the confirmation number)
   - service role: `confirm_order_payment(p_registration_id uuid, p_claim_id uuid, p_session_id text, p_account text, p_amount_cents integer, p_currency text, p_payment_status text, p_payment_intent_id text, p_charge_id text, p_event_id text, p_source text) → jsonb`
   - service role: `record_payment_failure(p_registration_id uuid, p_claim_id uuid, p_session_id text, p_account text, p_event_id text) → jsonb`
   - authenticated: `get_my_payment_reviews(p_registration_id uuid DEFAULT NULL) → jsonb`, a restricted array
@@ -3834,7 +4613,7 @@ Create `tests/db/payment-confirmation.test.ts`:
 import { randomUUID } from 'node:crypto'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createOrderStore, type ConfirmPaymentInput, type OrderStore } from '@/app/_payments/order-store'
-import { asParent, createTestDatabase, refused, type TestDatabase } from './helpers/db'
+import { asParent, asService, createTestDatabase, refused, type TestDatabase } from './helpers/db'
 import { buildPayload, createDraftOrder, readyToPay, type DraftOrderFixture } from './helpers/fixtures'
 import { pgRpc } from './helpers/pg-rpc'
 
@@ -3847,7 +4626,7 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
-  await db.drop()
+  await db?.drop()
 })
 
 type Ready = Awaited<ReturnType<typeof readyToPay>>
@@ -3867,6 +4646,17 @@ function payment(order: DraftOrderFixture, ready: Ready, overrides: Partial<Conf
     source: 'webhook',
     ...overrides,
   }
+}
+
+/** Resolves once another connection to this test database is waiting on a lock */
+async function someoneIsWaiting(): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const { rows } = await db.pool.query(
+      `SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`)
+    if (rows[0].n > 0) return
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  throw new Error('No connection started waiting on a lock')
 }
 
 async function counts(registrationId: string) {
@@ -4106,6 +4896,92 @@ describe('what parents can see', () => {
     }
   })
 })
+
+describe('the unique keys confirmation relies on (migration 012)', () => {
+  it('lets one payment intent pay only one order, even when two confirmations race', async () => {
+    const first = await createDraftOrder(db.pool)
+    const firstReady = await readyToPay(db.pool, first)
+    const second = await createDraftOrder(db.pool)
+    const secondReady = await readyToPay(db.pool, second)
+    const shared = `pi_shared_${randomUUID().slice(0, 8)}`
+    const p = payment(first, firstReady, { paymentIntentId: shared })
+
+    // The first confirmation is still open when the second checks for reuse, so only the unique index
+    // on stripe_payment_intent_id can stop the second one
+    const client = await db.pool.connect()
+    let racing: Promise<string> | undefined
+    try {
+      await client.query('BEGIN')
+      await client.query(`SELECT set_config('role', 'service_role', true)`)
+      const { rows } = await client.query(
+        'SELECT confirm_order_payment($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) AS result',
+        [p.registrationId, p.claimId, p.sessionId, p.account, p.amountCents, p.currency, p.paymentStatus,
+         p.paymentIntentId, p.chargeId, p.eventId, p.source])
+      expect(rows[0].result.result).toBe('confirmed')
+      racing = refused(store.confirmOrderPayment(payment(second, secondReady, { paymentIntentId: shared })))
+      await someoneIsWaiting()
+      await client.query('COMMIT')
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined)
+      throw err
+    } finally {
+      client.release()
+    }
+    expect(await racing).toMatch(/idx_registrations_payment_intent_unique/)
+
+    const { rows: holders } = await db.pool.query('SELECT id FROM registrations WHERE stripe_payment_intent_id = $1', [shared])
+    expect(holders).toEqual([{ id: first.registrationId }])
+    expect((await orderRow(second.registrationId)).status).toBe('pending_payment')
+    expect(await counts(second.registrationId)).toEqual({ snapshots: 0, emails: 0, numbers: 0, cases: 0 })
+    // Stripe retries the second delivery, which the reuse check now records as a case
+    expect(await store.confirmOrderPayment(payment(second, secondReady, { paymentIntentId: shared })))
+      .toMatchObject({ result: 'exception', reason: 'payment_reused' })
+  })
+
+  it('never lets two orders share a checkout session', async () => {
+    const first = await createDraftOrder(db.pool)
+    const firstReady = await readyToPay(db.pool, first)
+    const second = await createDraftOrder(db.pool)
+    const secondReady = await readyToPay(db.pool, second, { attach: false })
+    // A payment on the second order's own claim that names the first order's session would attach that
+    // session to the second order too, when it marks it paid
+    expect(await refused(store.confirmOrderPayment(payment(second, secondReady, { sessionId: firstReady.sessionId }))))
+      .toMatch(/idx_registrations_checkout_session_unique/)
+    expect(await refused(store.attachCheckoutSession(second.registrationId, secondReady.claimId, firstReady.sessionId)))
+      .toMatch(/idx_registrations_checkout_session_unique/)
+    expect(await orderRow(second.registrationId)).toMatchObject({ status: 'draft', stripe_checkout_session_id: null })
+    expect(await counts(second.registrationId)).toEqual({ snapshots: 0, emails: 0, numbers: 0, cases: 0 })
+  })
+
+  it('keeps one snapshot per order, even inside the transaction that paid it', async () => {
+    const order = await createDraftOrder(db.pool)
+    await readyToPay(db.pool, order)
+    // _fulfil_order's steps with the snapshot written twice: the guard lets both through, so the index decides
+    const message = await refused(asService(db.pool, async (c) => {
+      await c.query(
+        `UPDATE registrations SET status = 'paid', paid_at = now(), confirmation_number = 'RF-TEST-TWICE',
+           stripe_payment_intent_id = 'pi_twice'
+         WHERE id = $1`, [order.registrationId])
+      await c.query(`SELECT set_config('pre_registration.fulfilling_order', $1, true)`, [order.registrationId])
+      await c.query(`INSERT INTO registration_snapshots (registration_id, snapshot_data) VALUES ($1, '{}')`, [order.registrationId])
+      return c.query(`INSERT INTO registration_snapshots (registration_id, snapshot_data) VALUES ($1, '{}')`, [order.registrationId])
+    }))
+    expect(message).toMatch(/idx_registration_snapshots_one_per_order/)
+    expect((await orderRow(order.registrationId)).status).toBe('pending_payment')
+    expect(await counts(order.registrationId)).toEqual({ snapshots: 0, emails: 0, numbers: 0, cases: 0 })
+  })
+})
+
+describe('confirmation numbers', () => {
+  it("take their year from Eastern time, so a payment on New Year's Eve in Boston keeps the old year", async () => {
+    // 03:00 UTC on 1 January is 10pm on 31 December in Boston; 05:30 UTC is half past midnight there
+    const { rows: [numbers] } = await db.pool.query(`
+      SELECT new_confirmation_number('2027-01-01T03:00:00Z') AS new_years_eve,
+             new_confirmation_number('2027-01-01T05:30:00Z') AS new_years_day`)
+    expect(numbers.new_years_eve).toMatch(/^RF-2026-[A-HJKMNP-Z2-9]{5}$/)
+    expect(numbers.new_years_day).toMatch(/^RF-2027-[A-HJKMNP-Z2-9]{5}$/)
+  })
+})
 ```
 
 - [ ] **Step 4: Run them to confirm they fail**
@@ -4179,7 +5055,8 @@ CREATE INDEX IF NOT EXISTS idx_payment_exceptions_registration ON payment_except
 
 ALTER TABLE payment_exceptions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE notifications ENABLE ROW LEVEL SECURITY;
-REVOKE ALL ON payment_exceptions, notifications FROM anon, authenticated;
+-- PUBLIC as well, as in 012: whatever PUBLIC holds, every role holds
+REVOKE ALL ON payment_exceptions, notifications FROM PUBLIC, anon, authenticated;
 
 -- ─── References ───
 CREATE OR REPLACE FUNCTION _random_code(p_length integer)
@@ -4192,7 +5069,10 @@ AS $$
   FROM generate_series(1, p_length)
 $$;
 
-CREATE OR REPLACE FUNCTION new_confirmation_number()
+-- The year is the one the family is in: RunFeis runs Northeast feiseanna only, so it is taken in
+-- Eastern time, not UTC (a payment at 9pm on New Year's Eve in Boston keeps the old year).
+-- p_at is there for the tests; payments always use now().
+CREATE OR REPLACE FUNCTION new_confirmation_number(p_at timestamptz DEFAULT now())
 RETURNS text
 LANGUAGE plpgsql
 SET search_path = pre_registration, pg_temp
@@ -4201,7 +5081,7 @@ DECLARE
   v_code text;
 BEGIN
   LOOP
-    v_code := 'RF-' || extract(year FROM now())::int || '-' || _random_code(5);
+    v_code := 'RF-' || extract(year FROM p_at AT TIME ZONE 'America/New_York')::int || '-' || _random_code(5);
     EXIT WHEN NOT EXISTS (SELECT 1 FROM registrations WHERE confirmation_number = v_code);
   END LOOP;
   RETURN v_code;
@@ -4278,6 +5158,9 @@ DECLARE
   v_number text := new_confirmation_number();
   v_email text;
 BEGIN
+  -- One UPDATE sets every payment field with the status: 012 needs the claim, session, payment time and
+  -- confirmation number to arrive with 'paid', and freezes them from then on. The snapshot below is
+  -- written in this same transaction, as 012's snapshot guard requires (paid_at = now()).
   UPDATE registrations
   SET status = 'paid',
       stripe_checkout_session_id = coalesce(stripe_checkout_session_id, p_session_id),
@@ -4464,7 +5347,7 @@ AS $$
 $$;
 
 REVOKE ALL ON FUNCTION _random_code(integer) FROM PUBLIC, anon, authenticated, service_role;
-REVOKE ALL ON FUNCTION new_confirmation_number() FROM PUBLIC, anon, authenticated, service_role;
+REVOKE ALL ON FUNCTION new_confirmation_number(timestamptz) FROM PUBLIC, anon, authenticated, service_role;
 REVOKE ALL ON FUNCTION new_support_ref() FROM PUBLIC, anon, authenticated, service_role;
 REVOKE ALL ON FUNCTION _record_payment_exception(text, text, uuid, uuid, text, text, text, text, integer, text, jsonb)
   FROM PUBLIC, anon, authenticated, service_role;
@@ -4523,6 +5406,7 @@ git commit -m "feat: confirm payments in one transaction and record every case t
     - forced create outcomes `retry-before`, `retry-after`, `cached-500`, `in-progress` and `reject`
     - `listFails`
     - `pay(sessionId)`, `expire(sessionId)` and `sessionsFor(registrationId)`
+    - `sessionId(n = 1)`: the id of the nth session this fake made. Ids are unique across fakes, as Stripe's are, because migration 012's unique index refuses one session id on two orders, and every test in a file shares one database.
 
 How a claim's session is found and settled (spec §6a), in one place:
 - **`locateClaimSession`:**
@@ -4761,6 +5645,7 @@ export function createStripeGateway(stripe: Stripe): StripeGateway {
 
 Create `tests/db/helpers/fake-stripe.ts`:
 ```ts
+import { randomUUID } from 'node:crypto'
 import type { CheckoutConfig } from '@/lib/engine/checkout-config'
 import type { StripeFailure } from '@/lib/engine/stripe-errors'
 import {
@@ -4796,8 +5681,15 @@ export class FakeStripe implements StripeGateway {
   createCalls = 0
   private readonly byKey = new Map<string, { params: string; outcome: CreateSessionOutcome }>()
   private counter = 0
+  /** Unique to this fake, so no two fakes make the same session id (the database refuses one session on two orders) */
+  private readonly idPrefix = `cs_test_${randomUUID().slice(0, 8)}_`
 
   constructor(private readonly now: () => Date = () => new Date()) {}
+
+  /** The id of the nth session this fake made, counting from 1 */
+  sessionId(n = 1): string {
+    return `${this.idPrefix}${n}`
+  }
 
   async createCheckoutSession(config: CheckoutConfig): Promise<CreateSessionOutcome> {
     this.createCalls++
@@ -4885,7 +5777,7 @@ export class FakeStripe implements StripeGateway {
   }
 
   private makeSession(config: CheckoutConfig): StoredSession {
-    const id = `cs_test_${++this.counter}`
+    const id = this.sessionId(++this.counter)
     const session: StoredSession = {
       id, url: `https://checkout.stripe.test/${id}`, status: 'open', paymentStatus: 'unpaid',
       amountTotal: config.total_cents, currency: config.currency, paymentIntentId: null,
@@ -4932,7 +5824,7 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
-  await db.drop()
+  await db?.drop()
 })
 
 function deps(stripe: FakeStripe, overrides: Partial<CheckoutDeps> = {}): CheckoutDeps {
@@ -4947,6 +5839,10 @@ function deps(stripe: FakeStripe, overrides: Partial<CheckoutDeps> = {}): Checko
 const minutesLater = (minutes: number) => () => new Date(Date.now() + minutes * 60_000)
 
 const ids = (order: DraftOrderFixture) => ({ registrationId: order.registrationId, householdId: order.family.householdId })
+
+/** What Pay returns for the nth checkout this fake Stripe made */
+const checkoutPage = (stripe: FakeStripe, n = 1) =>
+  ({ kind: 'redirect', url: `https://checkout.stripe.test/${stripe.sessionId(n)}` })
 
 async function orderRow(id: string) {
   const { rows } = await db.pool.query('SELECT * FROM registrations WHERE id = $1', [id])
@@ -4971,9 +5867,9 @@ describe('pay', () => {
   it('creates one checkout and moves the order to pending_payment', async () => {
     const stripe = new FakeStripe()
     const order = await createDraftOrder(db.pool)
-    expect(await pay(deps(stripe), ids(order))).toEqual({ kind: 'redirect', url: 'https://checkout.stripe.test/cs_test_1' })
+    expect(await pay(deps(stripe), ids(order))).toEqual(checkoutPage(stripe))
     const row = await orderRow(order.registrationId)
-    expect(row).toMatchObject({ status: 'pending_payment', stripe_checkout_session_id: 'cs_test_1' })
+    expect(row).toMatchObject({ status: 'pending_payment', stripe_checkout_session_id: stripe.sessionId() })
     expect(row.checkout_config.payment_method_types).toEqual(['card'])
     expect(stripe.sessions.size).toBe(1)
   })
@@ -5001,9 +5897,9 @@ describe('pay', () => {
     expect(await pay({ ...deps(stripe), store: crashingAttach() }, ids(order)).catch(() => null)).toBeNull()
     expect((await orderRow(order.registrationId)).stripe_checkout_session_id).toBeNull()
 
-    expect(await pay(deps(stripe), ids(order))).toEqual({ kind: 'redirect', url: 'https://checkout.stripe.test/cs_test_1' })
+    expect(await pay(deps(stripe), ids(order))).toEqual(checkoutPage(stripe))
     expect(stripe.sessionsFor(order.registrationId)).toHaveLength(1)
-    expect((await orderRow(order.registrationId)).stripe_checkout_session_id).toBe('cs_test_1')
+    expect((await orderRow(order.registrationId)).stripe_checkout_session_id).toBe(stripe.sessionId())
   })
 
   it('replays retryable failures with the identical request', async () => {
@@ -5019,9 +5915,9 @@ describe('pay', () => {
     const stripe = new FakeStripe()
     stripe.nextCreate = ['cached-500']
     const order = await createDraftOrder(db.pool)
-    expect(await pay(deps(stripe), ids(order))).toEqual({ kind: 'redirect', url: 'https://checkout.stripe.test/cs_test_1' })
+    expect(await pay(deps(stripe), ids(order))).toEqual(checkoutPage(stripe))
     expect(stripe.createCalls).toBe(4)
-    expect((await orderRow(order.registrationId)).stripe_checkout_session_id).toBe('cs_test_1')
+    expect((await orderRow(order.registrationId)).stripe_checkout_session_id).toBe(stripe.sessionId())
   })
 
   it('waits instead of guessing while the same request is still in progress', async () => {
@@ -5075,7 +5971,7 @@ describe('pay', () => {
     const stripe = new FakeStripe()
     const order = await createDraftOrder(db.pool)
     await pay(deps(stripe), ids(order))
-    stripe.pay('cs_test_1')
+    stripe.pay(stripe.sessionId())
     const result = await pay(deps(stripe), ids(order))
     expect(result.kind).toBe('paid')
     if (result.kind === 'paid') expect(result.confirmationNumber).toMatch(/^RF-/)
@@ -5110,15 +6006,15 @@ describe('cancel', () => {
     const order = await createDraftOrder(db.pool)
     await pay(deps(stripe), ids(order))
     expect(await cancel(deps(stripe), ids(order))).toEqual({ kind: 'cancelled' })
-    expect(stripe.sessions.get('cs_test_1')?.status).toBe('expired')
-    expect(() => stripe.pay('cs_test_1')).toThrow(/not open/)
+    expect(stripe.sessions.get(stripe.sessionId())?.status).toBe('expired')
+    expect(() => stripe.pay(stripe.sessionId())).toThrow(/not open/)
   })
 
   it('confirms the payment instead of cancelling once the family has paid', async () => {
     const stripe = new FakeStripe()
     const order = await createDraftOrder(db.pool)
     await pay(deps(stripe), ids(order))
-    stripe.pay('cs_test_1')
+    stripe.pay(stripe.sessionId())
     expect((await cancel(deps(stripe), ids(order))).kind).toBe('paid')
     expect((await orderRow(order.registrationId)).status).toBe('paid')
   })
@@ -5128,7 +6024,7 @@ describe('cancel', () => {
     const order = await createDraftOrder(db.pool)
     await pay({ ...deps(stripe), store: crashingAttach() }, ids(order)).catch(() => null)
     expect(await cancel(deps(stripe), ids(order))).toEqual({ kind: 'cancelled' })
-    expect(stripe.sessions.get('cs_test_1')?.status).toBe('expired')
+    expect(stripe.sessions.get(stripe.sessionId())?.status).toBe('expired')
   })
 
   it('will not cancel while a session may still be being made, and cancels once it can', async () => {
@@ -5141,7 +6037,7 @@ describe('cancel', () => {
     // Pay finishes making the session, then the family cancels
     expect((await pay(deps(stripe), ids(order))).kind).toBe('redirect')
     expect(await cancel(deps(stripe), ids(order))).toEqual({ kind: 'cancelled' })
-    expect(stripe.sessions.get('cs_test_1')?.status).toBe('expired')
+    expect(stripe.sessions.get(stripe.sessionId())?.status).toBe('expired')
   })
 
   it('finds a session behind a cached 500 and closes it before cancelling', async () => {
@@ -5151,7 +6047,7 @@ describe('cancel', () => {
     stripe.nextCreate = ['cached-500']
     expect((await stripe.createCheckoutSession(config)).kind).toBe('failed')
     expect(await cancel(deps(stripe), ids(order))).toEqual({ kind: 'cancelled' })
-    expect(stripe.sessions.get('cs_test_1')?.status).toBe('expired')
+    expect(stripe.sessions.get(stripe.sessionId())?.status).toBe('expired')
   })
 
   it('cancels a claim that never made a session, once that is established', async () => {
@@ -5191,7 +6087,7 @@ describe('syncConfirmation', () => {
     const stripe = new FakeStripe()
     const order = await createDraftOrder(db.pool)
     await pay(deps(stripe), ids(order))
-    stripe.pay('cs_test_1')
+    stripe.pay(stripe.sessionId())
     expect((await syncConfirmation(deps(stripe), ids(order)))?.kind).toBe('paid')
   })
 
@@ -5199,7 +6095,7 @@ describe('syncConfirmation', () => {
     const stripe = new FakeStripe()
     const theirs = await createDraftOrder(db.pool)
     await pay(deps(stripe), ids(theirs))
-    stripe.pay('cs_test_1')
+    stripe.pay(stripe.sessionId())
 
     const mine = await createDraftOrder(db.pool)
     await claimOnly(mine)
@@ -5213,7 +6109,7 @@ describe('syncConfirmation', () => {
     const stripe = new FakeStripe()
     const order = await createDraftOrder(db.pool)
     await pay(deps(stripe), ids(order))
-    stripe.pay('cs_test_1')
+    stripe.pay(stripe.sessionId())
     const broken = { ...deps(stripe), store: { ...store, confirmOrderPayment: async () => { throw new Error('database is down') } } }
     expect(await pay(broken, ids(order))).toEqual({ kind: 'try_again', message: reviewMessage('C', null) })
   })
@@ -5706,7 +6602,7 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
-  await db.drop()
+  await db?.drop()
 })
 
 function deps(log: string[] = []): WebhookDeps {
@@ -5969,26 +6865,182 @@ git commit -m "feat: the webhook confirms, records failures and expires checkout
 
 **Files:**
 - Create: `src/app/_payments/checkout-deps.ts`
-- Modify: `src/lib/payment-review-messages.ts` (add the `PaymentReview` type)
-- Modify: `src/app/feiseanna/[id]/register/actions.ts` (rewrite `createCheckoutSession` and `cancelRegistration`)
-- Modify: `src/app/feiseanna/[id]/register/page.tsx` (handle the new result kinds)
+- Create: `src/lib/email/email-config.ts`
+- Modify: `src/lib/payment-review-messages.ts` (add `PaymentReview` and `openReviewsByOrder`)
+- Modify: `src/app/feiseanna/[id]/register/actions.ts` (Pay and Cancel through the workflow)
+- Modify: `src/components/registration/entry-page.tsx` (handle the new result kinds)
+- Modify: `src/components/registration/family-receipt.tsx` (resume a started payment; the agreement box only before an order exists)
 - Modify: `src/app/feiseanna/[id]/register/success/page.tsx` (rewrite)
 - Modify: `src/app/dashboard/page.tsx`
+- Modify: `docs/known-issues.md` (two parent issues this task fixes)
+- Test: `tests/email-config.test.ts` (create), `tests/payment-review-messages.test.ts` (modify)
 
 **Interfaces:**
 - Consumes:
-  - `pay`, `cancel`, `syncConfirmation`, `PayResult` and `CancelResult` (Task 10)
+  - `pay`, `cancel`, `syncConfirmation`, `CheckoutDeps`, `PayResult` and `CancelResult` (Task 10)
   - `reviewMessage` (Task 10)
-  - `get_my_payment_reviews` (Task 9)
+  - `createStripeGateway` (Task 10); `createOrderStore` and `supabaseRpc` (Task 6); `getStripe` (`src/lib/stripe.ts`)
+  - `get_my_payment_reviews(p_registration_id uuid DEFAULT NULL)`, called with the parent's own client (Task 9)
+  - From Task 7: `currentHousehold()` in `actions.ts`; the entry page's `requestedEntries`, `orderBreakdown` and `setOrderBreakdown`; and `FamilyReceipt`'s `onPay(consentAccepted)`
+  - `getSignedInUser` (`src/lib/supabase/server.ts`) and `CoverBand` (`src/components/feis-cover.tsx`)
 - Produces:
   - `createCheckoutSession(registrationId): Promise<PayResult>`
   - `cancelRegistration(registrationId): Promise<CancelResult>`
   - `checkoutDeps(): CheckoutDeps`
-  - `PaymentReview`
+  - `PaymentReview`, and `openReviewsByOrder(reviews): Map<string, PaymentReview>`
+  - `emailIsConfigured(env): boolean`, the rule for whether RunFeis sends email at all. Task 13's `notificationDeps()` applies the same rule and can call it.
 
-No new automated tests (UI, project rule §5). The logic underneath is covered by Tasks 9–11. This task ends with the build and a manual walk-through.
+The entry page keeps its one click: `handlePay` submits the order if there isn't one yet, then calls Pay. "Change entries" calls Cancel. What changes is what the page does with the answers:
+- **Pay's answers:**
+  - It can send the family to Stripe.
+  - It can report the order paid, or under review. Both go to the success page, which says what happens next.
+  - It can ask the family to start again. The order is finished, but the cart stays, so the next Pay submits a fresh order.
+  - Otherwise it explains why nothing happened (blocked, try again, or an error), and the order stays as it is.
+- **A started payment can be resumed.** The receipt shows "Return to payment", which runs Pay, and Pay returns the open Stripe session (spec §6). The redesigned receipt hid Pay once a payment had started, so a family who backed out of Stripe could only start over.
+- **The agreement box shows only before an order exists.** Submit records the agreement, so an order in progress doesn't ask again.
 
-- [ ] **Step 1: Add the real dependencies and the review type**
+The success page doesn't wait for the webhook: it confirms from Stripe (spec §9) through the sync, which finds the order's own session by its claim and never uses the URL's `session_id` (Review Focus 2). It shows message A or B for an open case, and message C while confirmation is unfinished, all worded by `reviewMessage` (spec §10). It mentions the confirmation email only when email is set up. Today it says an email was sent even when none can be.
+
+No component tests (UI, project rule §5). The two new pure helpers are tested, and Tasks 9–11 cover the logic underneath. There's no browser walk-through here: `.env.local` points at the live project, which gets 012–017 only in Task 16 Step 6, so Submit, Pay and the case views can't run against it before then. Task 16 Step 10 walks through them end to end.
+
+- [ ] **Step 1: Write the failing helper tests**
+
+In `tests/payment-review-messages.test.ts` (Task 10):
+
+(a) Replace:
+```ts
+import { reviewCodeForReason, reviewMessage } from '@/lib/payment-review-messages'
+```
+with:
+```ts
+import {
+  openReviewsByOrder,
+  reviewCodeForReason,
+  reviewMessage,
+  type PaymentReview
+} from '@/lib/payment-review-messages'
+```
+
+(b) Append to `tests/payment-review-messages.test.ts`:
+```ts
+describe('openReviewsByOrder', () => {
+  function review(overrides: Partial<PaymentReview> = {}): PaymentReview {
+    return {
+      registration_id: 'r1',
+      support_ref: 'PAY-7KQ2M',
+      message_code: 'A',
+      created_at: '2026-10-16T12:00:00+00:00',
+      resolved: false,
+      ...overrides
+    }
+  }
+
+  it("keeps each order's newest unresolved case, whatever order the rows come in", () => {
+    const older = review({ support_ref: 'PAY-OLDER' })
+    const newer = review({ support_ref: 'PAY-NEWER', created_at: '2026-10-16T13:00:00+00:00' })
+    const other = review({ registration_id: 'r2', support_ref: 'PAY-OTHER', message_code: 'B' })
+    for (const rows of [
+      [newer, other, older],
+      [older, other, newer]
+    ]) {
+      const open = openReviewsByOrder(rows)
+      expect(open.get('r1')).toBe(newer)
+      expect(open.get('r2')).toBe(other)
+    }
+  })
+
+  it('shows nothing for a resolved case', () => {
+    const resolvedLater = review({ created_at: '2026-10-16T13:00:00+00:00', resolved: true })
+    expect(openReviewsByOrder([review({ resolved: true })]).size).toBe(0)
+    expect(openReviewsByOrder([review(), resolvedLater]).get('r1')).toEqual(review())
+  })
+})
+```
+
+Create `tests/email-config.test.ts`:
+```ts
+import { describe, expect, it } from 'vitest'
+import { emailIsConfigured } from '@/lib/email/email-config'
+
+const CONFIGURED = {
+  RESEND_API_KEY: 're_test_123',
+  EMAIL_FROM: 'RunFeis <entries@runfeis.com>',
+  PAYMENTS_ALERT_EMAIL: 'daniel@example.com, steve@example.com'
+}
+
+describe('emailIsConfigured', () => {
+  it('is on when Resend, the sender and the payments contacts are all set', () => {
+    expect(emailIsConfigured(CONFIGURED)).toBe(true)
+  })
+
+  it('is off when any one of them is missing', () => {
+    expect(emailIsConfigured({ ...CONFIGURED, RESEND_API_KEY: undefined })).toBe(false)
+    expect(emailIsConfigured({ ...CONFIGURED, EMAIL_FROM: '' })).toBe(false)
+    expect(emailIsConfigured({ ...CONFIGURED, PAYMENTS_ALERT_EMAIL: undefined })).toBe(false)
+  })
+
+  it('needs at least one real address among the payments contacts', () => {
+    expect(emailIsConfigured({ ...CONFIGURED, PAYMENTS_ALERT_EMAIL: ' , ' })).toBe(false)
+    const oneContact = { ...CONFIGURED, PAYMENTS_ALERT_EMAIL: 'steve@example.com' }
+    expect(emailIsConfigured(oneContact)).toBe(true)
+  })
+})
+```
+
+Run: `npx vitest run tests/payment-review-messages.test.ts tests/email-config.test.ts`
+Expected: FAIL. `openReviewsByOrder` isn't exported yet, and `@/lib/email/email-config` doesn't exist.
+
+- [ ] **Step 2: Add the review helpers and the email rule**
+
+Append to `src/lib/payment-review-messages.ts`:
+```ts
+/** A row of get_my_payment_reviews(): all a parent may see of a payment case on their own order */
+export interface PaymentReview {
+  registration_id: string
+  support_ref: string
+  message_code: 'A' | 'B'
+  created_at: string
+  resolved: boolean
+}
+
+/**
+ * Each order's newest unresolved case, from get_my_payment_reviews() rows in any order. A
+ * resolved case shows nothing: the payments contacts have dealt with it and told the family.
+ */
+export function openReviewsByOrder(reviews: PaymentReview[]): Map<string, PaymentReview> {
+  const open = new Map<string, PaymentReview>()
+  for (const review of reviews) {
+    if (review.resolved) continue
+    const shown = open.get(review.registration_id)
+    if (!shown || Date.parse(review.created_at) > Date.parse(shown.created_at)) {
+      open.set(review.registration_id, review)
+    }
+  }
+  return open
+}
+```
+
+Create `src/lib/email/email-config.ts`:
+```ts
+/**
+ * Whether RunFeis sends email: Resend, the sender address and at least one payments contact must
+ * all be set (spec §12). Until then confirmations wait in the queue unsent, so no page may tell a
+ * family that one is on its way. Pass `process.env`; the notification worker uses the same rule.
+ */
+export function emailIsConfigured(env: Record<string, string | undefined>): boolean {
+  const contacts = (env.PAYMENTS_ALERT_EMAIL ?? '')
+    .split(',')
+    .map((address) => address.trim())
+    .filter(Boolean)
+  return Boolean(env.RESEND_API_KEY && env.EMAIL_FROM && contacts.length > 0)
+}
+```
+The parameter is a plain string map rather than an interface of three optional keys: TypeScript refuses to pass `process.env` to a type whose properties are all optional ("has no properties in common").
+
+Run: `npx vitest run tests/payment-review-messages.test.ts tests/email-config.test.ts`
+Expected: PASS.
+
+- [ ] **Step 3: Add the real checkout dependencies**
 
 Create `src/app/_payments/checkout-deps.ts`:
 ```ts
@@ -6012,22 +7064,48 @@ export function checkoutDeps(): CheckoutDeps {
   }
 }
 ```
-Append to `src/lib/payment-review-messages.ts`:
+`getStripe()` throws while `STRIPE_SECRET_KEY` isn't set. Pay and Cancel catch that and say payment couldn't start. The success page logs it and shows the order as it stands.
+
+- [ ] **Step 4: Pay and Cancel go through the workflow**
+
+In `src/app/feiseanna/[id]/register/actions.ts`:
+
+(a) Replace:
 ```ts
-/** A row of get_my_payment_reviews(): the restricted view a parent gets of their own payment cases */
-export interface PaymentReview {
-  registration_id: string
-  support_ref: string
-  message_code: 'A' | 'B'
-  created_at: string
-  resolved: boolean
-}
+import { createServiceClient, type ServiceClient } from '@/lib/supabase/service'
+import { canTransitionRegistration } from '@/lib/registration-states'
+```
+with:
+```ts
+import { createServiceClient, type ServiceClient } from '@/lib/supabase/service'
 ```
 
-- [ ] **Step 2: Rewrite Pay and Cancel in the actions**
-
-In `src/app/feiseanna/[id]/register/actions.ts`, replace `cancelRegistration` and `createCheckoutSession` (everything after `createDraftRegistration`) with:
+(b) Replace:
 ```ts
+import { isHouseholdComplete, REQUIRED_HOUSEHOLD_FIELDS } from '@/lib/household'
+```
+with:
+```ts
+import { isHouseholdComplete, REQUIRED_HOUSEHOLD_FIELDS } from '@/lib/household'
+import { checkoutDeps } from '@/app/_payments/checkout-deps'
+import { cancel, pay, type CancelResult, type PayResult } from '@/app/_payments/checkout-workflow'
+```
+
+(c) Replace:
+```ts
+  RegistrationEntry,
+  RegistrationStatus
+} from '@/lib/types/feis-listing'
+```
+with:
+```ts
+  RegistrationEntry
+} from '@/lib/types/feis-listing'
+```
+
+(d) In `src/app/feiseanna/[id]/register/actions.ts`, replace everything from `export async function cancelRegistration` to the end of the file with:
+```ts
+/** Pay (spec §6): start or resume this order's one checkout, or settle what Stripe already has */
 export async function createCheckoutSession(registrationId: string): Promise<PayResult> {
   const ctx = await currentHousehold()
   if ('error' in ctx) return { kind: 'error', message: ctx.error }
@@ -6035,10 +7113,11 @@ export async function createCheckoutSession(registrationId: string): Promise<Pay
     return await pay(checkoutDeps(), { registrationId, householdId: ctx.household.id })
   } catch (err) {
     console.error('Pay failed:', err)
-    return { kind: 'error', message: 'Something went wrong starting your payment. Please try again.' }
+    return { kind: 'error', message: "Payment couldn't start. Please try again in a moment." }
   }
 }
 
+/** Cancel (spec §7): close this order's checkout first, then cancel; never on a guess */
 export async function cancelRegistration(registrationId: string): Promise<CancelResult> {
   const ctx = await currentHousehold()
   if ('error' in ctx) return { kind: 'error', message: ctx.error }
@@ -6046,112 +7125,200 @@ export async function cancelRegistration(registrationId: string): Promise<Cancel
     return await cancel(checkoutDeps(), { registrationId, householdId: ctx.household.id })
   } catch (err) {
     console.error('Cancel failed:', err)
-    return { kind: 'error', message: 'Something went wrong cancelling. Please try again.' }
+    return {
+      kind: 'error',
+      message: "Your entries couldn't be reopened. Please try again in a moment."
+    }
   }
 }
 ```
-Add these imports:
-```ts
-import { checkoutDeps } from '@/app/_payments/checkout-deps'
-import { cancel, pay, type CancelResult, type PayResult } from '@/app/_payments/checkout-workflow'
-```
-Remove the imports nothing uses any more: `canTransitionRegistration` and `RegistrationStatus`.
+From here on, no TypeScript writes an order table: every change goes through the database functions (Global Constraints). Ownership is `currentHousehold()` (Task 7) plus the household id the workflow passes to every function.
 
-- [ ] **Step 3: Handle the new results on the register page**
+- [ ] **Step 5: The entry page follows Pay's and Cancel's answers**
 
-In `src/app/feiseanna/[id]/register/page.tsx`, replace `handlePay` and `handleCancel`, and the `cancelRegistration` handling inside `handleChangeEntries`, with:
+In `src/components/registration/entry-page.tsx`, replace everything from `async function handlePay(consentAccepted: boolean) {` down to, but not including, `const activeLateTier = feeSchedule`, with the code below. That covers `handlePay` and `handleChangeEntries`. Keep one blank line before `const activeLateTier`.
 ```tsx
-  // The old order is finished; keep the cart so Continue makes a fresh one
+  // Where a family goes once Stripe has taken a payment for the order: the success page
+  // confirms it, or says what happens next
+  const successHref = `/feiseanna/${feisId}/register/success`
+
+  // The order can't be paid any more: forget it, keep the cart, and Pay submits a fresh one
   function startAgain(message: string) {
     setRegistrationId(null)
     setHoldExpiresAt(null)
     setOrderBreakdown(null)
-    setStep(3)
-    setNotice(message)
+    setPaymentStarted(false)
+    setError(message)
   }
 
-  async function handlePay() {
-    if (!registrationId) return
+  async function handlePay(consentAccepted: boolean) {
+    setError(null)
     setLoading(true)
-    setNotice(null)
+    let leaving = false
     try {
-      const result = await createCheckoutSession(registrationId)
-      switch (result.kind) {
+      let regId: string | null = registrationId
+      if (regId === null) {
+        // The browser says only that the family agreed; the server records when and from where
+        const order = await createDraftRegistration({
+          feisListingId: feisId,
+          entries: requestedEntries,
+          consentAccepted
+        })
+        if ('error' in order) {
+          setError(order.error)
+          return
+        }
+        regId = order.registrationId
+        setRegistrationId(regId)
+        setHoldExpiresAt(order.holdExpiresAt)
+        setOrderBreakdown(order.breakdown)
+        setEditingId(null)
+      }
+
+      const payment = await createCheckoutSession(regId)
+      switch (payment.kind) {
         case 'redirect':
-          window.location.href = result.url
+          leaving = true
+          window.location.href = payment.url
           return
         case 'paid':
-          window.location.href = `/feiseanna/${feisId}/register/success`
+        case 'review':
+          leaving = true
+          window.location.href = successHref
           return
         case 'start_again':
-          startAgain(result.message)
+          startAgain(payment.message)
           return
         default:
-          setNotice(result.message)
+          // blocked, try_again or error: the order stays as it is
+          setError(payment.message)
       }
+    } catch (err) {
+      console.error('Payment failed to start:', err)
+      setError('The payment page could not be opened. Check your connection and try again.')
     } finally {
-      setLoading(false)
+      // Stay busy while the browser leaves, so a second click can't start anything
+      if (!leaving) setLoading(false)
     }
   }
 
-  async function handleCancel() {
+  async function handleChangeEntries() {
     if (!registrationId) return
-    if (!confirm('Cancel this registration? You can start over.')) return
+    setError(null)
     setLoading(true)
-    setNotice(null)
+    let leaving = false
     try {
+      // A submitted order never changes: cancel it, keep the cart, and Pay submits a new one
       const result = await cancelRegistration(registrationId)
       switch (result.kind) {
         case 'cancelled':
           setRegistrationId(null)
           setHoldExpiresAt(null)
           setOrderBreakdown(null)
-          setCart({})
-          setStep(1)
+          setPaymentStarted(false)
           return
         case 'paid':
-          window.location.href = `/feiseanna/${feisId}/register/success`
+        case 'review':
+          // The checkout was paid after all
+          leaving = true
+          window.location.href = successHref
           return
         default:
-          setNotice(result.message)
+          // try_again or error: the order stays as it is
+          setError(result.message)
       }
+    } catch (err) {
+      console.error('Failed to reopen entries:', err)
+      setError('Your entries could not be reopened. Check your connection and try again.')
     } finally {
-      setLoading(false)
+      if (!leaving) setLoading(false)
     }
   }
 ```
-In `handleChangeEntries`, replace:
+How each answer is handled:
+- **`review`** goes to the success page, because Stripe has the money. That page shows message A, with the reference, for a recorded case, or message C while confirmation is still unfinished. On the entry page, the family would see a Pay button next to "Please don't pay again".
+- **`try_again`** stays on the entry page. Its message is either "Payment is taking a moment to start" or message C.
+- **The old `holdOver` workaround is gone.** Cancel answers `cancelled` for an order that has already expired.
+
+- [ ] **Step 6: The receipt resumes a started payment**
+
+In `src/components/registration/family-receipt.tsx`:
+
+(a) Replace:
 ```tsx
-      const result = await cancelRegistration(registrationId)
-      if ('error' in result) {
-        setNotice(result.error ?? 'Could not change your entries. Please try again.')
-        return
-      }
+      {paymentStarted ? (
+        <p className="mt-3.5 text-[13px] text-muted-foreground">
+          A payment was started for these entries. If you closed the payment page without paying,
+          choose Change entries to start again.
+        </p>
+      ) : (
+        <label
 ```
 with:
 ```tsx
-      const result = await cancelRegistration(registrationId)
-      if (result.kind === 'paid') {
-        window.location.href = `/feiseanna/${feisId}/register/success`
-        return
-      }
-      if (result.kind !== 'cancelled') {
-        setNotice(result.message)
-        return
-      }
+      {!held && (
+        <label
 ```
 
-- [ ] **Step 4: Rewrite the success page**
+(b) Replace:
+```tsx
+      {held && <HoldCountdown holdExpiresAt={holdExpiresAt} />}
+
+      {!paymentStarted && (
+        <button
+          type="button"
+          onClick={() => onPay(agreed)}
+          disabled={!agreed || loading || nothingChosen}
+          className="mt-3 w-full rounded-[3px] bg-primary py-3 text-[17px] font-extrabold text-primary-foreground [font-stretch:85%] hover:bg-[var(--color-feis-green-600)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-feis-gold)] disabled:opacity-50"
+        >
+          {loading ? 'Opening payment…' : `Pay ${formatCents(totalCents)}`}
+        </button>
+      )}
+```
+with:
+```tsx
+      {held && paymentStarted && (
+        <p className="mt-3.5 text-[13px] text-muted-foreground">
+          You started paying for these entries. Return to the payment page to finish, or choose
+          Change entries to start again.
+        </p>
+      )}
+
+      {held && <HoldCountdown holdExpiresAt={holdExpiresAt} />}
+
+      <button
+        type="button"
+        onClick={() => onPay(agreed)}
+        // An order in progress already records the agreement, from when it was submitted
+        disabled={loading || nothingChosen || (!held && !agreed)}
+        className="mt-3 w-full rounded-[3px] bg-primary py-3 text-[17px] font-extrabold text-primary-foreground [font-stretch:85%] hover:bg-[var(--color-feis-green-600)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-feis-gold)] disabled:opacity-50"
+      >
+        {loading
+          ? 'Opening payment…'
+          : paymentStarted
+            ? 'Return to payment'
+            : `Pay ${formatCents(totalCents)}`}
+      </button>
+```
+`held` is true exactly when the page holds an order: the entry page sets and clears `holdExpiresAt` together with the order id. For a held order the button stays enabled without the box; `handlePay` uses `consentAccepted` only when it submits a new order. "Return to payment" runs the same Pay, which resumes the open session. If that session has expired, Pay answers `start_again`, and the page keeps the cart for a fresh order.
+
+- [ ] **Step 7: Rewrite the success page**
 
 Replace `src/app/feiseanna/[id]/register/success/page.tsx` with:
 ```tsx
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
-import { createClient } from '@/lib/supabase/server'
-import { reviewMessage, type PaymentReview } from '@/lib/payment-review-messages'
+import { emailIsConfigured } from '@/lib/email/email-config'
+import {
+  openReviewsByOrder,
+  reviewMessage,
+  type PaymentReview
+} from '@/lib/payment-review-messages'
+import { createClient, getSignedInUser } from '@/lib/supabase/server'
 import type { RegistrationStatus } from '@/lib/types/feis-listing'
 import { checkoutDeps } from '@/app/_payments/checkout-deps'
-import { syncConfirmation } from '@/app/_payments/checkout-workflow'
+import { syncConfirmation, type PayResult } from '@/app/_payments/checkout-workflow'
+import { CoverBand } from '@/components/feis-cover'
 
 export const dynamic = 'force-dynamic'
 
@@ -6160,200 +7327,549 @@ interface SuccessPageProps {
   searchParams: Promise<{ session_id?: string }>
 }
 
+type ServerClient = Awaited<ReturnType<typeof createClient>>
 type OrderSummary = { id: string; status: RegistrationStatus; confirmation_number: string | null }
 
-const buttonClass =
-  'inline-block rounded-md bg-primary px-6 py-2.5 text-sm font-medium text-primary-foreground hover:bg-[var(--color-feis-green-600)]'
+/** What the page tells the family, most important first */
+type View =
+  | { kind: 'paid'; confirmationNumber: string | null }
+  | { kind: 'case'; code: PaymentReview['message_code']; message: string }
+  | { kind: 'checking'; message: string; refresh: boolean }
+  | { kind: 'paying' | 'unpaid' | 'expired' | 'cancelled' | 'unavailable' }
+
+const TITLES: Record<Exclude<View['kind'], 'case'>, string> = {
+  paid: 'You’re entered',
+  checking: 'Checking your payment',
+  paying: 'Taking your payment',
+  unpaid: 'Not paid yet',
+  expired: 'Your hold ran out',
+  cancelled: 'Entries cancelled',
+  unavailable: 'Something went wrong'
+}
+
+function titleOf(view: View): string {
+  if (view.kind !== 'case') return TITLES[view.kind]
+  return view.code === 'A' ? 'We’re checking your registration' : 'Payment didn’t go through'
+}
+
+/**
+ * The order this page is about: the one this checkout belongs to, otherwise the family's latest
+ * for this feis. The session id from the URL only picks which of the family's own orders to show
+ * (their own client can't read anyone else's); the sync never uses it.
+ */
+async function findOrder(
+  supabase: ServerClient,
+  householdId: string,
+  feisId: string,
+  sessionId: string | null
+): Promise<OrderSummary | null | 'error'> {
+  const orders = () =>
+    supabase
+      .from('registrations')
+      .select('id, status, confirmation_number')
+      .eq('household_id', householdId)
+      .eq('feis_listing_id', feisId)
+
+  if (sessionId) {
+    const { data, error } = await orders()
+      .eq('stripe_checkout_session_id', sessionId)
+      .maybeSingle()
+    if (error) return 'error'
+    if (data) return data as OrderSummary
+  }
+  const { data, error } = await orders()
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (error) return 'error'
+  return (data as OrderSummary | null) ?? null
+}
+
+async function viewFor(
+  supabase: ServerClient,
+  userId: string,
+  feisId: string,
+  sessionId: string | null
+): Promise<View> {
+  const { data: household, error: householdError } = await supabase
+    .from('households')
+    .select('id')
+    .eq('user_id', userId)
+    .maybeSingle()
+  if (householdError) {
+    console.error('Success page: household failed to load:', householdError)
+    return { kind: 'unavailable' }
+  }
+  if (!household) redirect(`/feiseanna/${feisId}`)
+
+  const order = await findOrder(supabase, household.id, feisId, sessionId)
+  if (order === 'error') {
+    console.error('Success page: the order failed to load')
+    return { kind: 'unavailable' }
+  }
+  if (!order) redirect(`/feiseanna/${feisId}`)
+  if (order.status === 'paid') {
+    return { kind: 'paid', confirmationNumber: order.confirmation_number }
+  }
+
+  // Don't wait for the webhook: if Stripe says this order's checkout is complete, confirm it now
+  // (spec §9). The sync finds the order's own session by its claim; it never reads the URL.
+  let synced: PayResult | null = null
+  if (order.status !== 'cancelled') {
+    try {
+      synced = await syncConfirmation(checkoutDeps(), {
+        registrationId: order.id,
+        householdId: household.id
+      })
+    } catch (err) {
+      console.error('Success page sync failed:', err)
+    }
+  }
+  if (synced?.kind === 'paid') {
+    return { kind: 'paid', confirmationNumber: synced.confirmationNumber }
+  }
+
+  // A case on this order outranks its status: it tells the family not to pay again, or to retry
+  const { data: reviewRows, error: reviewsError } = await supabase.rpc('get_my_payment_reviews', {
+    p_registration_id: order.id
+  })
+  if (reviewsError) {
+    console.error('Success page: payment reviews failed to load:', reviewsError)
+    return { kind: 'unavailable' }
+  }
+  const review = openReviewsByOrder((reviewRows ?? []) as PaymentReview[]).get(order.id)
+  if (review) {
+    return {
+      kind: 'case',
+      code: review.message_code,
+      message: reviewMessage(review.message_code, review.support_ref)
+    }
+  }
+
+  // Stripe has the payment, but confirmation isn't finished, or it's a case only the payments
+  // contacts see: message C. Only an unfinished confirmation is worth checking again.
+  if (synced?.kind === 'try_again' || synced?.kind === 'review') {
+    return { kind: 'checking', message: synced.message, refresh: synced.kind === 'try_again' }
+  }
+
+  switch (order.status) {
+    case 'pending_payment':
+      return { kind: 'paying' }
+    case 'draft':
+      return { kind: 'unpaid' }
+    case 'expired':
+      return { kind: 'expired' }
+    case 'cancelled':
+      return { kind: 'cancelled' }
+  }
+}
 
 export default async function SuccessPage({ params, searchParams }: SuccessPageProps) {
   const { id: feisId } = await params
   const { session_id: sessionId } = await searchParams
 
   const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+  const user = await getSignedInUser(supabase)
   if (!user) {
-    redirect(`/auth/login?redirect=/feiseanna/${feisId}/register/success${sessionId ? `?session_id=${sessionId}` : ''}`)
+    const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''
+    const back = `/feiseanna/${feisId}/register/success${query}`
+    redirect(`/auth/login?redirect=${encodeURIComponent(back)}`)
   }
 
-  const { data: household } = await supabase.from('households').select('id').eq('user_id', user.id).single()
-  if (!household) redirect(`/feiseanna/${feisId}`)
-
-  // The order this return belongs to: by its session if one is attached, otherwise the family's latest for this feis
-  let order: OrderSummary | null = null
-  if (sessionId) {
-    const { data } = await supabase
-      .from('registrations')
-      .select('id, status, confirmation_number')
-      .eq('stripe_checkout_session_id', sessionId)
-      .maybeSingle()
-    order = data as OrderSummary | null
-  }
-  if (!order) {
-    const { data } = await supabase
-      .from('registrations')
-      .select('id, status, confirmation_number')
-      .eq('feis_listing_id', feisId)
-      .eq('household_id', household.id)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle()
-    order = data as OrderSummary | null
-  }
-  if (!order) redirect(`/feiseanna/${feisId}`)
-
-  let status = order.status
-  let confirmationNumber = order.confirmation_number
-  let checking = false
-
-  // Don't wait for the webhook: if Stripe says this order's checkout is complete, confirm it now (spec §9).
-  // The sync finds the order's own session by its claim; it never uses the URL's session id.
-  if (status !== 'paid' && status !== 'cancelled') {
-    try {
-      const synced = await syncConfirmation(checkoutDeps(), {
-        registrationId: order.id,
-        householdId: household.id
-      })
-      if (synced?.kind === 'paid') {
-        status = 'paid'
-        confirmationNumber = synced.confirmationNumber
-      } else if (synced?.kind === 'try_again') {
-        checking = true
-      }
-    } catch (err) {
-      console.error('Success page sync failed:', err)
-    }
-  }
-
-  const { data: reviews } = await supabase.rpc('get_my_payment_reviews', { p_registration_id: order.id })
-  const openReview = ((reviews ?? []) as PaymentReview[]).find((review) => !review.resolved) ?? null
+  const view = await viewFor(supabase, user.id, feisId, sessionId ?? null)
+  const entryHref = `/feiseanna/${feisId}/register`
+  // Confirmation emails wait unsent until email is set up, so only promise one when it is
+  const emailOn = emailIsConfigured(process.env)
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-[var(--color-feis-cream)]">
-      <div className="feis-card mx-auto max-w-md px-8 py-10 text-center">
-        {openReview ? (
-          <>
-            <h1 className="mb-2 text-2xl font-bold text-[var(--color-feis-charcoal)]">
-              {openReview.message_code === 'A' ? 'Payment received, registration under review' : "Payment didn't go through"}
-            </h1>
-            <p className="mb-6 text-sm text-muted-foreground" role="status">
-              {reviewMessage(openReview.message_code, openReview.support_ref)}
+    <div className="flex min-h-screen flex-col bg-[var(--color-feis-cream)]">
+      <CoverBand
+        links={[
+          { href: '/dashboard', label: 'My entries' },
+          { href: '/', label: 'Feiseanna' }
+        ]}
+      >
+        <div className="min-w-0 pt-3">
+          <h1 className="feis-cover-title text-[clamp(34px,6vw,56px)]">{titleOf(view)}</h1>
+          {view.kind === 'paid' && (
+            <p className="mt-1.5 max-w-[52ch] opacity-85">
+              Payment received. Your dancers&apos; competitor numbers are ready.
             </p>
-            <Link
-              href={openReview.message_code === 'A' ? '/dashboard' : `/feiseanna/${feisId}/register`}
-              className={buttonClass}
-            >
-              {openReview.message_code === 'A' ? 'View My Registrations' : 'Try Again'}
-            </Link>
-          </>
-        ) : status === 'paid' ? (
+          )}
+        </div>
+      </CoverBand>
+
+      <main className="mx-auto w-full max-w-md flex-1 px-4 py-10">
+        {view.kind === 'paid' && (
           <>
-            <h1 className="mb-2 text-2xl font-bold text-[var(--color-feis-charcoal)]">You&apos;re registered!</h1>
-            <p className="mb-6 text-sm text-muted-foreground">Your registration is confirmed and payment received.</p>
-            {confirmationNumber && (
-              <div className="mb-6 rounded-md bg-[var(--color-feis-green-light)] px-6 py-4">
-                <div className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Confirmation Number</div>
-                <div className="mt-1 font-mono text-2xl font-bold text-[var(--color-feis-green)]">{confirmationNumber}</div>
+            <div className="feis-receipt px-[18px] pt-5 pb-[18px]">
+              <h2 className="text-[22px] leading-tight font-extrabold [font-stretch:75%]">
+                Receipt
+              </h2>
+              <p className="mb-3 text-[13px] text-muted-foreground">Keep this for your records.</p>
+              <div className="flex items-baseline justify-between border-t-[3px] border-[var(--color-feis-gold)] pt-2.5">
+                <span className="font-bold">Status</span>
+                <span className="rounded-[2px] bg-[var(--color-feis-green-light)] px-1.5 py-0.5 text-xs font-bold text-[var(--color-feis-green-700)]">
+                  Paid in full
+                </span>
               </div>
-            )}
-            <p className="mb-6 text-sm text-muted-foreground">A confirmation email is on its way to your account.</p>
-            <Link href="/dashboard" className={buttonClass}>View My Registrations</Link>
-          </>
-        ) : status === 'pending_payment' || status === 'draft' ? (
-          <>
-            <meta httpEquiv="refresh" content="3" />
-            <h1 className="mb-2 text-2xl font-bold text-[var(--color-feis-charcoal)]">Processing...</h1>
-            <p className="text-sm text-muted-foreground" role="status">
-              {checking
-                ? reviewMessage('C', null)
-                : 'Your payment is being processed. This page will refresh automatically.'}
-            </p>
-          </>
-        ) : status === 'expired' ? (
-          <>
-            <h1 className="mb-2 text-2xl font-bold text-[var(--color-feis-charcoal)]">Session Expired</h1>
-            <p className="mb-6 text-sm text-muted-foreground">
-              Your registration session has expired. Please start a new registration.
-            </p>
-            <Link href={`/feiseanna/${feisId}/register`} className={buttonClass}>Start Over</Link>
-          </>
-        ) : (
-          <>
-            <h1 className="mb-2 text-2xl font-bold text-[var(--color-feis-charcoal)]">Registration Cancelled</h1>
-            <p className="mb-6 text-sm text-muted-foreground">
-              Your registration has been cancelled. You can register again at any time.
-            </p>
-            <Link href={`/feiseanna/${feisId}/register`} className={buttonClass}>Register Again</Link>
+              {view.confirmationNumber && (
+                <div className="mt-2 flex items-baseline gap-1.5 text-sm">
+                  <span>Confirmation number</span>
+                  <span className="feis-leader" />
+                  <span className="feis-narrow text-[22px] leading-none select-all">
+                    {view.confirmationNumber}
+                  </span>
+                </div>
+              )}
+              {emailOn && (
+                <p className="mt-4 text-[13px] text-muted-foreground">
+                  A copy of this confirmation is emailed to the address you sign in with.
+                </p>
+              )}
+            </div>
+
+            <div className="mt-8">
+              <p className="text-[15px]">
+                Each dancer&apos;s competitor number is on the entry page for this feis. Bring them
+                on the day.
+              </p>
+              <div className="mt-4 flex flex-wrap gap-3">
+                <Link href={entryHref} className="feis-btn feis-btn-primary">
+                  See competitor numbers
+                </Link>
+                <Link href="/dashboard" className="feis-btn feis-btn-outline">
+                  All my entries
+                </Link>
+              </div>
+            </div>
           </>
         )}
-      </div>
+
+        {view.kind === 'case' && (
+          <div className="feis-sticker rounded px-5 py-5">
+            <p role="status" className="text-[15px]">
+              {view.message}
+            </p>
+            {view.code === 'A' ? (
+              <Link href="/dashboard" className="feis-btn feis-btn-outline mt-4">
+                All my entries
+              </Link>
+            ) : (
+              <Link href={entryHref} className="feis-btn feis-btn-ink mt-4">
+                Try again
+              </Link>
+            )}
+          </div>
+        )}
+
+        {view.kind === 'checking' && (
+          <div role="status" className="feis-card p-6">
+            {view.refresh && <meta httpEquiv="refresh" content="5" />}
+            <p className="text-[15px] font-bold">{view.message}</p>
+          </div>
+        )}
+
+        {view.kind === 'paying' && (
+          <div role="status" className="feis-card p-6">
+            <meta httpEquiv="refresh" content="5" />
+            <p className="text-[15px] font-bold">Your payment is going through.</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              This page checks again every few seconds. Please don&apos;t pay a second time.
+            </p>
+          </div>
+        )}
+
+        {view.kind === 'unpaid' && (
+          <div className="feis-sticker rounded px-5 py-5">
+            <p className="font-bold">These entries haven&apos;t been paid for</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Go back to the entry page to check the dances and pay.
+            </p>
+            <Link href={entryHref} className="feis-btn feis-btn-ink mt-4">
+              Back to the entry page
+            </Link>
+          </div>
+        )}
+
+        {view.kind === 'expired' && (
+          <div className="feis-sticker rounded px-5 py-5">
+            <p className="font-bold">
+              Your places were held for a limited time, and that time ran out
+            </p>
+            <p className="mt-1 text-sm text-muted-foreground">Choose your dances again to enter.</p>
+            <Link href={entryHref} className="feis-btn feis-btn-ink mt-4">
+              Enter again
+            </Link>
+          </div>
+        )}
+
+        {view.kind === 'cancelled' && (
+          <div className="feis-sticker rounded px-5 py-5">
+            <p className="font-bold">These entries were cancelled</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              You can enter again while the feis is taking entries.
+            </p>
+            <Link href={entryHref} className="feis-btn feis-btn-ink mt-4">
+              Enter again
+            </Link>
+          </div>
+        )}
+
+        {view.kind === 'unavailable' && (
+          <div role="alert" className="feis-sticker rounded px-5 py-5">
+            <p className="font-bold">We couldn&apos;t load your entries just now</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Refresh this page in a moment. If you&apos;ve just paid, please don&apos;t pay a
+              second time.
+            </p>
+          </div>
+        )}
+      </main>
     </div>
   )
 }
 ```
-This drops the decorative status icons for brevity. If you want to keep them, copy the four icon `<div className="mb-4 flex justify-center">…</div>` blocks from the old file into the matching branches unchanged.
+What the page shows, most important first:
+- **Paid**, from the order or from the sync: the redesigned receipt. The email line appears only when `emailIsConfigured` holds. Until then confirmations wait unsent, so the page makes no claim about email (this fixes a known issue).
+- **An open case on this order:** message A, with its reference and a link to My entries; or message B, with "Try again". A case outranks the order's status: an expired order with a late payment shows A, not "Your hold ran out".
+- **Message C:** Stripe says the checkout is complete but confirmation isn't finished. The page checks again every 5 seconds. A case only the payments contacts see also shows C, but without the refresh, since nothing will change by itself.
+- **Otherwise the order's own status:** the redesigned panels, with the same wording as before. `pending_payment` checks again every 5 seconds (it was 3; each check now also asks Stripe). Each refresh re-runs the sync, so the page catches up even if the webhook is slow.
+- **A query that fails:** the "couldn't load" panel, rather than a guess, which could hide message A.
 
-- [ ] **Step 5: Show payment reviews on the dashboard and let pending orders resume**
+The page reads the user with `getSignedInUser()` (`docs/known-issues.md`). Don't add a `loading.tsx` for it: Next 16.2 then never hydrates the page in development.
+
+- [ ] **Step 8: The dashboard shows payment cases and lets a started payment resume**
 
 In `src/app/dashboard/page.tsx`:
 
-(a) Add the import:
-```ts
-import { reviewMessage, type PaymentReview } from '@/lib/payment-review-messages'
-```
-
-(b) After the `Promise.all` that loads dancers and registrations, add:
-```ts
-  const { data: reviewRows } = await supabase.rpc('get_my_payment_reviews')
-  const openReviews = new Map(
-    ((reviewRows ?? []) as PaymentReview[])
-      .filter((review) => !review.resolved)
-      .map((review) => [review.registration_id, review])
-  )
-```
-
-(c) Inside each registration card, directly before `<div className="mt-3 flex gap-3">`, add:
+(a) Replace:
 ```tsx
-                {openReviews.has(reg.id) && (
-                  <p
-                    role="status"
-                    className="mt-3 rounded-md border border-orange-200 bg-orange-50 px-3 py-2 text-sm text-orange-800"
-                  >
-                    {reviewMessage(openReviews.get(reg.id)!.message_code, openReviews.get(reg.id)!.support_ref)}
-                  </p>
-                )}
+import { createClient } from '@/lib/supabase/server'
+```
+with:
+```tsx
+import { createClient, getSignedInUser } from '@/lib/supabase/server'
 ```
 
-(d) Change the "Continue Registration" condition and link, so a family who backed out of Stripe can resume:
+(b) Replace:
 ```tsx
-                  {(reg.status === 'draft' || reg.status === 'pending_payment') && (
-                    <Link
-                      href={`/feiseanna/${reg.feis_listing_id}/register`}
-                      className="text-sm font-medium text-primary hover:underline"
+import { isHouseholdComplete } from '@/lib/household'
+```
+with:
+```tsx
+import { isHouseholdComplete } from '@/lib/household'
+import {
+  openReviewsByOrder,
+  reviewMessage,
+  type PaymentReview
+} from '@/lib/payment-review-messages'
+```
+
+(c) Replace:
+```tsx
+    label: 'Cancelled'
+  }
+}
+```
+with:
+```tsx
+    label: 'Cancelled'
+  }
+}
+
+// An open payment case says more than the order's status: what the family should do next
+const REVIEW_STYLES: Record<PaymentReview['message_code'], { tag: string; label: string }> = {
+  A: {
+    tag: 'bg-[var(--color-feis-orange-light)] text-[var(--color-feis-orange-ink)]',
+    label: 'Being checked'
+  },
+  B: {
+    tag: 'bg-[var(--color-feis-orange-light)] text-[var(--color-feis-orange-ink)]',
+    label: 'Payment didn’t go through'
+  }
+}
+```
+
+(d) Replace:
+```tsx
+  const supabase = await createClient()
+  const {
+    data: { user }
+  } = await supabase.auth.getUser()
+  if (!user) redirect('/auth/login')
+```
+with:
+```tsx
+  const supabase = await createClient()
+  const user = await getSignedInUser(supabase)
+  if (!user) redirect('/auth/login')
+```
+
+(e) Replace:
+```tsx
+  // Get dancers and registrations in parallel (both use household.id)
+  const [{ data: dancers }, { data: registrations }] = await Promise.all([
+```
+with:
+```tsx
+  // Dancers, registrations and the family's view of any payment cases, in parallel
+  const [{ data: dancers }, { data: registrations }, reviews] = await Promise.all([
+```
+
+(f) Replace:
+```tsx
+      .eq('household_id', household.id)
+      .order('created_at', { ascending: false })
+  ])
+```
+with:
+```tsx
+      .eq('household_id', household.id)
+      .order('created_at', { ascending: false }),
+    supabase.rpc('get_my_payment_reviews', { p_registration_id: null })
+  ])
+  if (reviews.error) console.error('Payment reviews failed to load:', reviews.error)
+  const openReviews = openReviewsByOrder((reviews.data ?? []) as PaymentReview[])
+```
+
+(g) Replace:
+```tsx
+      {typedDancers.length > 0 && hasRegistrations && (
+```
+with:
+```tsx
+      {reviews.error && (
+        <p
+          role="status"
+          className="mb-6 max-w-3xl border-l-4 border-[var(--color-feis-orange)] bg-[var(--color-feis-orange-light)] px-4 py-2.5 text-sm text-[var(--color-feis-orange-ink)]"
+        >
+          We couldn&apos;t check for messages about your payments just now. Refresh the page to
+          try again.
+        </p>
+      )}
+
+      {typedDancers.length > 0 && hasRegistrations && (
+```
+
+(h) Replace:
+```tsx
+            const status = STATUS_STYLES[reg.status]
+```
+with:
+```tsx
+            const review = openReviews.get(reg.id)
+            const status = review ? REVIEW_STYLES[review.message_code] : STATUS_STYLES[reg.status]
+            // Message A says not to pay again, so nothing offers another payment beside it
+            const canPayAgain = review?.message_code !== 'A'
+            // Name the session only when there is one (never `session_id=null`); the success
+            // page finds the family's order without it too
+            const receiptHref = `/feiseanna/${reg.feis_listing_id}/register/success${
+              reg.stripe_checkout_session_id ? `?session_id=${reg.stripe_checkout_session_id}` : ''
+            }`
+```
+
+(i) Replace:
+```tsx
+                  {reg.confirmation_number && (
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Confirmation{' '}
+                      <span className="feis-narrow text-lg text-foreground">
+                        {reg.confirmation_number}
+                      </span>
+                    </p>
+                  )}
+                </div>
+```
+with:
+```tsx
+                  {reg.confirmation_number && (
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Confirmation{' '}
+                      <span className="feis-narrow text-lg text-foreground">
+                        {reg.confirmation_number}
+                      </span>
+                    </p>
+                  )}
+                  {review && (
+                    <p
+                      role="status"
+                      className="mt-2 max-w-[62ch] border-l-4 border-[var(--color-feis-orange)] bg-[var(--color-feis-orange-light)] px-3 py-2 text-sm text-[var(--color-feis-orange-ink)]"
                     >
-                      Continue Registration
+                      {reviewMessage(review.message_code, review.support_ref)}
+                    </p>
+                  )}
+                </div>
+```
+
+(j) Replace:
+```tsx
+                  {reg.status === 'paid' && (
+                    <Link
+                      href={`/feiseanna/${reg.feis_listing_id}/register/success?session_id=${reg.stripe_checkout_session_id}`}
+                      className="feis-btn feis-btn-outline"
+                    >
+                      See receipt
                     </Link>
                   )}
+                  {reg.status === 'draft' && (
+                    <Link
+                      href={`/feiseanna/${reg.feis_listing_id}/register?step=3`}
+                      className="feis-btn feis-btn-primary"
+                    >
+                      Finish and pay
+                    </Link>
+                  )}
+                  {reg.status === 'expired' && (
+```
+with:
+```tsx
+                  {reg.status === 'paid' && (
+                    <Link href={receiptHref} className="feis-btn feis-btn-outline">
+                      See receipt
+                    </Link>
+                  )}
+                  {(reg.status === 'draft' || reg.status === 'pending_payment') && canPayAgain && (
+                    <Link
+                      href={`/feiseanna/${reg.feis_listing_id}/register`}
+                      className="feis-btn feis-btn-primary"
+                    >
+                      Finish and pay
+                    </Link>
+                  )}
+                  {reg.status === 'expired' && canPayAgain && (
 ```
 
-- [ ] **Step 6: Type-check, test and build**
+What this does:
+- Each order shows its open case's message, A or B, and its tag says "Being checked" or "Payment didn’t go through" instead of the order's status.
+- A family who backed out of Stripe (`pending_payment`) gets "Finish and pay". It leads to the entry page, where "Return to payment" resumes the same checkout.
+- The old wizard's `?step=3` is dropped; the entry page has no steps.
+- "See receipt" no longer builds `?session_id=null` (this fixes a known issue).
+- Nothing offers another payment beside message A.
+- If the reviews can't be read, the page says so instead of silently showing no messages.
 
-Run: `npx tsc --noEmit && npm test && npm run test:db && npm run build`
-Expected: all pass.
+- [ ] **Step 9: Mark the two parent issues fixed**
 
-- [ ] **Step 7: Walk through it locally**
+In `docs/known-issues.md`, replace:
+```markdown
+## Parents
+- **The after-payment page says a confirmation email was sent** even when email isn't set up (`RESEND_API_KEY` missing means the email is only logged).
+- **The "See receipt" link on My entries** builds `?session_id=null` when a registration has no Stripe session, and the page then falls back to the latest registration for that feis.
+```
+with:
+```markdown
+## Parents
+```
 
-Run `npm run dev`, sign in as a test parent, and register for an open test feis:
-1. Submit an order. It lands on Review & Pay showing the server's price.
-2. Press **Back**. It asks to cancel the order, then returns to the cart with your choices kept.
-3. Submit again, then reload the page. It resumes at Review & Pay with the same order.
-4. Press **Pay**. With no Stripe test keys in `.env.local`, you see "Something went wrong starting your payment…" rather than a crash. The full payment path is tested in Task 16.
+- [ ] **Step 10: Type-check, lint, test and build**
 
-- [ ] **Step 8: Commit**
+Run: `npx tsc --noEmit && npm run lint && npm test && npm run test:db && npm run build`
+Expected: all pass. `npm run lint` reports no errors; the one warning, in `feis-wizard-step2.tsx`, was there before.
+
+- [ ] **Step 11: Commit**
 
 ```bash
-git add src/app/_payments/checkout-deps.ts src/lib/payment-review-messages.ts 'src/app/feiseanna/[id]/register' src/app/dashboard/page.tsx
+git add src/app/_payments/checkout-deps.ts src/lib/email/email-config.ts tests/email-config.test.ts src/lib/payment-review-messages.ts tests/payment-review-messages.test.ts 'src/app/feiseanna/[id]/register/actions.ts' 'src/app/feiseanna/[id]/register/success/page.tsx' src/components/registration/entry-page.tsx src/components/registration/family-receipt.tsx src/app/dashboard/page.tsx docs/known-issues.md
 git commit -m "feat: Pay and Cancel use the claim workflow; success page confirms from Stripe and shows payment reviews"
 ```
 
@@ -6371,7 +7887,8 @@ git commit -m "feat: Pay and Cancel use the claim workflow; success page confirm
 - Create: `src/app/_payments/notification-deps.ts`
 - Create: `src/app/api/notifications/process/route.ts`
 - Modify: `src/app/api/webhooks/stripe/route.ts` (send right after a confirmation)
-- Delete: `src/lib/email/send-confirmation.ts`
+- Delete: `src/lib/email/send-confirmation.ts` (its tested `renderConfirmationEmail` moves into `templates.ts` first)
+- Modify: `tests/email-confirmation.test.ts` (import from `templates.ts`)
 - Create: `tests/db/helpers/fake-email.ts`
 - Test: `tests/engine/email-errors.test.ts`, `tests/email-templates.test.ts`, `tests/db/notifications.test.ts`
 
@@ -6380,22 +7897,27 @@ git commit -m "feat: Pay and Cancel use the claim workflow; success page confirm
   - the `notifications` table, plus the alert and confirmation rows queued by Task 9
   - `PurchaseSnapshot` (Task 4)
   - `formatCents` and `formatDate` (`src/lib/format.ts`)
+  - main's confirmation email: `renderConfirmationEmail(data: ConfirmationEmailData): string`, with `ConfirmationEmailData` and `DancerBlock` (`src/lib/email/send-confirmation.ts`, tested by `tests/email-confirmation.test.ts`)
 - Produces:
   - **SQL, internal:** `_queue_delivery_alert(uuid)`.
   - **SQL, service role:**
     - `claim_notifications(p_limit integer, p_now timestamptz) → jsonb`, an array of rows
     - `freeze_notification(p_id uuid, p_claim_token uuid, p_recipient text, p_payload jsonb) → jsonb`, which returns `{ recipient, payload }`, or null when the claim has gone stale
     - `complete_notification(p_id uuid, p_claim_token uuid, p_outcome text, p_provider_message_id text, p_error text, p_now timestamptz) → jsonb`
-    - `get_notification_context(p_notification_id uuid) → jsonb`
+    - `get_notification_context(p_notification_id uuid) → jsonb`, which includes each of the order's dancers' competitor numbers (`numbers`)
   - **Classifier:** `classifyEmailError(error): 'rejected' | 'uncertain'`
   - **Templates:**
-    - `renderConfirmationEmail`, `renderPaymentAlertEmail` and `renderDeliveryFailureAlertEmail`, each returning `EmailContent`
-    - `escapeHtml`
+    - `renderConfirmationEmail(data: ConfirmationEmailData): string`, main's HTML, moved here unchanged except that it uses the shared `escapeHtml`
+    - `confirmationEmail(ctx: ConfirmationEmailContext): EmailContent`, which fills main's email from the frozen purchase and the competitor numbers
+    - `renderPaymentAlertEmail` and `renderDeliveryFailureAlertEmail`, each returning `EmailContent`
+    - `escapeHtml`, which escapes all five HTML characters
   - **Queue:**
     - `createNotificationStore(rpc)`
     - `createResendSender(apiKey): EmailSender`
     - `processNotifications(deps: WorkerDeps, { limit }): Promise<{ paused; claimed; sent }>`
     - `notificationDeps()`
+
+The family's confirmation keeps main's email: each dancer drawn as their number card with their competitor number, the competition codes and dances, what was paid and the confirmation number (subject `You're entered: <feis>`). The queue builds it with main's tested `renderConfirmationEmail()`. The only change is where the details come from: the frozen purchase and the competitor numbers, not the dancer's profile today.
 
 - [ ] **Step 1: Write the failing pure tests**
 
@@ -6420,37 +7942,49 @@ describe('classifyEmailError', () => {
 Create `tests/email-templates.test.ts`:
 ```ts
 import { describe, expect, it } from 'vitest'
-import { escapeHtml, renderConfirmationEmail, renderPaymentAlertEmail } from '@/lib/email/templates'
+import { confirmationEmail, escapeHtml, renderPaymentAlertEmail } from '@/lib/email/templates'
 import type { PurchaseSnapshot } from '@/lib/engine/purchase-snapshot'
 
+// The parts of a frozen purchase the confirmation reads, shaped as priceOrder freezes them
 const purchase = {
   version: 1,
   dancers: [{ id: 'd1', first_name: 'Aoife <script>', last_name: "O'Brien & Co", school_name: null, tcrg_name: null,
     date_of_birth: '2018-05-01', gender: 'female', championship_status: 'none', dance_levels: {}, competition_age: 8 }],
-  competitions: [{ id: 'c1', display_code: '210R', display_name: 'Novice Reel U10', age_group_key: null, level_key: null,
-    dance_key: null, competition_type: 'solo', championship_key: null, fee_category: 'solo', fee_cents: null }],
+  competitions: [{ id: 'c1', display_code: '210R', display_name: 'Novice Reel U10', age_group_key: 'U10',
+    age_group_label: 'Under 10', age_min_jan1: null, age_max_jan1: 9, level_key: 'NOV', level_label: 'Novice',
+    dance_key: 'reel', dance_label: 'Reel', competition_type: 'solo', championship_key: null, grades_only: false,
+    fee_category: 'solo', fee_cents: null, exclude_from_family_cap: false }],
   entries: [{ dancer_id: 'd1', competition_id: 'c1', fee_category: 'solo', base_fee_cents: 1500, late_fee_cents: 0, day_of_surcharge_cents: 0 }],
 } as unknown as PurchaseSnapshot
 
+const order = { confirmation_number: 'RF-2026-7KQ2M', total_cents: 4000 }
+const listing = { name: 'Newport Feis', feis_date: '2027-03-14', venue_name: 'Hall', venue_address: null, contact_email: 'org@runfeis.test' }
+
 describe('email templates', () => {
-  it('builds the confirmation from the frozen purchase', () => {
-    const email = renderConfirmationEmail({
-      order: { confirmation_number: 'RF-2026-7KQ2M', total_cents: 4000 },
-      listing: { name: 'Newport Feis', feis_date: '2027-03-14', venue_name: 'Hall', venue_address: null, contact_email: 'org@runfeis.test' },
-      purchase,
-      baseUrl: 'https://runfeis.test',
+  it("fills main's confirmation from the frozen purchase: competitor number, code, dance and what was paid", () => {
+    const email = confirmationEmail({
+      order, listing, purchase, numbers: [{ dancer_id: 'd1', competitor_number: 214 }], baseUrl: 'https://runfeis.test',
     })
-    expect(email.subject).toBe("You're registered for Newport Feis")
+    expect(email.subject).toBe("You're entered: Newport Feis")
+    expect(email.html).toContain('>214<')
+    expect(email.html).toContain('>210R<')
+    expect(email.html).toContain('>Reel<')
     expect(email.html).toContain('RF-2026-7KQ2M')
     expect(email.html).toContain('$40.00')
-    expect(email.html).toContain('210R Novice Reel U10')
+    expect(email.html).toContain('https://runfeis.test/dashboard')
+  })
+
+  it('shows a dash for a dancer whose number has not been assigned', () => {
+    const email = confirmationEmail({ order, listing, purchase, numbers: [], baseUrl: 'https://runfeis.test' })
+    expect(email.html).toContain('&ndash;')
   })
 
   it('escapes HTML in names in every email', () => {
-    const email = renderConfirmationEmail({
-      order: { confirmation_number: 'RF-2026-7KQ2M', total_cents: 4000 },
+    const email = confirmationEmail({
+      order,
       listing: { name: 'Feis <b>One</b>', feis_date: null, venue_name: null, venue_address: null, contact_email: null },
       purchase,
+      numbers: [],
       baseUrl: 'https://runfeis.test',
     })
     expect(email.html).not.toContain('<script>')
@@ -6515,6 +8049,132 @@ export function escapeHtml(value: string): string {
 
 const text = (value: string | null | undefined) => escapeHtml(value ?? '')
 
+// ─── The family's confirmation ───
+// main's "You're entered" email, moved here from src/lib/email/send-confirmation.ts unchanged, except that
+// it uses the shared escapeHtml above (which also escapes single quotes). tests/email-confirmation.test.ts
+// keeps testing it.
+
+export interface DancerBlock {
+  name: string
+  number: number | null
+  competitions: { code: string | null; name: string }[]
+}
+
+/** One dancer drawn like their number card, with the competition codes beside it. */
+function dancerBlock(d: DancerBlock): string {
+  const codes = d.competitions
+    .map(
+      (c) => `
+        <tr>
+          <td style="padding:5px 0;border-top:1px solid #E2DCCD;font-size:15px;font-weight:bold;color:#17191B;width:72px;vertical-align:top;">${escapeHtml(c.code ?? '')}</td>
+          <td style="padding:5px 0;border-top:1px solid #E2DCCD;font-size:14px;color:#3F4441;vertical-align:top;">${escapeHtml(c.name)}</td>
+        </tr>`
+    )
+    .join('')
+
+  return `
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 16px;border:2px solid #17191B;background:#FFFFFF;">
+      <tr>
+        <td style="padding:16px 18px;width:120px;vertical-align:top;border-right:1px solid #E2DCCD;text-align:center;">
+          <div style="font-size:11px;color:#615D55;">Competitor number</div>
+          <div style="font-size:44px;line-height:1.05;font-weight:bold;color:#17191B;letter-spacing:-1px;">${d.number ?? '&ndash;'}</div>
+        </td>
+        <td style="padding:14px 18px;vertical-align:top;">
+          <div style="font-size:17px;font-weight:bold;color:#17191B;margin-bottom:6px;">${escapeHtml(d.name)}</div>
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0">${codes}</table>
+        </td>
+      </tr>
+    </table>`
+}
+
+export interface ConfirmationEmailData {
+  feisName: string
+  feisDate: string
+  venue: string
+  dancers: DancerBlock[]
+  totalCents: number
+  confirmationNumber: string | null
+  contactEmail: string | null
+  baseUrl: string
+}
+
+/** The "you're entered" email: each dancer's competitor number and dances, and what was paid. */
+export function renderConfirmationEmail(data: ConfirmationEmailData): string {
+  const {
+    feisName,
+    feisDate,
+    venue,
+    dancers,
+    totalCents,
+    confirmationNumber,
+    contactEmail,
+    baseUrl
+  } = data
+  return `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="color-scheme" content="light"><title>You're entered</title></head>
+<body style="margin:0;padding:0;background-color:#FBF9F4;font-family:Arial,Helvetica,sans-serif;">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;">Your competitor numbers for ${escapeHtml(feisName)}.</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#FBF9F4;">
+<tr><td align="center" style="padding:32px 16px;">
+  <table role="presentation" width="560" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%;">
+    <tr>
+      <td style="background-color:#1F5538;padding:20px 28px 22px;border-bottom:6px double #C59D5F;">
+        <div style="font-size:15px;font-weight:bold;font-style:italic;color:#FFFFFF;opacity:0.85;">RunFeis</div>
+        <div style="font-size:28px;line-height:1.1;font-weight:bold;color:#FFFFFF;margin-top:10px;">You're entered</div>
+        <div style="font-size:15px;color:#FFFFFF;opacity:0.85;margin-top:4px;">${escapeHtml(feisName)}, ${escapeHtml(feisDate)}${venue ? `, ${escapeHtml(venue)}` : ''}</div>
+      </td>
+    </tr>
+    <tr><td style="height:24px;font-size:0;line-height:0;">&nbsp;</td></tr>
+    <tr>
+      <td>
+        <p style="margin:0 0 16px;font-size:15px;line-height:1.6;color:#3F4441;">
+          Here are your competitor numbers and dances. Keep this email; you'll need the numbers on the day.
+        </p>
+        ${dancers.map(dancerBlock).join('')}
+      </td>
+    </tr>
+    <tr>
+      <td style="background:#FFFFFF;border:2px solid #17191B;padding:16px 18px;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+          <tr>
+            <td style="font-size:14px;color:#615D55;">Paid</td>
+            <td style="font-size:22px;font-weight:bold;color:#17191B;text-align:right;">${formatCents(totalCents)}</td>
+          </tr>
+          <tr>
+            <td style="font-size:14px;color:#615D55;padding-top:6px;">Confirmation</td>
+            <td style="font-size:15px;font-weight:bold;color:#17191B;text-align:right;padding-top:6px;">${escapeHtml(confirmationNumber ?? '')}</td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+    ${
+      baseUrl
+        ? `<tr><td style="padding-top:20px;">
+        <table role="presentation" cellpadding="0" cellspacing="0" width="100%"><tr>
+          <td style="background-color:#2F7A52;border-radius:3px;text-align:center;">
+            <a href="${baseUrl}/dashboard" target="_blank" style="display:block;padding:14px 20px;font-size:15px;font-weight:bold;color:#FFFFFF;text-decoration:none;">See your entries</a>
+          </td>
+        </tr></table>
+      </td></tr>`
+        : ''
+    }
+    <tr>
+      <td style="padding:20px 2px 0;font-size:13px;line-height:1.6;color:#615D55;">
+        To add or drop a dance, contact the organiser${contactEmail ? ` at <a href="mailto:${escapeHtml(contactEmail)}" style="color:#2F7A52;">${escapeHtml(contactEmail)}</a>` : ''}. Entry fees aren't refundable.
+      </td>
+    </tr>
+    <tr>
+      <td style="padding:12px 2px 0;font-size:12px;color:#615D55;">RunFeis runs Irish dance feiseanna, from entries to results.</td>
+    </tr>
+  </table>
+</td></tr>
+</table>
+</body>
+</html>`
+}
+
+/** What the worker has for a confirmation (get_notification_context) */
 export interface ConfirmationEmailContext {
   order: { confirmation_number: string | null; total_cents: number }
   listing: {
@@ -6525,66 +8185,55 @@ export interface ConfirmationEmailContext {
     contact_email: string | null
   }
   purchase: PurchaseSnapshot | null
+  /** Each of the order's dancers' competitor numbers at this feis */
+  numbers: { dancer_id: string; competitor_number: number }[]
   baseUrl: string
 }
 
-/** The family's confirmation, built from what they bought (the frozen purchase), not today's profile */
-export function renderConfirmationEmail(ctx: ConfirmationEmailContext): EmailContent {
+/**
+ * The confirmation for a paid order: main's email, filled from what the family bought (the frozen
+ * purchase) and their competitor numbers, not from the dancer's profile today.
+ */
+export function confirmationEmail(ctx: ConfirmationEmailContext): EmailContent {
   const dancers = new Map((ctx.purchase?.dancers ?? []).map((d) => [d.id, d]))
   const competitions = new Map((ctx.purchase?.competitions ?? []).map((c) => [c.id, c]))
-  const byDancer = new Map<string, string[]>()
+  const numbers = new Map(ctx.numbers.map((n) => [n.dancer_id, n.competitor_number]))
+
+  // One block per dancer, in entry order, as main's sender built them
+  const blocks = new Map<string, DancerBlock>()
   for (const entry of ctx.purchase?.entries ?? []) {
+    const dancer = dancers.get(entry.dancer_id)
     const competition = competitions.get(entry.competition_id)
-    const label = [competition?.display_code, competition?.display_name].filter(Boolean).join(' ')
-    byDancer.set(entry.dancer_id, [...(byDancer.get(entry.dancer_id) ?? []), label])
-  }
-  const dancerSections = [...byDancer.entries()]
-    .map(([dancerId, labels]) => {
-      const dancer = dancers.get(dancerId)
-      const name = dancer ? `${dancer.first_name} ${dancer.last_name}` : 'Dancer'
-      return `
-      <div style="margin-bottom: 16px;">
-        <strong>${text(name)}</strong>
-        <ul style="margin: 4px 0 0; padding-left: 20px;">
-          ${labels.map((label) => `<li>${text(label)}</li>`).join('')}
-        </ul>
-      </div>`
+    const block = blocks.get(entry.dancer_id) ?? {
+      name: dancer ? `${dancer.first_name} ${dancer.last_name}` : 'Dancer',
+      number: numbers.get(entry.dancer_id) ?? null,
+      competitions: []
+    }
+    block.competitions.push({
+      code: competition?.display_code ?? null,
+      // A solo shows its dance; anything else its full name
+      name:
+        competition?.competition_type === 'solo' && competition.dance_label
+          ? competition.dance_label
+          : (competition?.display_name ?? 'Competition')
     })
-    .join('')
+    blocks.set(entry.dancer_id, block)
+  }
 
   const feisName = ctx.listing.name ?? 'your feis'
-  const venue = [ctx.listing.venue_name, ctx.listing.venue_address].filter(Boolean).join(', ')
-  const contact = ctx.listing.contact_email
-    ? `<p style="color: #666; font-size: 14px;">Questions? Contact the organiser: <a href="mailto:${text(ctx.listing.contact_email)}">${text(ctx.listing.contact_email)}</a></p>`
-    : ''
-
-  const html = `
-    <div style="font-family: system-ui, -apple-system, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-      <h1 style="color: #2F7A52; margin-bottom: 4px;">You're registered!</h1>
-      <h2 style="color: #666; font-weight: normal; margin-top: 0;">${text(feisName)}</h2>
-      <div style="background: #EBF4EF; border-radius: 8px; padding: 16px; margin: 20px 0; text-align: center;">
-        <div style="color: #666; font-size: 14px;">Confirmation Number</div>
-        <div style="font-size: 28px; font-weight: bold; color: #2F7A52; font-family: monospace;">${text(ctx.order.confirmation_number)}</div>
-      </div>
-      <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
-        <tr><td style="padding: 8px 0; color: #666;">Date</td>
-            <td style="padding: 8px 0; text-align: right;">${text(formatDate(ctx.listing.feis_date, { weekday: 'long', fallback: 'TBD' }))}</td></tr>
-        <tr><td style="padding: 8px 0; color: #666;">Venue</td>
-            <td style="padding: 8px 0; text-align: right;">${text(venue || 'TBD')}</td></tr>
-        <tr><td style="padding: 8px 0; color: #666;">Total Paid</td>
-            <td style="padding: 8px 0; text-align: right; font-weight: bold;">${formatCents(ctx.order.total_cents)}</td></tr>
-      </table>
-      <h3>Dancers & Competitions</h3>
-      ${dancerSections}
-      <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;" />
-      <p style="color: #666; font-size: 14px;"><strong>What's next?</strong> We'll email your schedule closer to the feis date.</p>
-      ${contact}
-      <p style="color: #999; font-size: 12px; margin-top: 20px;">
-        Sent by RunFeis. <a href="${text(ctx.baseUrl)}/dashboard">View your registrations</a>
-      </p>
-    </div>`
-
-  return { subject: `You're registered for ${feisName}`, html }
+  return {
+    subject: `You're entered: ${feisName}`,
+    html: renderConfirmationEmail({
+      feisName,
+      feisDate: formatDate(ctx.listing.feis_date, { weekday: 'long', fallback: 'Date to be announced' }),
+      venue: [ctx.listing.venue_name, ctx.listing.venue_address].filter(Boolean).join(', '),
+      dancers: [...blocks.values()],
+      totalCents: ctx.order.total_cents,
+      confirmationNumber: ctx.order.confirmation_number,
+      contactEmail: ctx.listing.contact_email,
+      baseUrl: ctx.baseUrl
+    })
+  }
 }
 
 export interface PaymentAlertContext {
@@ -6664,8 +8313,12 @@ export function renderDeliveryFailureAlertEmail(ctx: DeliveryFailureContext): Em
   return { subject: `[RunFeis] Email ${f.status === 'needs_check' ? 'needs checking' : 'not delivered'}: ${f.dedupe_key}`, html }
 }
 ```
-Run: `npx vitest run tests/engine/email-errors.test.ts tests/email-templates.test.ts`
-Expected: PASS.
+main's email tests now read the moved function. In `tests/email-confirmation.test.ts`, change the import to:
+```ts
+import { renderConfirmationEmail } from '@/lib/email/templates'
+```
+Run: `npx vitest run tests/engine/email-errors.test.ts tests/email-templates.test.ts tests/email-confirmation.test.ts`
+Expected: PASS, with main's email tests unchanged apart from that import.
 
 - [ ] **Step 3: Write the store, the sender, the worker and the fake email**
 
@@ -6699,6 +8352,7 @@ export interface NotificationContext {
   order: ({ id: string; status: string } & ConfirmationEmailContext['order']) | null
   listing: ConfirmationEmailContext['listing'] | null
   purchase: ConfirmationEmailContext['purchase']
+  numbers: ConfirmationEmailContext['numbers']
   family: PaymentAlertContext['family']
   exception: PaymentAlertContext['exception'] | null
   failed_notification: DeliveryFailureContext['failed'] | null
@@ -6797,7 +8451,7 @@ export function createResendSender(apiKey: string): EmailSender {
 Create `src/app/_payments/notification-worker.ts`:
 ```ts
 import {
-  renderConfirmationEmail,
+  confirmationEmail,
   renderDeliveryFailureAlertEmail,
   renderPaymentAlertEmail,
   type EmailContent
@@ -6831,7 +8485,9 @@ function render(row: NotificationRow, ctx: NotificationContext | null, config: W
   switch (row.kind) {
     case 'registration_confirmation':
       return ctx.order && ctx.listing
-        ? renderConfirmationEmail({ order: ctx.order, listing: ctx.listing, purchase: ctx.purchase, baseUrl: config.baseUrl })
+        ? confirmationEmail({
+            order: ctx.order, listing: ctx.listing, purchase: ctx.purchase, numbers: ctx.numbers, baseUrl: config.baseUrl
+          })
         : null
     case 'payment_exception_alert':
       return ctx.exception
@@ -6984,7 +8640,7 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
-  await db.drop()
+  await db?.drop()
 })
 
 const CONTACTS = ['daniel@runfeis.test', 'steve@runfeis.test']
@@ -7032,7 +8688,11 @@ describe('the notification queue', () => {
     expect(email.delivered).toHaveLength(1)
     expect(email.delivered[0].key).toBe(`confirmation:${order.registrationId}:0`)
     expect(email.delivered[0].email.to).toEqual([order.family.email])
-    expect(email.delivered[0].email.subject).toBe("You're registered for Test Feis")
+    expect(email.delivered[0].email.subject).toBe("You're entered: Test Feis")
+    // main's email: the dancer's competitor number (the feis numbers from 101) and competition codes
+    expect(email.delivered[0].email.html).toContain('>101<')
+    expect(email.delivered[0].email.html).toContain('>210R<')
+    expect(email.delivered[0].email.html).toContain('>210SJ<')
     expect(await row('registration_confirmation')).toMatchObject({ status: 'sent', provider_message_id: 'em_1', attempts: 1 })
   })
 
@@ -7046,7 +8706,7 @@ describe('the notification queue', () => {
     await processNotifications(worker(email))
 
     expect(email.delivered).toHaveLength(1)
-    expect(email.delivered[0].email.subject).toBe("You're registered for Test Feis")
+    expect(email.delivered[0].email.subject).toBe("You're entered: Test Feis")
     expect(email.delivered[0].key).toBe(`confirmation:${order.registrationId}:1`)
   })
 
@@ -7337,6 +8997,15 @@ AS $$
       'name', l.name, 'feis_date', l.feis_date, 'venue_name', l.venue_name, 'venue_address', l.venue_address,
       'contact_email', l.contact_email) END,
     'purchase', s.snapshot_data -> 'purchase',
+    -- The competitor numbers of the order's dancers at this feis (a dancer keeps one number per feis), for
+    -- the confirmation; numbers are assigned in the same transaction as the payment, before it is queued
+    'numbers', coalesce((
+      SELECT jsonb_agg(jsonb_build_object('dancer_id', cn.dancer_id, 'competitor_number', cn.competitor_number)
+                       ORDER BY cn.competitor_number)
+      FROM competitor_numbers cn
+      WHERE cn.feis_listing_id = r.feis_listing_id
+        AND cn.dancer_id IN (SELECT re.dancer_id FROM registration_entries re WHERE re.registration_id = r.id)
+    ), '[]'::jsonb),
     'family', CASE WHEN h.id IS NULL THEN NULL ELSE jsonb_build_object(
       'first_name', h.first_name, 'last_name', h.last_name, 'phone', h.phone, 'email', u.email) END,
     'exception', CASE WHEN e.id IS NULL THEN NULL ELSE jsonb_build_object(
@@ -7421,10 +9090,10 @@ Replace the final `return NextResponse.json(outcome.body, { status: outcome.stat
   }
   return NextResponse.json(outcome.body, { status: outcome.status })
 ```
-Delete the old sender, and check that nothing still refers to it:
+Delete the old sender (its email now lives in `templates.ts`), and check that nothing still refers to it:
 ```bash
 git rm src/lib/email/send-confirmation.ts
-grep -rn "send-confirmation\|sendConfirmationEmail" src || echo "no references left"
+grep -rn "send-confirmation\|sendConfirmationEmail" src tests || echo "no references left"
 ```
 Expected: `no references left`.
 
@@ -7436,7 +9105,7 @@ Expected: all pass.
 - [ ] **Step 10: Commit**
 
 ```bash
-git add supabase/migrations/016_notification_delivery.sql src/lib/engine/email-errors.ts src/lib/email/templates.ts src/app/_payments/notification-store.ts src/app/_payments/email-sender.ts src/app/_payments/notification-worker.ts src/app/_payments/notification-deps.ts src/app/api/notifications/process/route.ts src/app/api/webhooks/stripe/route.ts tests/db/helpers/fake-email.ts tests/engine/email-errors.test.ts tests/email-templates.test.ts tests/db/notifications.test.ts
+git add supabase/migrations/016_notification_delivery.sql src/lib/engine/email-errors.ts src/lib/email/templates.ts src/app/_payments/notification-store.ts src/app/_payments/email-sender.ts src/app/_payments/notification-worker.ts src/app/_payments/notification-deps.ts src/app/api/notifications/process/route.ts src/app/api/webhooks/stripe/route.ts tests/db/helpers/fake-email.ts tests/engine/email-errors.test.ts tests/email-templates.test.ts tests/email-confirmation.test.ts tests/db/notifications.test.ts
 git commit -m "feat: email queue with frozen messages, claim tokens and provider idempotency (migration 016)"
 ```
 
@@ -7460,6 +9129,10 @@ git commit -m "feat: email queue with frozen messages, claim tokens and provider
     - `payments_admin.confirm_late_payment(p_support_ref text, p_note text) → jsonb`
     - `payments_admin.close_exception(p_support_ref text, p_resolution text, p_stripe_refund_id text, p_note text) → jsonb`
 
+**Notes:**
+- `confirm_late_payment` fulfils the order through `_fulfil_order` (Task 9), so it meets migration 012 the same way a webhook confirmation does. One UPDATE moves the order from `expired` to `paid` with its claim, session, `paid_at` and confirmation number, and the snapshot is written in that same transaction. The function checks the order's claim and session against the case before it gets there.
+- `paid_at` is therefore the time of the confirmation, not the time Stripe took the money, and competitor numbers are assigned at that moment. Numbers go out in `paid_at` order, so a late payment confirmed by hand gets numbers after every family confirmed before it. When Stripe took the money is in the case row (`created_at`, the payment intent) and the audit row's evidence.
+
 - [ ] **Step 1: Write the failing tests**
 
 Create `tests/db/payments-admin.test.ts`:
@@ -7480,7 +9153,7 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
-  await db.drop()
+  await db?.drop()
 })
 
 type Ready = Awaited<ReturnType<typeof readyToPay>>
@@ -7534,6 +9207,14 @@ describe('payments_admin.confirm_late_payment', () => {
     const { rows: [audit] } = await db.pool.query('SELECT action, note, evidence FROM admin_actions WHERE support_ref = $1', [supportRef])
     expect(audit).toMatchObject({ action: 'confirm_late_payment', note: 'Family paid late; spoke to them by phone' })
     expect(audit.evidence.cancelled_orders).toEqual([newerId])
+
+    // paid_at is when the case was confirmed, after it was recorded, and the numbers were assigned then
+    const { rows: [timing] } = await db.pool.query(
+      `SELECT r.paid_at > e.created_at AS paid_at_is_confirmation,
+              (SELECT count(*)::int FROM competitor_numbers c WHERE c.registration_id = r.id) AS numbers
+       FROM registrations r JOIN payment_exceptions e ON e.registration_id = r.id
+       WHERE e.support_ref = $1`, [supportRef])
+    expect(timing).toEqual({ paid_at_is_confirmation: true, numbers: 1 })
   })
 
   it('refuses when another order was taken to checkout, even once that checkout has expired', async () => {
@@ -7631,7 +9312,8 @@ CREATE TABLE IF NOT EXISTS admin_actions (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 ALTER TABLE admin_actions ENABLE ROW LEVEL SECURITY;
-REVOKE ALL ON admin_actions FROM anon, authenticated;
+-- PUBLIC as well, as in 012: whatever PUBLIC holds, every role holds
+REVOKE ALL ON admin_actions FROM PUBLIC, anon, authenticated;
 
 CREATE SCHEMA IF NOT EXISTS payments_admin;
 REVOKE ALL ON SCHEMA payments_admin FROM PUBLIC;
@@ -7818,7 +9500,7 @@ git commit -m "feat: per-reason case resolutions in a schema the API can't reach
 - Modify: `CLAUDE.md`
 
 **Interfaces:**
-- Consumes: the functions and tables from Tasks 9, 13 and 14.
+- Consumes: migration 012's guard triggers (Task 3), and the functions and tables from Tasks 9, 13 and 14.
 - Produces: the runbook that alert emails point to, and project rules that match the new payment code.
 
 - [ ] **Step 1: Write the runbook**
@@ -7875,9 +9557,10 @@ Then find the payment in Stripe: Dashboard → Connect → the feis's account �
 Every function needs a note saying what you checked and decided. Each one writes an `admin_actions` row.
 
 **3a. Confirm a late payment** (only `late_payment_conflict`). This cancels the family's newer unpaid order, then
-confirms the paid one: confirmation number, snapshot, competitor numbers and confirmation email. It
-refuses if any other order for the family and feis is paid, or reached checkout and isn't cancelled: a
-delayed payment for it could still arrive. Refund instead (3b).
+confirms the paid one: confirmation number, snapshot, competitor numbers and confirmation email. The order's
+`paid_at` becomes the time of this confirmation, so its competitor numbers come after every family confirmed
+before now. It refuses if any other order for the family and feis is paid, or reached checkout and isn't
+cancelled: a delayed payment for it could still arrive. Refund instead (3b).
 ```sql
 SELECT payments_admin.confirm_late_payment('PAY-XXXXX', 'Rang the family; they want the paid order');
 ```
@@ -7945,6 +9628,39 @@ $$);
 ```
 
 Never add the `payments_admin` schema to the API's exposed schemas (Dashboard → Settings → API).
+
+## 6. Orders are never deleted
+
+The database refuses to delete orders, entries and snapshots, and refuses `TRUNCATE` of those three tables, for
+every role: the service role and the table owner included (the guard triggers from migration 012). Cancel an
+order, or let it expire, instead.
+
+Removing test orders, for example after trying things out on a test feis, is the one exception. The table owner
+(`postgres`, in the SQL editor) has to do it on purpose, in one transaction that switches the row guards off
+and back on before it commits. Never do this to a real family's order. Put the test feis's id in the first query:
+```sql
+BEGIN;
+CREATE TEMP TABLE reset_orders ON COMMIT DROP AS
+  SELECT id FROM pre_registration.registrations WHERE feis_listing_id = '<test feis id>';
+ALTER TABLE pre_registration.registrations DISABLE TRIGGER guard_registrations;
+ALTER TABLE pre_registration.registration_entries DISABLE TRIGGER guard_registration_entries;
+ALTER TABLE pre_registration.registration_snapshots DISABLE TRIGGER guard_registration_snapshots;
+DELETE FROM pre_registration.notifications
+WHERE registration_id IN (SELECT id FROM reset_orders)
+   OR exception_id IN (SELECT id FROM pre_registration.payment_exceptions
+                       WHERE registration_id IN (SELECT id FROM reset_orders));
+DELETE FROM pre_registration.admin_actions WHERE registration_id IN (SELECT id FROM reset_orders);
+DELETE FROM pre_registration.payment_exceptions WHERE registration_id IN (SELECT id FROM reset_orders);
+DELETE FROM pre_registration.competitor_numbers WHERE registration_id IN (SELECT id FROM reset_orders);
+DELETE FROM pre_registration.registration_snapshots WHERE registration_id IN (SELECT id FROM reset_orders);
+-- The entries go with their orders (ON DELETE CASCADE)
+DELETE FROM pre_registration.registrations WHERE id IN (SELECT id FROM reset_orders);
+ALTER TABLE pre_registration.registrations ENABLE TRIGGER guard_registrations;
+ALTER TABLE pre_registration.registration_entries ENABLE TRIGGER guard_registration_entries;
+ALTER TABLE pre_registration.registration_snapshots ENABLE TRIGGER guard_registration_snapshots;
+COMMIT;
+```
+Don't `TRUNCATE` these tables, even as the owner: the `TRUNCATE` guards refuse it, and they stay on.
 ````
 
 - [ ] **Step 2: Update the project rules**
@@ -7982,26 +9698,36 @@ git commit -m "docs: payment cases runbook and payment rules in CLAUDE.md"
 
 ---
 
-### Task 16: Live check, live verification and rollout
+### Task 16: Live check, rehearsal, live verification and rollout
 
-This task touches the live project. Steps 3, 6 and 7 need Daniel's go-ahead at the time: they apply migrations, push to `main` (which deploys) and schedule a job. Ask before each one. Don't treat approval of this plan as approval for them.
+This task touches the live project. Steps 3, 4, 7 and 8 need Daniel's go-ahead at the time: Step 3 copies the live data to this machine, Step 4 sets Vercel variables, Step 7 applies the migrations and pushes to `main` (which deploys), and Step 8 schedules a job. Ask before each one. Don't treat approval of this plan as approval for them.
 
 **Files:**
 - Create: `supabase/checks/payment-hardening-live-check.sql`
+- Create: `supabase/checks/rehearse-on-live-copy.sh`
 - Create: `supabase/tests/payment_hardening_live_tests.sql`
 - Test: `tests/db/live-script.test.ts` (runs the live test script against the local database first)
 - Modify: `docs/2026-10-16-payment-hardening-design.md` (record the results)
 
 **Interfaces:**
-- Consumes: migrations 012–017.
-- Produces: a read-only live check, and a live test script that always rolls back.
+- Consumes: migrations 012–017, and the Supabase stand-ins in `tests/db/sql/supabase-standins.sql` (Task 1).
+- Produces: a read-only live check, a rehearsal of 012–017 on a copy of the live data, and a live test script that always rolls back.
 
 - [ ] **Step 1: Write the live test script, and prove it locally first**
+
+The script checks the rules the way the local suite does:
+- the table ACLs themselves (`aclexplode`), so nothing but `SELECT` for `authenticated` slips through
+- column-level write grants (`has_any_column_privilege`)
+- row-level security
+- the three row guards and the three `TRUNCATE` guards, and that the service role can't `TRUNCATE`
+
+It also reads a test feis's orders as its organiser, the way the organiser entries view (`getFeisEntries`) does.
 
 Create `supabase/tests/payment_hardening_live_tests.sql`:
 ```sql
 -- payment_hardening_live_tests.sql
--- Parent permission tests for migrations 012–017, with throwaway test identities.
+-- Permission tests for migrations 012–017, with throwaway test identities: what parents, anon and
+-- organisers can do, and the privileges, row-level security and guards that make it so.
 -- Run the whole file as ONE transaction (Supabase MCP apply_migration, or the SQL editor). The last
 -- statement always raises, so nothing is kept (and apply_migration records nothing). Read the result
 -- from the error: "PAYMENT HARDENING LIVE TESTS: <passed>/<total> passed; FAILED: ...".
@@ -8075,7 +9801,8 @@ BEGIN
       'entries', jsonb_build_array(v_entry || jsonb_build_object('competition_id', v_comp)),
       'pricing', jsonb_build_object('breakdown', jsonb_build_object(
         'grand_total_cents', 1500, 'event_fee_cents', 0, 'family_cap_savings_cents', 0)))));
-  INSERT INTO t_ids VALUES ('order', (v_result ->> 'registration_id')::uuid), ('dancer', v_dancer), ('comp', v_comp);
+  INSERT INTO t_ids VALUES ('order', (v_result ->> 'registration_id')::uuid), ('dancer', v_dancer), ('comp', v_comp),
+    ('feis', v_listing);
 END $$;
 
 -- ---------- Reads ----------
@@ -8102,6 +9829,25 @@ DO $$ BEGIN
   PERFORM 1 FROM pre_registration.registrations LIMIT 1;
   PERFORM pg_temp.as_admin(); PERFORM pg_temp.ok('anon cannot read orders', false, 'select succeeded');
 EXCEPTION WHEN OTHERS THEN PERFORM pg_temp.ok('anon cannot read orders', true, SQLERRM); END $$;
+
+-- What the organiser entries view reads (getFeisEntries): the feis's orders, and each entry with its
+-- order, dancer and competition, through 012's organiser policies and 010's dancer policy
+DO $$ DECLARE v_orders int; v_entries int; v_named int; v_competitions int; BEGIN
+  PERFORM pg_temp.as_user('organiser');
+  SELECT count(*) INTO v_orders FROM pre_registration.registrations WHERE feis_listing_id = pg_temp.id('feis');
+  SELECT count(*), count(d.first_name), count(c.id) INTO v_entries, v_named, v_competitions
+  FROM pre_registration.registration_entries e
+  JOIN pre_registration.registrations r ON r.id = e.registration_id
+  LEFT JOIN pre_registration.dancers d ON d.id = e.dancer_id
+  LEFT JOIN pre_registration.feis_competitions c ON c.id = e.feis_competition_id
+  WHERE r.feis_listing_id = pg_temp.id('feis') AND r.status IN ('paid', 'pending_payment', 'draft');
+  PERFORM pg_temp.as_admin();
+  PERFORM pg_temp.ok('the organiser reads the feis''s orders and entries, with dancer names',
+    v_orders = 1 AND v_entries = 1 AND v_named = 1 AND v_competitions = 1,
+    format('orders %s, entries %s, dancer names %s, competitions %s', v_orders, v_entries, v_named, v_competitions));
+EXCEPTION WHEN OTHERS THEN
+  PERFORM pg_temp.ok('the organiser reads the feis''s orders and entries, with dancer names', false, SQLERRM);
+END $$;
 
 -- ---------- Refused writes ----------
 DO $$ BEGIN
@@ -8170,24 +9916,65 @@ DO $$ DECLARE v_policies text; BEGIN
     v_policies);
 END $$;
 
-DO $$ DECLARE v_grants text; BEGIN
-  SELECT string_agg(r.role || ':' || t.tbl || ':' || p.priv, ', ') INTO v_grants
+-- The table ACLs themselves, as the local suite reads them, so a privilege a newer Postgres adds (PG17
+-- MAINTAIN) shows up too. REVOKE only removes the runner's own grants, so this is what really holds.
+DO $$ DECLARE v_acl text; BEGIN
+  SELECT string_agg(c.relname || ':' || CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE a.grantee::regrole::text END
+                    || ':' || a.privilege_type, ', ' ORDER BY c.relname, a.privilege_type) INTO v_acl
+  FROM pg_class c
+  CROSS JOIN LATERAL aclexplode(c.relacl) AS a
+  WHERE c.relnamespace = 'pre_registration'::regnamespace
+    AND c.relname IN ('registrations', 'registration_entries', 'registration_snapshots')
+    AND (a.grantee = 0 OR a.grantee IN ('anon'::regrole, 'authenticated'::regrole));
+  PERFORM pg_temp.ok('PUBLIC and anon hold nothing on the order tables, and authenticated only SELECT', v_acl =
+    'registration_entries:authenticated:SELECT, registration_snapshots:authenticated:SELECT, registrations:authenticated:SELECT',
+    v_acl);
+END $$;
+
+-- has_table_privilege misses column-level grants; has_any_column_privilege sees them
+DO $$ DECLARE v_writes text; BEGIN
+  SELECT string_agg(r.role || ':' || t.tbl || ':' || p.priv, ', ') INTO v_writes
   FROM unnest(ARRAY['anon', 'authenticated']) AS r(role)
   CROSS JOIN unnest(ARRAY['registrations', 'registration_entries', 'registration_snapshots']) AS t(tbl)
-  CROSS JOIN unnest(ARRAY['INSERT', 'UPDATE', 'DELETE', 'TRUNCATE']) AS p(priv)
-  WHERE has_table_privilege(r.role, 'pre_registration.' || t.tbl, p.priv);
-  PERFORM pg_temp.ok('no write privileges for anon or authenticated', v_grants IS NULL, v_grants);
+  CROSS JOIN unnest(ARRAY['INSERT', 'UPDATE']) AS p(priv)
+  WHERE has_any_column_privilege(r.role, 'pre_registration.' || t.tbl, p.priv);
+  PERFORM pg_temp.ok('no INSERT or UPDATE on any column for anon or authenticated', v_writes IS NULL, v_writes);
 END $$;
 
+DO $$ DECLARE v_off text; BEGIN
+  SELECT string_agg(relname, ', ') INTO v_off FROM pg_class
+  WHERE relnamespace = 'pre_registration'::regnamespace
+    AND relname IN ('registrations', 'registration_entries', 'registration_snapshots') AND NOT relrowsecurity;
+  PERFORM pg_temp.ok('row-level security is on for the three order tables', v_off IS NULL, v_off);
+END $$;
+
+DO $$ DECLARE v_truncate text; BEGIN
+  SELECT string_agg(t.tbl, ', ') INTO v_truncate
+  FROM unnest(ARRAY['registrations', 'registration_entries', 'registration_snapshots']) AS t(tbl)
+  WHERE has_table_privilege('service_role', 'pre_registration.' || t.tbl, 'TRUNCATE');
+  PERFORM pg_temp.ok('the service role cannot TRUNCATE the order tables', v_truncate IS NULL, v_truncate);
+END $$;
+
+-- The row guards and the TRUNCATE guards, each on its own table and switched on
 DO $$ DECLARE v_n int; BEGIN
-  SELECT count(*) INTO v_n FROM pg_trigger
-  WHERE tgname IN ('guard_registrations', 'guard_registration_entries', 'guard_registration_snapshots') AND NOT tgisinternal;
-  PERFORM pg_temp.ok('the three guard triggers are installed', v_n = 3, v_n::text);
+  SELECT count(*) INTO v_n
+  FROM (VALUES ('registrations', 'guard_registrations'),
+               ('registration_entries', 'guard_registration_entries'),
+               ('registration_snapshots', 'guard_registration_snapshots'),
+               ('registrations', 'guard_registrations_truncate'),
+               ('registration_entries', 'guard_registration_entries_truncate'),
+               ('registration_snapshots', 'guard_registration_snapshots_truncate')) AS g(tbl, trigger_name)
+  JOIN pg_trigger t ON t.tgrelid = ('pre_registration.' || g.tbl)::regclass AND t.tgname = g.trigger_name
+  WHERE NOT t.tgisinternal AND t.tgenabled IN ('O', 'A');
+  PERFORM pg_temp.ok('the three row guards and the three TRUNCATE guards are installed and on', v_n = 6, v_n::text);
 END $$;
 
-DO $$ DECLARE v_command text; BEGIN
-  SELECT command INTO v_command FROM cron.job WHERE jobname = 'expire-registration-holds';
-  PERFORM pg_temp.ok('hold expiry job names its schema', v_command LIKE '%pre_registration.registrations%', v_command);
+-- 012's hold-expiry job, naming its schema, and no other (002's, if it was scheduled under another name)
+DO $$ DECLARE v_jobs text; v_command text; BEGIN
+  SELECT string_agg(coalesce(jobname, jobid::text), ', ' ORDER BY jobid), min(command) INTO v_jobs, v_command
+  FROM cron.job WHERE command ILIKE '%hold_expires_at%';
+  PERFORM pg_temp.ok('one hold-expiry job, and it names its schema',
+    v_jobs = 'expire-registration-holds' AND v_command LIKE '%pre_registration.registrations%', v_jobs);
 END $$;
 
 -- ---------- Report (always raises, so everything above rolls back) ----------
@@ -8212,7 +9999,7 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
-  await db.drop()
+  await db?.drop()
 })
 
 describe('the live verification script', () => {
@@ -8244,21 +10031,46 @@ Create `supabase/checks/payment-hardening-live-check.sql`:
 ```sql
 -- payment-hardening-live-check.sql: READ ONLY. Run before applying 012–017 (Rollout step 1) and after.
 
--- 1. Policies and grants on the order tables
+-- 1. Who can do what on the three order tables
 SELECT tablename, policyname, cmd, array_to_string(roles, ',') AS roles, qual, with_check
 FROM pg_policies
 WHERE schemaname = 'pre_registration' AND tablename IN ('registrations', 'registration_entries', 'registration_snapshots')
 ORDER BY tablename, policyname;
 
-SELECT grantee, table_name, string_agg(privilege_type, ',' ORDER BY privilege_type) AS privileges
-FROM information_schema.role_table_grants
-WHERE table_schema = 'pre_registration'
-  AND table_name IN ('registrations', 'registration_entries', 'registration_snapshots')
-  AND grantee IN ('anon', 'authenticated')
-GROUP BY grantee, table_name ORDER BY grantee, table_name;
+-- The table ACLs themselves, with who granted each privilege: REVOKE only removes the runner's own grants
+SELECT c.relname AS tbl, CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE a.grantee::regrole::text END AS grantee,
+       a.grantor::regrole AS grantor, string_agg(a.privilege_type, ',' ORDER BY a.privilege_type) AS privileges
+FROM pg_class c
+CROSS JOIN LATERAL aclexplode(c.relacl) AS a
+WHERE c.relnamespace = 'pre_registration'::regnamespace
+  AND c.relname IN ('registrations', 'registration_entries', 'registration_snapshots')
+  AND (a.grantee = 0 OR a.grantee IN ('anon'::regrole, 'authenticated'::regrole, 'service_role'::regrole))
+GROUP BY 1, 2, 3 ORDER BY 1, 2, 3;
 
--- 2. Leftovers from the parked pay-at-the-door work (011)
-SELECT proname FROM pg_proc
+-- Column-level write grants, which the table ACLs above don't show
+SELECT r.role, t.tbl, p.priv
+FROM unnest(ARRAY['anon', 'authenticated']) AS r(role)
+CROSS JOIN unnest(ARRAY['registrations', 'registration_entries', 'registration_snapshots']) AS t(tbl)
+CROSS JOIN unnest(ARRAY['INSERT', 'UPDATE']) AS p(priv)
+WHERE has_any_column_privilege(r.role, 'pre_registration.' || t.tbl, p.priv);
+
+-- Row-level security, whether the service role can TRUNCATE, and every trigger on the three tables
+-- (after 012: the three guards and the three TRUNCATE guards; before it, maybe 011's guard_parent_registration_write)
+SELECT relname, relrowsecurity,
+       has_table_privilege('service_role', oid, 'TRUNCATE') AS service_role_can_truncate
+FROM pg_class
+WHERE relnamespace = 'pre_registration'::regnamespace
+  AND relname IN ('registrations', 'registration_entries', 'registration_snapshots')
+ORDER BY relname;
+SELECT tgrelid::regclass AS tbl, tgname, tgenabled
+FROM pg_trigger
+WHERE NOT tgisinternal
+  AND tgrelid IN ('pre_registration.registrations'::regclass, 'pre_registration.registration_entries'::regclass,
+                  'pre_registration.registration_snapshots'::regclass)
+ORDER BY 1, 2;
+
+-- 2. Leftovers from the parked pay-at-the-door work (011): its functions, status check, columns and orders
+SELECT proname, pg_get_function_identity_arguments(oid) AS args FROM pg_proc
 WHERE pronamespace = 'pre_registration'::regnamespace
   AND proname IN ('confirm_pay_at_door', 'mark_registration_paid', 'guard_parent_registration_write');
 SELECT pg_get_constraintdef(oid) AS status_check FROM pg_constraint WHERE conname = 'registrations_status_check';
@@ -8266,17 +10078,29 @@ SELECT table_name, column_name FROM information_schema.columns
 WHERE table_schema = 'pre_registration'
   AND ((table_name = 'feis_listings' AND column_name = 'allow_pay_at_door')
     OR (table_name = 'registrations' AND column_name = 'payment_method'));
+-- Orders in a status outside 012's state table ('confirmed' comes from 011)
+SELECT status, count(*) FROM pre_registration.registrations
+WHERE status NOT IN ('draft', 'pending_payment', 'paid', 'expired', 'cancelled') GROUP BY status;
+-- Only if the query above it listed registrations.payment_method:
+-- SELECT payment_method, count(*) FROM pre_registration.registrations GROUP BY payment_method;
 
--- 3. Cron jobs, and whether the hold-expiry job has actually been running
+-- 3. Cron jobs. 002's hold-expiry job names no schema, so it may have been failing every minute. 012
+-- replaces the job called 'expire-registration-holds'; any other job listed in the second query is 002's
+-- under another name, and has to be unscheduled when 012 goes live.
 SELECT jobid, jobname, schedule, command, active FROM cron.job ORDER BY jobid;
+SELECT jobid, jobname, command FROM cron.job WHERE command ILIKE '%hold_expires_at%' ORDER BY jobid;
 SELECT j.jobname, d.status, d.return_message, d.start_time
 FROM cron.job_run_details d JOIN cron.job j USING (jobid)
 ORDER BY d.start_time DESC LIMIT 20;
 
--- 4. Orders by status; unpaid orders that 012 will expire
+-- 4. Orders by status; unpaid orders that 012 will expire; paid orders with no snapshot row
 SELECT status, count(*) FROM pre_registration.registrations GROUP BY status ORDER BY status;
 SELECT id, status, created_at, hold_expires_at, stripe_checkout_session_id
 FROM pre_registration.registrations WHERE status IN ('draft', 'pending_payment') ORDER BY created_at;
+-- 012 keeps these as they are (with purchase_snapshot NULL), and nothing can add a snapshot to them later
+SELECT r.id, r.paid_at, r.confirmation_number FROM pre_registration.registrations r
+WHERE r.status = 'paid'
+  AND NOT EXISTS (SELECT 1 FROM pre_registration.registration_snapshots s WHERE s.registration_id = r.id);
 
 -- 5. Duplicates the new unique keys would reject
 SELECT registration_id, count(*) FROM pre_registration.registration_snapshots GROUP BY registration_id HAVING count(*) > 1;
@@ -8294,20 +10118,194 @@ WHERE r.status = 'paid'
 GROUP BY r.id
 HAVING r.total_cents > sum(e.base_fee_cents + e.late_fee_cents + e.day_of_surcharge_cents) + r.event_fee_cents;
 
--- 7. Feiseanna open for registration, and the extensions this work needs
+-- 7. Feiseanna open for registration, the Postgres version, and the extensions this work needs
 SELECT id, name, status, reg_closes_at, stripe_account_id IS NOT NULL AS has_stripe
 FROM pre_registration.feis_listings WHERE status = 'open';
-SELECT extname FROM pg_extension WHERE extname IN ('pg_cron', 'pg_net', 'uuid-ossp');
+SELECT current_setting('server_version') AS postgres_version;
+SELECT extname, extnamespace::regnamespace AS schema FROM pg_extension
+WHERE extname IN ('pg_cron', 'pg_net', 'uuid-ossp', 'pgcrypto');
+
+-- 8. Order columns that 012's guards and 013–017 read but live lacks (none expected; 012 adds
+-- purchase_snapshot and the checkout columns itself)
+SELECT c AS missing_column
+FROM unnest(ARRAY['id', 'feis_listing_id', 'household_id', 'status', 'confirmation_number',
+  'stripe_checkout_session_id', 'stripe_payment_intent_id', 'stripe_charge_id', 'total_cents',
+  'application_fee_cents', 'event_fee_cents', 'is_late', 'consent_accepted_at', 'consent_version',
+  'platform_terms_version', 'consent_ip', 'hold_expires_at', 'created_at', 'updated_at', 'paid_at']) AS c
+WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                  WHERE table_schema = 'pre_registration' AND table_name = 'registrations' AND column_name = c);
 ```
 Run it against live. Use the Supabase connector's `execute_sql`, once it's reconnected to the RunFeis organisation, or Daniel pastes it into the SQL editor. Record the answers. **Stop and ask Daniel** if any of these is true:
 - an order is `confirmed`, or has a `payment_method` (pay at the door was used)
 - any unpaid order belongs to a real family rather than a test account
 - there are duplicate snapshots, payment intents or sessions
 - a paid order's total doesn't match its entries
+- section 8 lists a missing column
+- section 3 shows a hold-expiry job other than `expire-registration-holds`. That is 002's job under another name. It would keep running beside 012's, so Step 7 unschedules it.
 
 Otherwise, carry on. Note whether `cron.job_run_details` shows the old hold-expiry job failing; 012 replaces it either way.
 
-- [ ] **Step 3: Set the Vercel environment variables (ask first)**
+Also read `STRIPE_APPLICATION_FEE_PERCENT` for Production and Preview in Vercel (project "project-f06v2" → Settings → Environment Variables), and record it. Today's Submit reads it with `parseInt`, so `2.9` charges 2%. From Task 7 on, Submit reads it with `parseFloat` and charges the whole percentage, worked out in basis points, so a fractional value raises the platform fee at deploy. If it's fractional, or missing (Submit then uses 5), tell Daniel before Step 7.
+
+- [ ] **Step 3: Rehearse 012–017 on a copy of the live data (ask first)**
+
+The spec's Rollout step 1 asks for a rehearsal on a copy of the live data before 012–017 go live. The script below:
+- reads live once (`pg_dump` and two small `\copy` reads) and writes nothing there
+- restores the copy into a throwaway local Postgres 17, with the tests' Supabase stand-ins
+- applies 012–017 the way `apply_migration` will, one transaction per file
+- compares the orders before and after, and runs the live test script (Step 1) on the copy
+
+Ask Daniel first: it needs the database password, and the copy holds family data. It only ever lives in a temporary folder, which the script deletes when it ends.
+
+Create `supabase/checks/rehearse-on-live-copy.sh`:
+```bash
+#!/usr/bin/env bash
+# rehearse-on-live-copy.sh: applies migrations 012–017 to a copy of the live pre_registration data
+# (spec, Rollout step 1). It reads live once and never writes to it. The copy only ever lives in a
+# temporary folder and a throwaway Postgres 17, and both are deleted when the script ends.
+# Usage: LIVE_DB_URL='<connection string>' supabase/checks/rehearse-on-live-copy.sh
+set -euo pipefail
+
+: "${LIVE_DB_URL:?Set LIVE_DB_URL to the live database connection string}"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+PG="${PG_BIN:-$(brew --prefix postgresql@17)/bin}"
+WORK="$(mktemp -d)"
+cleanup() {
+  "$PG/pg_ctl" -D "$WORK/data" -m immediate stop >/dev/null 2>&1 || true
+  rm -rf "$WORK"
+}
+trap cleanup EXIT
+
+live() { "$PG/psql" "$LIVE_DB_URL" -X -q -v ON_ERROR_STOP=1 "$@"; }
+copy() { PGOPTIONS='-c client_min_messages=warning' "$PG/psql" -h "$WORK" -U postgres -d postgres -X -q -v ON_ERROR_STOP=1 "$@"; }
+value() { copy -At -c "$1"; }
+
+echo '== 1. Copying live (read-only)'
+"$PG/pg_dump" "$LIVE_DB_URL" --schema=pre_registration --no-owner --no-privileges --file="$WORK/dump.sql"
+live -c "\copy (SELECT id, email, aud, role, coalesce(created_at, now()) FROM auth.users) TO '$WORK/users.csv' CSV"
+live -c "\copy (SELECT jobname, schedule, command FROM cron.job) TO '$WORK/cron_jobs.csv' CSV"
+live -At -c "SELECT format('CREATE SCHEMA IF NOT EXISTS %I; CREATE EXTENSION IF NOT EXISTS %I WITH SCHEMA %I;',
+    n.nspname, e.extname, n.nspname)
+  FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace
+  WHERE e.extname IN ('uuid-ossp', 'pgcrypto')" > "$WORK/extensions.sql"
+
+echo '== 2. Restoring it into a throwaway Postgres'
+"$PG/initdb" -D "$WORK/data" -U postgres --auth=trust --encoding=UTF8 --locale=C >/dev/null
+"$PG/pg_ctl" -D "$WORK/data" -w -l "$WORK/server.log" \
+  -o "-c listen_addresses='' -c unix_socket_directories='$WORK' -c timezone=UTC -c fsync=off -c wal_level=logical" \
+  start >/dev/null
+# The tests' Supabase stand-ins: the API roles, auth.users and auth.uid(), pg_cron's job table, and the
+# pre_registration schema with Supabase's default grants on everything created in it
+copy -f "$ROOT/tests/db/sql/supabase-standins.sql"
+copy <<'SQL'
+-- More of Supabase that a dump of pre_registration may refer to
+CREATE FUNCTION auth.role() RETURNS text LANGUAGE sql STABLE
+  AS $$ SELECT nullif(current_setting('request.jwt.claims', true), '')::json ->> 'role' $$;
+CREATE FUNCTION auth.email() RETURNS text LANGUAGE sql STABLE
+  AS $$ SELECT nullif(current_setting('request.jwt.claims', true), '')::json ->> 'email' $$;
+CREATE FUNCTION auth.jwt() RETURNS jsonb LANGUAGE sql STABLE
+  AS $$ SELECT coalesce(nullif(current_setting('request.jwt.claims', true), ''), '{}')::jsonb $$;
+CREATE PUBLICATION supabase_realtime;
+SQL
+copy -f "$WORK/extensions.sql"
+copy -c "\copy auth.users (id, email, aud, role, created_at) FROM '$WORK/users.csv' CSV"
+# The stand-ins have made the schema already
+sed 's/^CREATE SCHEMA pre_registration;$/CREATE SCHEMA IF NOT EXISTS pre_registration;/' "$WORK/dump.sql" > "$WORK/restore.sql"
+copy -f "$WORK/restore.sql" >/dev/null
+copy -c "\copy cron.job (jobname, schedule, command) FROM '$WORK/cron_jobs.csv' CSV"
+
+PAID="SELECT count(*) || ' paid, fingerprint ' || md5(coalesce(string_agg(concat_ws('|', id, household_id,
+    feis_listing_id, total_cents, application_fee_cents, event_fee_cents, confirmation_number,
+    stripe_checkout_session_id, stripe_payment_intent_id, stripe_charge_id, paid_at), ',' ORDER BY id), ''))
+  FROM pre_registration.registrations WHERE status = 'paid'"
+PAID_NO_SNAPSHOT_ROW="SELECT count(*) FROM pre_registration.registrations r WHERE r.status = 'paid'
+  AND NOT EXISTS (SELECT 1 FROM pre_registration.registration_snapshots s WHERE s.registration_id = r.id)"
+UNPAID="SELECT count(*) FROM pre_registration.registrations WHERE status IN ('draft', 'pending_payment')"
+EXPIRED="SELECT count(*) FROM pre_registration.registrations WHERE status = 'expired'"
+CONFIRMED="SELECT count(*) FROM pre_registration.registrations WHERE status = 'confirmed'"
+LEFTOVERS="SELECT coalesce(string_agg(proname, ', ' ORDER BY proname), 'none') FROM pg_proc
+  WHERE pronamespace = 'pre_registration'::regnamespace
+    AND proname IN ('confirm_pay_at_door', 'mark_registration_paid', 'guard_parent_registration_write')"
+HOLD_JOBS="SELECT coalesce(string_agg(coalesce(jobname, jobid::text) || ': ' || regexp_replace(command, '\s+', ' ', 'g'),
+    ' | ' ORDER BY jobid), 'none')
+  FROM cron.job WHERE command ILIKE '%hold_expires_at%'"
+
+report() {
+  echo "   orders by status:       $(value "SELECT coalesce(string_agg(status || ' ' || n, ', ' ORDER BY status), 'none')
+    FROM (SELECT status, count(*) AS n FROM pre_registration.registrations GROUP BY status) s")"
+  echo "   paid orders:            $(value "$PAID")"
+  echo "   paid, no snapshot row:  $(value "$PAID_NO_SNAPSHOT_ROW")"
+  echo "   unpaid orders:          $(value "$UNPAID")"
+  echo "   'confirmed' orders:     $(value "$CONFIRMED")"
+  echo "   status check:           $(value "SELECT coalesce(pg_get_constraintdef(oid), 'none') FROM pg_constraint
+    WHERE conname = 'registrations_status_check'")"
+  echo "   011 functions:          $(value "$LEFTOVERS")"
+  echo "   triggers on orders:     $(value "SELECT coalesce(string_agg(tgname, ', ' ORDER BY tgname), 'none') FROM pg_trigger
+    WHERE tgrelid = 'pre_registration.registrations'::regclass AND NOT tgisinternal")"
+  echo "   hold-expiry jobs:       $(value "$HOLD_JOBS")"
+}
+
+echo '== 3. Before 012–017'
+report
+paid_before="$(value "$PAID")"
+paid_no_row_before="$(value "$PAID_NO_SNAPSHOT_ROW")"
+expired_expected=$(( $(value "$EXPIRED") + $(value "$UNPAID") ))
+
+echo '== 4. Applying 012–017, one transaction per file, as apply_migration does'
+for file in "$ROOT"/supabase/migrations/01[2-7]_*.sql; do
+  echo "   $(basename "$file")"
+  copy --single-transaction -f "$file" >/dev/null
+done
+
+echo '== 5. After'
+report
+failures=()
+[[ "$(value "$PAID")" == "$paid_before" ]] || failures+=('paid orders changed')
+[[ "$(value "$PAID_NO_SNAPSHOT_ROW")" == "$paid_no_row_before" ]] || failures+=('paid orders without a snapshot row changed')
+[[ "$(value "$UNPAID")" == 0 ]] || failures+=('unpaid orders remain')
+[[ "$(value "$EXPIRED")" == "$expired_expected" ]] || failures+=('not every legacy unpaid order expired')
+[[ "$(value "$LEFTOVERS")" == none ]] || failures+=('011 functions remain')
+[[ "$(value "$CONFIRMED")" == 0 ]] || failures+=("'confirmed' orders exist: 012 freezes them; ask Daniel")
+[[ "$(value "$HOLD_JOBS")" == 'expire-registration-holds: '*'pre_registration.registrations'* &&
+   "$(value "SELECT count(*) FROM cron.job WHERE command ILIKE '%hold_expires_at%'")" == 1 ]] ||
+  failures+=("the hold-expiry jobs are not exactly 012's one")
+
+echo '== 6. The live test script, on the copy'
+if output="$(copy --single-transaction -f "$ROOT/supabase/tests/payment_hardening_live_tests.sql" 2>&1)"; then
+  failures+=('the live test script finished without its report')
+else
+  result="$(printf '%s\n' "$output" | grep -o 'PAYMENT HARDENING LIVE TESTS: .*' || true)"
+  echo "${result:-$output}"
+  pattern='^PAYMENT HARDENING LIVE TESTS: ([0-9]+)/([0-9]+) passed; FAILED: none$'
+  if [[ "$result" =~ $pattern ]] && [[ "${BASH_REMATCH[1]}" == "${BASH_REMATCH[2]}" ]]; then
+    :
+  else
+    failures+=('the live tests failed')
+  fi
+fi
+
+if (( ${#failures[@]} > 0 )); then
+  printf 'REHEARSAL FAILED: %s\n' "${failures[@]}"
+  exit 1
+fi
+echo 'REHEARSAL PASSED'
+```
+Run it. Daniel pastes the connection string (Dashboard → Connect → Session pooler, with the database password). `read -s` keeps it off the screen and out of the shell history:
+```bash
+cd ~/FEISSTAB-PRE-REG && chmod +x supabase/checks/rehearse-on-live-copy.sh
+read -rs LIVE_DB_URL && export LIVE_DB_URL && supabase/checks/rehearse-on-live-copy.sh; unset LIVE_DB_URL
+```
+Expected: the last two lines are `PAYMENT HARDENING LIVE TESTS: N/N passed; FAILED: none` and `REHEARSAL PASSED`. The before and after reports cover each kind of order and leftover that live may hold:
+- **Unpaid orders from before purchase snapshots** (`draft` and `pending_payment`): after, none is unpaid, and each one is `expired`.
+- **Paid orders, which keep `purchase_snapshot = NULL`:** their fingerprint is the same before and after, and so is the number of paid orders with no `registration_snapshots` row. Nothing can add a snapshot to those later; Launch keeps reading their live data.
+- **Leftovers from 011:** after, `confirm_pay_at_door`, `mark_registration_paid` and the `guard_parent_registration_write` trigger and function are gone. A status check that still allows `'confirmed'` does no harm once 012 is on, because its guard never lets an order move into or out of `'confirmed'`. Tidying that check is a later migration (019 or above), not part of this rollout.
+- **Hold-expiry jobs:** after, exactly one, `expire-registration-holds`, naming `pre_registration.registrations`.
+
+**Stop and ask Daniel** if the script prints `REHEARSAL FAILED`, or the restore or a migration stops with an error.
+- A `'confirmed'` order fails the rehearsal on purpose. 012 freezes it: it can never change status again, and it still counts as active in `idx_registrations_active_unique`, so that family's next Submit fails. Decide what to do with it before Step 7.
+- If the restore stops on a Supabase object the stand-ins lack (a function in `auth`, say), add a stand-in for it to the script's prelude and run it again. Never edit the copied data.
+
+- [ ] **Step 4: Set the Vercel environment variables (ask first)**
 
 For project "project-f06v2" (team cgds-projects), add these to Production and Preview:
 - `SUPABASE_SERVICE_ROLE_KEY`
@@ -8316,21 +10314,26 @@ For project "project-f06v2" (team cgds-projects), add these to Production and Pr
 
 Use the Vercel connector once it's reconnected to that team, or Daniel adds them in the dashboard. `RESEND_API_KEY`, `EMAIL_FROM`, `STRIPE_SECRET_KEY` and `STRIPE_CONNECT_WEBHOOK_SECRET` come with the email and real-Stripe work. Until they are set, emails wait and Pay reports that payment couldn't start.
 
-- [ ] **Step 4: Run the full local suite one last time**
+- [ ] **Step 5: Run the full local suite one last time**
 
 Run: `npm test && npm run test:db && npm run build`
 Expected: all pass.
 
-- [ ] **Step 5: Get a whole-branch review**
+- [ ] **Step 6: Get a whole-branch review**
 
-Have a fresh reviewer check `git diff main...payment-hardening` against the spec. Fix what it finds, re-run Step 4, and commit.
+Have a fresh reviewer check `git diff main...payment-hardening` against the spec. Fix what it finds, re-run Step 5, and commit.
 
-- [ ] **Step 6: Apply 012–017 live, then deploy straight away (ask first)**
+- [ ] **Step 7: Apply 012–017 live, then deploy straight away (ask first)**
 
-1. Apply `012_order_integrity.sql` through `017_payments_admin.sql`, in order: with `apply_migration` (one call per file) or in the SQL editor.
+1. Apply `012_order_integrity.sql` through `017_payments_admin.sql`, in order: with `apply_migration` (one call per file) or in the SQL editor. If Step 2 found 002's hold-expiry job under another name, unschedule it straight after 012, with `SELECT cron.unschedule(<that job's jobid>);`.
 2. Straight after, merge `payment-hardening` into `main` and push. Vercel deploys `main`. The old code can't write under the new permissions, so do these back to back, at a quiet time.
 
-- [ ] **Step 7: Schedule the email job (ask first)**
+**Rollback.** There is no down-migration, and before real registrations none is needed:
+- `apply_migration` runs each file as one transaction, so a file that fails changes nothing. Fix it and apply it again: 012–017 can all be re-run.
+- Once 012 is live, the old app can't write orders, so rolling Vercel back to an older deployment doesn't reopen registration. Roll forward with a fixed deploy instead, and close registration on any open feis until it's out.
+- 012's only change to existing data is expiring the unpaid test orders that Step 2 listed. They stay expired.
+
+- [ ] **Step 8: Schedule the email job (ask first)**
 
 Run the SQL in `docs/runbooks/payment-exceptions.md` §5 with the production URL and `NOTIFICATIONS_CRON_SECRET`. Then check it runs:
 ```sql
@@ -8339,30 +10342,42 @@ WHERE j.jobname = 'process-notifications' ORDER BY start_time DESC LIMIT 3;
 ```
 Expected: `succeeded`. The endpoint answers `{"paused":true,...}` until email is configured.
 
-- [ ] **Step 8: Verify live**
+- [ ] **Step 9: Verify live**
 
 Run `supabase/tests/payment_hardening_live_tests.sql` as one transaction (`apply_migration` or the SQL editor).
 Expected error text: `PAYMENT HARDENING LIVE TESTS: N/N passed; FAILED: none`.
 
-Re-run the live check (Step 2). Section 1 should now show only the six read-only policies and no write grants, and section 3 the schema-qualified hold-expiry job.
+Re-run the live check (Step 2). Section 1 should now show:
+- only the six read-only policies
+- `SELECT` for `authenticated`, and nothing for `PUBLIC` or `anon`
+- no column-level writes, and row-level security on
+- `service_role_can_truncate` false on all three tables
+- the three guard triggers and the three `TRUNCATE` guards, all enabled (`O`)
 
-- [ ] **Step 9: Record the results in the spec and commit**
+Section 3 should show the schema-qualified hold-expiry job and no other.
+
+Then check the organiser entries view on the deployed site. Sign in as the organiser of a feis that has paid orders, and open its Entries tab: the entries show, with dancer names and competitor numbers. If no feis has paid orders yet, the live test script's organiser check stands in for this; record which one you used.
+
+- [ ] **Step 10: Record the results in the spec and commit**
 
 Append to the "Rollout" section of `docs/2026-10-16-payment-hardening-design.md`:
 ```markdown
 ### Live verification (YYYY-MM-DD)
 - Live check before: <summary of anything found and how it was handled>
+- Rehearsal on a copy of the live data: <REHEARSAL PASSED, and the before and after counts>
+- STRIPE_APPLICATION_FEE_PERCENT: <the value in Production and Preview>
 - Migrations 012–017 applied: <time>; deployed commit <sha>
 - Live tests: <N>/<N> passed
+- Organiser entries view: <checked on the site, or covered by the live test script>
 - Email job: scheduled, last run <status>
 - Still to do: the Stripe test-mode end-to-end run, together with the real Stripe setup
 ```
 ```bash
-git add docs/2026-10-16-payment-hardening-design.md supabase/checks/payment-hardening-live-check.sql supabase/tests/payment_hardening_live_tests.sql tests/db/live-script.test.ts
+git add docs/2026-10-16-payment-hardening-design.md supabase/checks/payment-hardening-live-check.sql supabase/checks/rehearse-on-live-copy.sh supabase/tests/payment_hardening_live_tests.sql tests/db/live-script.test.ts
 git commit -m "test: live verification for payment hardening, and the results"
 ```
 
-- [ ] **Step 10: End to end in Stripe test mode (with the real Stripe setup)**
+- [ ] **Step 11: End to end in Stripe test mode (with the real Stripe setup)**
 
 Once Stripe test keys and a connected test account exist, run each of these on a preview deployment and check that the order ends in the state shown:
 

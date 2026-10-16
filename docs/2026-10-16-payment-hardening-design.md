@@ -1,7 +1,7 @@
 # Payment Hardening
 
 **Date:** 2026-10-16
-**Status:** Revision 3, the implementation baseline. Revision 2 answered the review of revision 1. Revision 3 makes the three payment-correctness fixes and the clarifications from the review of revision 2 (see "Changes in Revision 3"). The implementation plan is `docs/2026-10-16-payment-hardening.md`.
+**Status:** Revision 4, the implementation baseline: revision 3 plus what building Tasks 1–4 settled (see "Changes in Revision 4"). Revision 2 answered the review of revision 1. Revision 3 makes the three payment-correctness fixes and the clarifications from the review of revision 2 (see "Changes in Revision 3"). The implementation plan is `docs/2026-10-16-payment-hardening.md`.
 **Goal:**
 - An order counts as paid only when three things are true:
   - The right amount reached the Stripe account the order was bound to.
@@ -10,6 +10,22 @@
 - Every family who is charged ends up either confirmed or in a recorded review case with a reference number. Nobody is charged and forgotten.
 
 ---
+
+## Changes in Revision 4
+
+Building and reviewing Tasks 1–4 settled these. None of them changes the design. Each one tightens a rule the design already states, or records a decision.
+
+| Change | Where |
+|---|---|
+| Every privilege on the order tables is revoked from `PUBLIC`, `anon` and `authenticated` before `SELECT` is granted back. 012 turns row-level security on itself. `TRUNCATE` is refused for every role | §2 |
+| A checkout claim is all-or-nothing and never null. An unpaid order always has a hold. Moving to `paid` or `pending_payment` needs payment evidence. Entries and snapshots can only be written in the transaction that creates or pays the order | §3 |
+| Submit judges eligibility against every competition of the feis, with 1 January of the feis year as the fallback age cutoff, exactly as the entry page does | §4 |
+| The purchase snapshot also freezes each competition's labels, age bounds and flags, and the feis's own terms link. The application fee is worked out in whole basis points | §4 |
+| The consent and terms versions name the documents the parent actually accepts | §4, Decision 6 |
+| The confirmation number uses the year in Eastern time | §9 |
+| The confirmation email keeps the competitor numbers and competition codes that the redesigned email shows | §12 |
+| The live check also covers row-level security, column grants, `TRUNCATE` and 011's `confirmed` status. 012–017 are rehearsed on a copy of the live data first | Rollout |
+| The registration UI is now a single entry page (the redesign on `main`), not a wizard | §3 |
 
 ## Changes in Revision 3
 
@@ -151,11 +167,14 @@ TypeScript makes the Stripe and Resend calls between these functions, and calls 
 ### 2. Database permissions
 
 **The three order tables** (registrations, entries and snapshots):
-- Migration `012_order_integrity.sql` drops every existing policy on them. This work ships as migrations 012–017, split by concern; see the implementation plan. It loops over `pg_policies`, so a policy applied by hand can't survive.
+- Migration `012_order_integrity.sql` drops every existing policy on them. This work ships as migrations 012–017, split by concern; see the implementation plan. Migration 018 belongs to the separate schools work, so any extra migration starts at 019. It loops over `pg_policies`, so a policy applied by hand can't survive.
 - It then creates exactly two policies on each:
   - parent `SELECT` on their own household's rows (`auth_household_id()`)
   - organiser `SELECT` for their own feiseanna
-- `INSERT`, `UPDATE` and `DELETE` are revoked from `anon` and `authenticated`.
+- Every privilege is revoked from `PUBLIC`, `anon` and `authenticated`, and `authenticated` gets `SELECT` back. On Postgres 17 a list of named privileges would leave `MAINTAIN`, which can lock the table.
+- 012 turns row-level security on for the three tables itself, instead of trusting earlier migrations, because the live database was migrated by hand.
+- `TRUNCATE` is revoked from the service role and refused by a trigger for every role, so it can't get around the delete rules.
+- **Open question (decide before launch):** organisers can read every column of their feis's orders, including `consent_ip` and `checkout_config`. Hiding those needs column grants or a view.
 
 **The new tables** (`payment_exceptions`, `notifications` and `admin_actions`):
 - They have no policies for `anon` or `authenticated`, and get the same revokes. Only the service role and the functions can use them.
@@ -172,18 +191,20 @@ Once `create_order` commits, the order's contents are fixed for good, even while
 - its consent record
 - its household and feis
 
-Changing anything means cancelling and starting a new order. The wizard can pre-fill the new one.
+Changing anything means cancelling and starting a new order. The entry page can pre-fill the new one.
 
 Triggers enforce this for every role, including the service role:
 - **Entries:**
-  - An insert is allowed only inside `create_order`, for the order it is creating. The function sets a transaction-local marker that the trigger checks.
+  - An insert is allowed only inside `create_order`, for the order it is creating. The function sets a transaction-local marker that the trigger checks, and the order must have been created in that same transaction.
   - Updates and deletes are always refused.
 - **Orders:**
   - A delete is always refused.
   - Amounts, `purchase_snapshot`, consent, household and feis never change after insert.
-  - `checkout_claim_id` and `checkout_config` can be set once, from null.
-  - `stripe_checkout_session_id` can be set once.
-- **Snapshots:** updates and deletes are refused.
+  - A checkout claim is all-or-nothing. `checkout_claim_id`, `checkout_config`, `checkout_claimed_at` and `checkout_expires_at` are set together, once, from null, and none of them can be null afterwards. Before the claim, they all stay null.
+  - An unpaid order (`draft` or `pending_payment`) always has a hold, so the expiry job can always end it.
+  - `stripe_checkout_session_id` can be set once, and only on a claimed order.
+  - Moving into `paid` needs the claim, the session, `paid_at` and the confirmation number. Moving into `pending_payment` needs the claim and the session.
+- **Snapshots:** an insert is allowed only at confirmation, for an order marked paid in that same transaction. Updates and deletes are refused.
 - **Status:** a change must follow this table.
 
 | From | To | Made by |
@@ -210,16 +231,18 @@ Triggers enforce this for every role, including the service role:
    - There's at least one entry, with no duplicate pairs.
    - Every dancer belongs to this household and is active.
    - Every competition belongs to this feis and is enabled.
-   - Every (dancer, competition) pair passes `getEligibleCompetitions`, using the listing's `age_cutoff_date` and `syllabus_snapshot.levels`, the same as the cart.
+   - Every (dancer, competition) pair passes `getEligibleCompetitions`, judged against every competition of the feis so that a dancer stays in their own age group. It uses the listing's `age_cutoff_date` (or 1 January of the feis year when none is set) and `syllabus_snapshot.levels`, exactly as the entry page does.
 4. Price with `calculateFees`, then build `purchase_snapshot` with `buildPurchaseSnapshot` (pure). The snapshot holds:
    - **Each dancer:** ID, names, school, TCRG name, date of birth, gender, championship status, dance levels, and competition age at the cutoff.
-   - **Each competition:** ID, display code, display name, age group, level, dance, type, championship key, fee category and fee.
+   - **Each competition:** ID, display code, display name, age group with its label and age bounds, level and dance with their labels, type, championship key, the grades-only and family-cap flags, fee category and fee.
    - **Each entry:** dancer, competition, and its base, late and day-of fees.
    - **Pricing:** the fee schedule as used, the full breakdown, and `priced_at`.
-   - **Rules:** the age cutoff, the syllabus levels, the consent and terms versions, and the `PRICING_VERSION` and `ELIGIBILITY_VERSION` constants.
+   - **Rules:** the age cutoff, the syllabus levels, the consent and terms versions, the feis's own terms link, and the `PRICING_VERSION` and `ELIGIBILITY_VERSION` constants.
 
    Dance selections, such as a championship set piece, aren't collected yet. When they are, they go in the snapshot too.
-5. Record consent on the server. The browser sends only `consentAccepted: true`. The server sets the time and reads the IP from the request headers.
+
+   The application fee is `STRIPE_APPLICATION_FEE_PERCENT` of the total, worked out in whole basis points and rounded to the cent. If the percentage is missing or out of range, Submit stops instead of pricing the order wrongly.
+5. Record consent on the server. The browser sends only `consentAccepted: true`. The server sets the time and reads the IP from the request headers. The consent version names the checkbox wording, and the platform terms version names the RunFeis terms and privacy pages. Each changes in the same commit as the wording or page it names.
 
 **In the database:** `create_order(household_id, feis_listing_id, order jsonb)` runs as one transaction:
 1. Take the household-and-feis lock.
@@ -358,7 +381,7 @@ It runs as one transaction:
 5. **Any failed check** records a case (§10) and returns its reference. The order is left exactly as it was.
 6. **Otherwise, all of these happen together, or none of them do:**
    - The status becomes `paid`, the session is attached if it wasn't, and the order records `paid_at`, the payment intent and the charge ID. `hold_expires_at` is cleared.
-   - A confirmation number is assigned, in the form `RF-2026-7KQ2M`. Older orders keep their `FT-` numbers.
+   - A confirmation number is assigned, in the form `RF-2026-7KQ2M`, using the year in Eastern time. Older orders keep their `FT-` numbers.
    - The snapshot is written, built from `purchase_snapshot` plus the payment details. Snapshots have `UNIQUE (registration_id)` and are immutable.
    - Competitor numbers are assigned with `_assign_numbers_for_registration`.
    - The confirmation email is queued with key `confirmation:<order id>`. The recipient is frozen from `auth.users` now.
@@ -446,6 +469,8 @@ Resolutions are allowed by reason. No function marks an order paid by skipping c
 - **Recipient:** a confirmation's recipient is frozen when the row is created, inside the confirmation transaction. An alert's recipients come from `PAYMENTS_ALERT_EMAIL` and are frozen on the worker's first claim.
 - **Message:** the worker renders the message on its first claim and saves it. Every later attempt sends the saved version.
 
+**Confirmation email content:** the confirmation keeps what today's email shows, each dancer's competitor number and competition codes, built with the tested `renderConfirmationEmail()`.
+
 **Worker claims:** `claim_notifications(limit)` gives each claimed row a new `claim_token`. A row can be claimed when:
 - it's `pending` and due, or
 - it's `sending` with a claim more than 10 minutes old (from a worker that crashed).
@@ -518,7 +543,7 @@ The agreed model is one purchase per order record. The November work must meet t
 ### Database and concurrency tests
 
 These run on Vitest, using node-postgres (`pg`, added as a dev dependency), against a temporary Postgres 17:
-- Global setup runs `initdb` into a temporary folder and starts the server on a free port.
+- Global setup runs `initdb` into a temporary folder and starts the server on a free port, in UTC like Supabase.
 - It applies stand-ins for Supabase's `auth` schema, roles and `cron`, then every migration up to 017.
 - Teardown stops the server and deletes the folder. Nothing keeps running.
 - The command is `npm run test:db`.
@@ -536,7 +561,7 @@ These run on Vitest, using node-postgres (`pg`, added as a dev dependency), agai
 
   After each refused write, the rows are unchanged.
 - The effective policies equal the expected list exactly.
-- `anon` and `authenticated` hold no write privileges.
+- `anon` and `authenticated` hold no write privileges, including column-level grants. Row-level security is on, and `TRUNCATE` is refused for every role.
 - `payments_admin` isn't reachable by `anon`, `authenticated` or `service_role`.
 
 **Immutability:**
@@ -610,8 +635,11 @@ This runs with the real Stripe setup, using test keys and a connected test accou
    - any duplicate snapshots or duplicate payment intents
    - the number of orders by status
    - unpaid orders without `purchase_snapshot`
+   - row-level security, column-level grants and `TRUNCATE` on the three order tables
+   - any `confirmed` orders, or a status check that allows them (from 011)
+   - the live `STRIPE_APPLICATION_FEE_PERCENT` value
 
-   Adjust the migrations to what's there. If the 011 trigger or functions exist, 012 removes them. Duplicates are resolved before the unique keys are added.
+   Adjust the migrations to what's there. If the 011 trigger or functions exist, 012 removes them. Duplicates are resolved before the unique keys are added. Then rehearse 012–017 on a copy of the live data before applying them for real.
 2. **Existing orders.**
    - Unpaid orders (`draft` and `pending_payment`) can't have a `purchase_snapshot`, because the column is new. Step 1 confirms that no feis has taken real registrations and that none of these orders has an open Stripe session; with Stripe still simulated, none can. 012 then expires them.
    - Paid orders keep `purchase_snapshot = NULL`. No purchase record is made up for them, and Launch keeps reading live data for those orders.
@@ -623,8 +651,8 @@ This runs with the real Stripe setup, using test keys and a connected test accou
    - `NOTIFICATIONS_CRON_SECRET`
 
    The Stripe and Resend keys come with their own items.
-5. **Apply 012–017, deploy straight after, then schedule the notification job.** The old code can't write under the new permissions, so the migration and the deploy go out together.
-6. **Run the live verification** and record the result here.
+5. **Apply 012–017, deploy straight after, then schedule the notification job.** The old code can't write under the new permissions, so the migration and the deploy go out together. If the deploy fails, registration stays shut until a fixed deploy goes out. There are no real registrations yet, so there's nothing to roll back.
+6. **Run the live verification** and record the result here. It includes checking that the organiser entries view works under the new policies.
 
 ---
 
@@ -635,6 +663,7 @@ This runs with the real Stripe setup, using test keys and a connected test accou
 3. **Cards only:** cards, Apple Pay and Google Pay. No bank debits for now.
 4. **Retry schedule:** pg_cron with pg_net, every 5 minutes.
 5. **Deadline policy (proposed in revision 2; Daniel or Steve may change it):** a submitted order can be paid within its hold even if the deadline passes. When the organiser closes registration, new checkouts stop.
+6. **Consent record:** each order records the consent checkbox wording (`consent-2026-10-16`), the RunFeis terms and privacy pages (`runfeis-terms-2026-10-16/privacy-2026-10-16`), and the feis's own terms link. Bump the versions whenever the wording or pages change.
 
 ## Dependencies
 
