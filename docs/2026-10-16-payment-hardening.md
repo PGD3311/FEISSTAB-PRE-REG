@@ -7321,12 +7321,13 @@ In `src/components/registration/entry-page.tsx`, replace everything from `async 
         setOrderBreakdown(order.breakdown)
         setEditingId(null)
         // Submit priced the order afresh. If that isn't the total the Pay button showed (a late
-        // tier started while the page was open), the held order and its receipt keep Submit's
-        // price, and the family presses Pay again to pay it
+        // tier started, or the organiser changed a fee, while the page was open), the held order
+        // and its receipt keep Submit's price, and the family presses Pay again to pay it
         if (order.totalCents !== totalCents) {
           setError(
-            `Your total is now ${formatCents(order.totalCents)} because late fees have started. ` +
-              'Press Pay to continue.'
+            `Your total is now ${formatCents(order.totalCents)}. ` +
+              'Fees changed since you opened this page (for example, late fees started). ' +
+              'Check the receipt, then press Pay to continue.'
           )
           return
         }
