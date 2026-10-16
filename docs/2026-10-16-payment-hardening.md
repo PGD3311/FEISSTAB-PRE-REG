@@ -7320,6 +7320,16 @@ In `src/components/registration/entry-page.tsx`, replace everything from `async 
         setHoldExpiresAt(order.holdExpiresAt)
         setOrderBreakdown(order.breakdown)
         setEditingId(null)
+        // Submit priced the order afresh. If that isn't the total the Pay button showed (a late
+        // tier started while the page was open), the held order and its receipt keep Submit's
+        // price, and the family presses Pay again to pay it
+        if (order.totalCents !== totalCents) {
+          setError(
+            `Your total is now ${formatCents(order.totalCents)} because late fees have started. ` +
+              'Press Pay to continue.'
+          )
+          return
+        }
       }
 
       const payment = await createCheckoutSession(regId)
@@ -7382,6 +7392,8 @@ In `src/components/registration/entry-page.tsx`, replace everything from `async 
     }
   }
 ```
+The page's price is worked out when the cart changes, so if the order Submit creates costs something other than the total the Pay button showed (a late tier started while the page was open), Pay keeps the held order, shows the new total and stops, and the next press, which has an order id, goes straight to Pay: no family reaches Stripe at a price they weren't shown.
+
 How each answer is handled:
 - **`review`** goes to the success page, because Stripe has the money. That page shows message A, with the reference, for a recorded case, or message C while confirmation is still unfinished. On the entry page, the family would see a Pay button next to "Please don't pay again".
 - **`try_again`** stays on the entry page. Its message is either "Payment is taking a moment to start" or message C.
