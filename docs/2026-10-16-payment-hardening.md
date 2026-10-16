@@ -45,6 +45,10 @@
   - a 60-minute checkout window
   - a hold of the window plus 15 minutes
   - idempotency key `checkout:<order id>:<claim id>`
+- **Checkout attempts:**
+  - Pay sends no create request more than 5 minutes after a claim.
+  - A claim counts as never having produced a session only when Stripe has nothing for it and the claim is more than 10 minutes old.
+  - A Stripe error never decides that on its own.
 - **Reference formats:**
   - confirmation numbers look like `RF-YYYY-XXXXX`
   - support references look like `PAY-XXXXX`
@@ -61,7 +65,7 @@
 These five inputs aren't covered by the spec's own tests, but they're the ones most likely to bite real users. Each has a test pinned in the task that owns the code.
 
 1. **An organiser's own Stripe sales.** Their unrelated `checkout.session.*` events arrive at our Connect webhook with no `registration_id`. They must be ignored quietly: no case, no alert. *(Task 11)*
-2. **A `session_id` in the success-page URL that isn't this order's,** from a copied link or another order. The sync must ignore it, so it can neither create a case nor confirm anything. *(Task 11)*
+2. **A `session_id` in the success-page URL that isn't this order's,** from a copied link or another order. The sync never uses the URL's session id: it finds the order's own session by its claim. So another order's payment can neither create a case nor confirm anything. *(Task 10)*
 3. **Line items Stripe can't take.** A family max that makes the total smaller than the line items must become one capped line. A zero-fee competition must not become a zero-amount line. *(Task 5)*
 4. **A birthday on the age-cutoff date** (1 January). The frozen competition age must match the cart: the older age, as the engine does today. *(Task 4)*
 5. **Names with HTML characters** (`<`, `&`, quotes) in dancer, school or feis names. They must be escaped in every email. *(Task 13)*
@@ -665,7 +669,7 @@ git commit -m "feat: registration transitions for late and claim-matched payment
 **Interfaces:**
 - Consumes: `asRole`, `asParent`, `asService`, `refused` and `createTestDatabase` (Task 1), and `REGISTRATION_TRANSITIONS` (Task 2).
 - Produces:
-  - **Columns:** `registrations.purchase_snapshot jsonb`, `checkout_claim_id uuid`, `checkout_config jsonb` and `checkout_expires_at timestamptz`.
+  - **Columns:** `registrations.purchase_snapshot jsonb`, `checkout_claim_id uuid`, `checkout_config jsonb`, `checkout_claimed_at timestamptz` and `checkout_expires_at timestamptz`.
   - **SQL:** `registration_transition_allowed(text, text) → boolean`.
   - **Markers.** Transaction-local settings that the triggers trust:
     - `pre_registration.creating_order`: the order ID being created, for inserting orders and entries
@@ -1096,6 +1100,7 @@ ALTER TABLE registrations
   ADD COLUMN IF NOT EXISTS purchase_snapshot jsonb,
   ADD COLUMN IF NOT EXISTS checkout_claim_id uuid,
   ADD COLUMN IF NOT EXISTS checkout_config jsonb,
+  ADD COLUMN IF NOT EXISTS checkout_claimed_at timestamptz,
   ADD COLUMN IF NOT EXISTS checkout_expires_at timestamptz;
 
 -- ─── Unpaid orders from before purchase snapshots existed ───
@@ -1197,7 +1202,7 @@ BEGIN
       RAISE EXCEPTION 'orders can only be created by create_order' USING ERRCODE = '42501';
     END IF;
     IF NEW.status <> 'draft'
-       OR NEW.checkout_claim_id IS NOT NULL OR NEW.checkout_config IS NOT NULL
+       OR NEW.checkout_claim_id IS NOT NULL OR NEW.checkout_config IS NOT NULL OR NEW.checkout_claimed_at IS NOT NULL
        OR NEW.stripe_checkout_session_id IS NOT NULL OR NEW.stripe_payment_intent_id IS NOT NULL
        OR NEW.confirmation_number IS NOT NULL OR NEW.paid_at IS NOT NULL THEN
       RAISE EXCEPTION 'a new order starts as an unpaid draft' USING ERRCODE = '42501';
@@ -1216,8 +1221,8 @@ BEGIN
   END IF;
 
   IF OLD.checkout_claim_id IS NOT NULL
-     AND (NEW.checkout_claim_id, NEW.checkout_config, NEW.checkout_expires_at)
-         IS DISTINCT FROM (OLD.checkout_claim_id, OLD.checkout_config, OLD.checkout_expires_at) THEN
+     AND (NEW.checkout_claim_id, NEW.checkout_config, NEW.checkout_claimed_at, NEW.checkout_expires_at)
+         IS DISTINCT FROM (OLD.checkout_claim_id, OLD.checkout_config, OLD.checkout_claimed_at, OLD.checkout_expires_at) THEN
     RAISE EXCEPTION 'a checkout claim is set once' USING ERRCODE = '42501';
   END IF;
 
@@ -1975,7 +1980,7 @@ git commit -m "feat: server-side order checks and frozen purchase details"
     - `checkoutBlockReason(input): CheckoutBlock | null`
     - `CheckoutBlock = 'organiser_stopped' | 'competition_unavailable' | 'stripe_not_connected' | 'amount_too_small'`
     - `CHECKOUT_BLOCK_MESSAGES` and `MIN_CHARGE_CENTS = 50`
-  - **Stripe errors:** `classifyStripeError(err: unknown): 'refused' | 'uncertain'`
+  - **Stripe errors:** `classifyStripeError(err: unknown): StripeFailure`, where `StripeFailure = 'in_progress' | 'retry' | 'rejected'`. It describes only the one request, never what an earlier attempt with the same key did.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2085,21 +2090,23 @@ import { describe, expect, it } from 'vitest'
 import { classifyStripeError } from '@/lib/engine/stripe-errors'
 
 describe('classifyStripeError', () => {
-  it.each(['StripeConnectionError', 'StripeAPIError', 'StripeRateLimitError'])('treats %s as uncertain', (type) => {
-    expect(classifyStripeError({ type })).toBe('uncertain')
-  })
-  it('treats an idempotency key that is still in use as uncertain', () => {
+  it('treats a key that is still being processed as in progress, whatever the error type', () => {
     expect(classifyStripeError({ type: 'StripeInvalidRequestError', code: 'idempotency_key_in_use', statusCode: 409 }))
-      .toBe('uncertain')
+      .toBe('in_progress')
+    expect(classifyStripeError({ type: 'StripeIdempotencyError', statusCode: 409 })).toBe('in_progress')
+  })
+  it.each(['StripeConnectionError', 'StripeAPIError', 'StripeRateLimitError'])('treats %s as retry with the same key', (type) => {
+    expect(classifyStripeError({ type })).toBe('retry')
   })
   it.each(['StripeInvalidRequestError', 'StripeCardError', 'StripeAuthenticationError', 'StripePermissionError', 'StripeIdempotencyError'])(
-    'treats %s as a refusal', (type) => {
-      expect(classifyStripeError({ type, statusCode: 400 })).toBe('refused')
+    'treats %s as a refusal of this one request', (type) => {
+      expect(classifyStripeError({ type, statusCode: 400 })).toBe('rejected')
     })
-  it('falls back to the status code, and treats anything unknown as uncertain', () => {
-    expect(classifyStripeError({ statusCode: 503 })).toBe('uncertain')
-    expect(classifyStripeError({ statusCode: 400 })).toBe('refused')
-    expect(classifyStripeError(new Error('socket hang up'))).toBe('uncertain')
+  it('falls back to the status code, and treats anything unknown as retry', () => {
+    expect(classifyStripeError({ statusCode: 503 })).toBe('retry')
+    expect(classifyStripeError({ statusCode: 429 })).toBe('retry')
+    expect(classifyStripeError({ statusCode: 400 })).toBe('rejected')
+    expect(classifyStripeError(new Error('socket hang up'))).toBe('retry')
   })
 })
 ```
@@ -2243,28 +2250,33 @@ export function checkoutBlockReason(input: {
 Create `src/lib/engine/stripe-errors.ts`:
 ```ts
 /**
- * 'refused': Stripe definitely did not do it, and replaying the same request will get the same answer.
- * 'uncertain': we can't tell, so replay the identical request with the same idempotency key.
+ * What one failed Stripe call says about that request. It never says what an earlier attempt with
+ * the same idempotency key did: Stripe can cache a 500 even when the session was made.
+ * - 'in_progress': the same key is still being processed; retry later with the same key
+ * - 'retry': the outcome is unknown (network, Stripe 5xx, rate limit); retry with the same key
+ * - 'rejected': Stripe refused this request (bad parameters, a key reused with different
+ *   parameters, authentication, permissions)
+ * When attempts end without a session, the workflow looks the session up (spec §6a).
  */
-export function classifyStripeError(err: unknown): 'refused' | 'uncertain' {
+export type StripeFailure = 'in_progress' | 'retry' | 'rejected'
+
+export function classifyStripeError(err: unknown): StripeFailure {
   const e = (err ?? {}) as { type?: string; code?: string; statusCode?: number }
-  if (e.code === 'idempotency_key_in_use') return 'uncertain'
+  if (e.code === 'idempotency_key_in_use' || e.statusCode === 409) return 'in_progress'
   switch (e.type) {
     case 'StripeConnectionError':
     case 'StripeAPIError':
     case 'StripeRateLimitError':
-      return 'uncertain'
+      return 'retry'
     case 'StripeInvalidRequestError':
     case 'StripeCardError':
     case 'StripeAuthenticationError':
     case 'StripePermissionError':
     case 'StripeIdempotencyError':
-      return 'refused'
+      return 'rejected'
   }
-  if (typeof e.statusCode === 'number') {
-    return e.statusCode >= 500 || e.statusCode === 429 || e.statusCode === 409 ? 'uncertain' : 'refused'
-  }
-  return 'uncertain'
+  if (typeof e.statusCode === 'number') return e.statusCode >= 500 || e.statusCode === 429 ? 'retry' : 'rejected'
+  return 'retry'
 }
 ```
 
@@ -2353,6 +2365,7 @@ export interface CheckoutOrder {
   confirmation_number: string | null
   checkout_claim_id: string | null
   checkout_config: CheckoutConfig | null
+  checkout_claimed_at: string | null
   checkout_expires_at: string | null
   stripe_checkout_session_id: string | null
   purchase_snapshot: PurchaseSnapshot
@@ -2769,6 +2782,7 @@ AS $$
     'confirmation_number', r.confirmation_number,
     'checkout_claim_id', r.checkout_claim_id,
     'checkout_config', r.checkout_config,
+    'checkout_claimed_at', r.checkout_claimed_at,
     'checkout_expires_at', r.checkout_expires_at,
     'stripe_checkout_session_id', r.stripe_checkout_session_id,
     'purchase_snapshot', r.purchase_snapshot,
@@ -3140,23 +3154,22 @@ git commit -m "feat: submit checks, prices and creates orders on the server; fam
 
 **Interfaces:**
 - Consumes:
-  - `CheckoutConfig` and `buildCheckoutConfig` (Task 5)
+  - `CheckoutConfig`, `buildCheckoutConfig` and `CheckoutBlock` (Task 5)
   - `createDraftOrder`, `DraftOrderFixture` and `pgRpc` (Task 6)
-- Produces:
-  - **SQL:**
-    - `claim_checkout(p_registration_id uuid, p_household_id uuid, p_claim_id uuid, p_config jsonb) → jsonb`
-    - `attach_checkout_session(p_registration_id uuid, p_claim_id uuid, p_session_id text) → jsonb`
-    - `cancel_order(p_registration_id uuid, p_household_id uuid, p_expected_claim_id uuid) → jsonb`
-    - `expire_checkout(p_registration_id uuid, p_claim_id uuid, p_session_id text, p_account text) → jsonb`
-  - **Store methods:**
-    - `claimCheckout({ registrationId, householdId, claimId, config }): Promise<ClaimResult>`
-    - `attachCheckoutSession(registrationId, claimId, sessionId): Promise<AttachResult>`
-    - `cancelOrder(registrationId, householdId, expectedClaimId | null): Promise<CancelOrderResult>`
-    - `expireCheckout({ registrationId, claimId, sessionId, account }): Promise<ExpireCheckoutResult>`
+- Produces SQL functions. Each one locks the order row and names the state and claim it expects:
+  - `claim_checkout(p_registration_id uuid, p_household_id uuid, p_claim_id uuid, p_config jsonb) → jsonb`. It also makes the final organiser-stop decision. A successful claim is the boundary after which that attempt may finish.
+  - `attach_checkout_session(p_registration_id uuid, p_claim_id uuid, p_session_id text) → jsonb`
+  - `cancel_order(p_registration_id uuid, p_household_id uuid, p_expected_claim_id uuid) → jsonb`
+  - `expire_checkout(p_registration_id uuid, p_claim_id uuid, p_session_id text, p_account text) → jsonb`
+- Produces store methods:
+  - `claimCheckout({ registrationId, householdId, claimId, config }): Promise<ClaimResult>`. `ClaimResult` includes `claimed_at` and `{ result: 'blocked'; reason: CheckoutBlock }`.
+  - `attachCheckoutSession(registrationId, claimId, sessionId): Promise<AttachResult>`
+  - `cancelOrder(registrationId, householdId, expectedClaimId | null): Promise<CancelOrderResult>`
+  - `expireCheckout({ registrationId, claimId, sessionId, account }): Promise<ExpireCheckoutResult>`
 
 - [ ] **Step 1: Add the store methods and their result types**
 
-In `src/app/_payments/order-store.ts`, add these types after `CheckoutOrder`:
+In `src/app/_payments/order-store.ts`, add `import type { CheckoutBlock } from '@/lib/engine/checkout-policy'`. Then add these types after `CheckoutOrder`:
 ```ts
 export type ClaimResult =
   | {
@@ -3164,8 +3177,10 @@ export type ClaimResult =
       status: RegistrationStatus
       claim_id: string
       config: CheckoutConfig
+      claimed_at: string
       session_id: string | null
     }
+  | { result: 'blocked'; reason: CheckoutBlock }
   | { result: 'not_claimable'; status: RegistrationStatus; hold_expired: boolean }
   | { result: 'not_found' }
 
@@ -3183,7 +3198,7 @@ export type ExpireCheckoutResult =
   | { result: 'expired'; status: 'expired' }
   | { result: 'ignored'; why: 'not_found' | 'mismatch' | 'not_open'; status?: RegistrationStatus }
 ```
-Then add these methods to the object that `createOrderStore` returns:
+Add these methods to the object `createOrderStore` returns:
 ```ts
     async claimCheckout(input: {
       registrationId: string
@@ -3293,7 +3308,7 @@ async function runExpiryJob() {
 }
 
 describe('claim_checkout', () => {
-  it('freezes the request and moves the hold to 15 minutes after the checkout window', async () => {
+  it('freezes the request, records when it was claimed, and moves the hold 15 minutes past the window', async () => {
     const order = await createDraftOrder(db.pool)
     const claimId = randomUUID()
     const config = configFor(order, claimId)
@@ -3305,6 +3320,7 @@ describe('claim_checkout', () => {
     const row = await orderRow(order.registrationId)
     expect(row.checkout_claim_id).toBe(claimId)
     expect(row.checkout_config).toEqual(config)
+    expect(Math.abs(new Date(row.checkout_claimed_at).getTime() - Date.now())).toBeLessThan(60_000)
     const window = new Date(row.checkout_expires_at).getTime()
     expect(new Date(row.hold_expires_at).getTime() - window).toBe(15 * 60_000)
   })
@@ -3317,6 +3333,7 @@ describe('claim_checkout', () => {
     if (first.result === 'claimed' && second.result === 'already_claimed') {
       expect(second.claim_id).toBe(first.claim_id)
       expect(second.config).toEqual(first.config)
+      expect(second.claimed_at).toBe(first.claimed_at)
     }
   })
 
@@ -3331,11 +3348,15 @@ describe('claim_checkout', () => {
   it('refuses a request that does not describe the order', async () => {
     const order = await createDraftOrder(db.pool)
     const claimId = randomUUID()
-    const config = { ...configFor(order, claimId), total_cents: 1 }
-    const message = await refused(store.claimCheckout({
-      registrationId: order.registrationId, householdId: order.family.householdId, claimId, config,
-    }))
-    expect(message).toMatch(/does not match order/)
+    for (const config of [
+      { ...configFor(order, claimId), total_cents: 1 },
+      { ...configFor(order, claimId), account: 'acct_someone_else' },
+    ]) {
+      const message = await refused(store.claimCheckout({
+        registrationId: order.registrationId, householdId: order.family.householdId, claimId, config,
+      }))
+      expect(message).toMatch(/does not match order/)
+    }
     expect((await orderRow(order.registrationId)).checkout_claim_id).toBeNull()
   })
 
@@ -3343,6 +3364,26 @@ describe('claim_checkout', () => {
     const order = await createDraftOrder(db.pool)
     await db.pool.query(`UPDATE registrations SET hold_expires_at = now() - interval '1 minute' WHERE id = $1`, [order.registrationId])
     expect(await claim(order)).toEqual({ result: 'not_claimable', status: 'draft', hold_expired: true })
+  })
+
+  it('lets the organiser stop new checkouts right up to the claim', async () => {
+    const closed = await createDraftOrder(db.pool)
+    await db.pool.query(`UPDATE feis_listings SET status = 'closed' WHERE id = $1`, [closed.listing.listing.id])
+    expect(await claim(closed)).toEqual({ result: 'blocked', reason: 'organiser_stopped' })
+    expect((await orderRow(closed.registrationId)).checkout_claim_id).toBeNull()
+
+    const disabled = await createDraftOrder(db.pool)
+    await db.pool.query(`UPDATE feis_competitions SET enabled = false WHERE id = $1`, [disabled.entries[0].competitionId])
+    expect(await claim(disabled)).toEqual({ result: 'blocked', reason: 'competition_unavailable' })
+  })
+
+  it('lets an attempt claimed before the organiser closed registration finish', async () => {
+    const order = await createDraftOrder(db.pool)
+    const claimed = await claim(order)
+    if (claimed.result !== 'claimed') throw new Error('expected a claim')
+    await db.pool.query(`UPDATE feis_listings SET status = 'closed' WHERE id = $1`, [order.listing.listing.id])
+    expect(await store.attachCheckoutSession(order.registrationId, claimed.claim_id, 'cs_after_close'))
+      .toEqual({ result: 'attached', status: 'pending_payment' })
   })
 })
 
@@ -3455,6 +3496,7 @@ SET search_path = pre_registration, pg_temp
 AS $$
 DECLARE
   v_order registrations%ROWTYPE;
+  v_listing feis_listings%ROWTYPE;
   v_expires timestamptz;
   v_line_total integer;
 BEGIN
@@ -3469,7 +3511,7 @@ BEGIN
   IF v_order.checkout_claim_id IS NOT NULL THEN
     RETURN jsonb_build_object('result', 'already_claimed', 'status', v_order.status,
       'claim_id', v_order.checkout_claim_id, 'config', v_order.checkout_config,
-      'session_id', v_order.stripe_checkout_session_id);
+      'claimed_at', v_order.checkout_claimed_at, 'session_id', v_order.stripe_checkout_session_id);
   END IF;
 
   IF v_order.status <> 'draft' OR v_order.hold_expires_at IS NULL OR v_order.hold_expires_at <= now() THEN
@@ -3477,18 +3519,38 @@ BEGIN
       'hold_expired', v_order.hold_expires_at IS NOT NULL AND v_order.hold_expires_at <= now());
   END IF;
 
-  -- The frozen request must describe this order exactly
+  -- The organiser can stop new checkouts until this moment. A successful claim is the boundary:
+  -- after it, this attempt may finish even if registration closes (spec §5).
+  SELECT * INTO v_listing FROM feis_listings WHERE id = v_order.feis_listing_id FOR SHARE;
+  IF v_listing.status <> 'open' THEN
+    RETURN jsonb_build_object('result', 'blocked', 'reason', 'organiser_stopped');
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM registration_entries e
+    JOIN feis_competitions c ON c.id = e.feis_competition_id
+    WHERE e.registration_id = p_registration_id AND NOT c.enabled
+  ) THEN
+    RETURN jsonb_build_object('result', 'blocked', 'reason', 'competition_unavailable');
+  END IF;
+  IF v_listing.stripe_account_id IS NULL THEN
+    RETURN jsonb_build_object('result', 'blocked', 'reason', 'stripe_not_connected');
+  END IF;
+  IF v_order.total_cents < 50 THEN
+    RETURN jsonb_build_object('result', 'blocked', 'reason', 'amount_too_small');
+  END IF;
+
+  -- The frozen request must describe this order exactly, on the feis's current Stripe account
   v_expires := to_timestamp((p_config ->> 'expires_at')::bigint);
   SELECT coalesce(sum((item ->> 'amount_cents')::integer), -1)::integer INTO v_line_total
   FROM jsonb_array_elements(coalesce(p_config -> 'line_items', '[]'::jsonb)) AS item;
-  IF p_config ->> 'currency' IS DISTINCT FROM 'usd'
+  IF p_config ->> 'account' IS DISTINCT FROM v_listing.stripe_account_id
+     OR p_config ->> 'currency' IS DISTINCT FROM 'usd'
      OR (p_config ->> 'total_cents')::integer IS DISTINCT FROM v_order.total_cents
      OR v_line_total IS DISTINCT FROM v_order.total_cents
      OR (p_config ->> 'application_fee_cents')::integer IS DISTINCT FROM v_order.application_fee_cents
      OR p_config -> 'metadata' ->> 'registration_id' IS DISTINCT FROM p_registration_id::text
      OR p_config -> 'metadata' ->> 'claim_id' IS DISTINCT FROM p_claim_id::text
      OR p_config ->> 'idempotency_key' IS DISTINCT FROM ('checkout:' || p_registration_id::text || ':' || p_claim_id::text)
-     OR coalesce(p_config ->> 'account', '') = ''
      OR v_expires < now() + interval '50 minutes'
      OR v_expires > now() + interval '70 minutes' THEN
     RAISE EXCEPTION 'checkout configuration does not match order %', p_registration_id;
@@ -3497,12 +3559,13 @@ BEGIN
   UPDATE registrations
   SET checkout_claim_id = p_claim_id,
       checkout_config = p_config,
+      checkout_claimed_at = now(),
       checkout_expires_at = v_expires,
       hold_expires_at = v_expires + interval '15 minutes'
   WHERE id = p_registration_id;
 
   RETURN jsonb_build_object('result', 'claimed', 'status', 'draft', 'claim_id', p_claim_id,
-    'config', p_config, 'session_id', NULL);
+    'config', p_config, 'claimed_at', now(), 'session_id', NULL);
 END;
 $$;
 
@@ -3537,8 +3600,9 @@ BEGIN
 END;
 $$;
 
--- With no expected claim, only an unclaimed draft can be cancelled. With a claim, the caller
--- has already closed that claim's Stripe session (or proved it never existed).
+-- With no expected claim, only an unclaimed draft can be cancelled. With a claim, the caller has
+-- already settled that claim's Stripe session (spec §6a): closed and verified, or established
+-- never to have been made.
 CREATE OR REPLACE FUNCTION cancel_order(p_registration_id uuid, p_household_id uuid, p_expected_claim_id uuid)
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -3583,7 +3647,8 @@ BEGIN
   IF p_claim_id IS NULL
      OR v_order.checkout_claim_id IS DISTINCT FROM p_claim_id
      OR v_order.checkout_config ->> 'account' IS DISTINCT FROM p_account
-     OR (v_order.stripe_checkout_session_id IS NOT NULL AND v_order.stripe_checkout_session_id IS DISTINCT FROM p_session_id) THEN
+     OR (v_order.stripe_checkout_session_id IS NOT NULL
+         AND v_order.stripe_checkout_session_id IS DISTINCT FROM p_session_id) THEN
     RETURN jsonb_build_object('result', 'ignored', 'why', 'mismatch', 'status', v_order.status);
   END IF;
   IF v_order.status NOT IN ('draft', 'pending_payment') THEN
@@ -3614,708 +3679,12 @@ Expected: PASS.
 
 ```bash
 git add supabase/migrations/014_checkout_claims.sql src/app/_payments/order-store.ts tests/db/checkout-claims.test.ts
-git commit -m "feat: one frozen checkout claim per order (migration 014)"
+git commit -m "feat: one frozen checkout claim per order, with the organiser's stop decided at the claim (migration 014)"
 ```
 
 ---
 
-### Task 9: Stripe gateway, a fake Stripe, and the Pay and Cancel workflows
-
-**Files:**
-- Create: `src/app/_payments/stripe-gateway.ts`
-- Create: `src/app/_payments/checkout-workflow.ts`
-- Create: `tests/db/helpers/fake-stripe.ts`
-- Test: `tests/db/checkout-workflow.test.ts`
-
-**Interfaces:**
-- Consumes:
-  - `CheckoutConfig` and `buildCheckoutConfig`, `checkoutBlockReason` and `CHECKOUT_BLOCK_MESSAGES`, `classifyStripeError` (Task 5)
-  - `OrderStore` and `CheckoutOrder` (Tasks 6 and 8)
-- Produces:
-  - **Gateway:**
-    - `StripeGateway`, with `createCheckoutSession(config)`, `retrieveCheckoutSession(id, account)`, `expireCheckoutSession(id, account)` and `latestChargeId(paymentIntentId, account)`
-    - `GatewaySession`, `CreateSessionOutcome` and `ExpireSessionOutcome`
-    - `createStripeGateway(stripe)`, `toGatewaySession(session)` and `checkoutSessionParams(config)`
-  - **Workflow:**
-    - `CheckoutDeps`, `PayResult` and `CancelResult`
-    - `pay(deps, { registrationId, householdId })` and `cancel(deps, { registrationId, householdId })`
-    - `CHECKOUT_MESSAGES`
-  - **Test double:** `FakeStripe`, a `StripeGateway` with `pay(sessionId)`, `expire(sessionId)` and `nextCreate`.
-
-Task 11 replaces the two "payment went through" placeholders with real confirmation.
-
-- [ ] **Step 1: Write the Stripe gateway**
-
-Create `src/app/_payments/stripe-gateway.ts`:
-```ts
-import type Stripe from 'stripe'
-import type { CheckoutConfig } from '@/lib/engine/checkout-config'
-import { classifyStripeError } from '@/lib/engine/stripe-errors'
-
-export interface GatewaySession {
-  id: string
-  url: string | null
-  status: 'open' | 'complete' | 'expired'
-  paymentStatus: 'paid' | 'unpaid' | 'no_payment_required'
-  amountTotal: number | null
-  currency: string | null
-  paymentIntentId: string | null
-  metadata: Record<string, string>
-}
-
-export type CreateSessionOutcome =
-  | { kind: 'created'; session: GatewaySession }
-  | { kind: 'refused'; message: string }
-  | { kind: 'uncertain'; message: string }
-
-export type ExpireSessionOutcome =
-  | { kind: 'expired' }
-  | { kind: 'already_expired' }
-  | { kind: 'already_complete'; session: GatewaySession }
-  | { kind: 'uncertain'; message: string }
-
-export interface StripeGateway {
-  /** Sends exactly the frozen request, with its idempotency key, on its bound account */
-  createCheckoutSession(config: CheckoutConfig): Promise<CreateSessionOutcome>
-  /** null when Stripe couldn't be reached */
-  retrieveCheckoutSession(sessionId: string, account: string): Promise<GatewaySession | null>
-  expireCheckoutSession(sessionId: string, account: string): Promise<ExpireSessionOutcome>
-  latestChargeId(paymentIntentId: string, account: string): Promise<string | null>
-}
-
-export function toGatewaySession(session: Stripe.Checkout.Session): GatewaySession {
-  const paymentIntent = session.payment_intent
-  return {
-    id: session.id,
-    url: session.url ?? null,
-    status: session.status ?? 'open',
-    paymentStatus: session.payment_status,
-    amountTotal: session.amount_total ?? null,
-    currency: session.currency ?? null,
-    paymentIntentId: typeof paymentIntent === 'string' ? paymentIntent : (paymentIntent?.id ?? null),
-    metadata: (session.metadata ?? {}) as Record<string, string>
-  }
-}
-
-export function checkoutSessionParams(config: CheckoutConfig): Stripe.Checkout.SessionCreateParams {
-  return {
-    mode: 'payment',
-    line_items: config.line_items.map((item) => ({
-      price_data: {
-        currency: config.currency,
-        product_data: { name: item.name },
-        unit_amount: item.amount_cents
-      },
-      quantity: 1
-    })),
-    payment_method_types: [...config.payment_method_types],
-    payment_intent_data: { application_fee_amount: config.application_fee_cents },
-    success_url: config.success_url,
-    cancel_url: config.cancel_url,
-    expires_at: config.expires_at,
-    client_reference_id: config.client_reference_id,
-    // Built field by field, so a config read back from the database (jsonb reorders keys)
-    // produces exactly the same request as the one first sent
-    metadata: { registration_id: config.metadata.registration_id, claim_id: config.metadata.claim_id }
-  }
-}
-
-function message(err: unknown): string {
-  return err instanceof Error ? err.message : String(err)
-}
-
-export function createStripeGateway(stripe: Stripe): StripeGateway {
-  async function retrieveCheckoutSession(sessionId: string, account: string): Promise<GatewaySession | null> {
-    try {
-      return toGatewaySession(await stripe.checkout.sessions.retrieve(sessionId, {}, { stripeAccount: account }))
-    } catch {
-      return null
-    }
-  }
-
-  return {
-    async createCheckoutSession(config) {
-      try {
-        const session = await stripe.checkout.sessions.create(checkoutSessionParams(config), {
-          stripeAccount: config.account,
-          idempotencyKey: config.idempotency_key
-        })
-        return { kind: 'created', session: toGatewaySession(session) }
-      } catch (err) {
-        return classifyStripeError(err) === 'refused'
-          ? { kind: 'refused', message: message(err) }
-          : { kind: 'uncertain', message: message(err) }
-      }
-    },
-
-    retrieveCheckoutSession,
-
-    async expireCheckoutSession(sessionId, account) {
-      try {
-        await stripe.checkout.sessions.expire(sessionId, {}, { stripeAccount: account })
-        return { kind: 'expired' }
-      } catch (err) {
-        // Stripe refuses to expire a session that is complete or already expired; ask which
-        const current = await retrieveCheckoutSession(sessionId, account)
-        if (current?.status === 'complete') return { kind: 'already_complete', session: current }
-        if (current?.status === 'expired') return { kind: 'already_expired' }
-        return { kind: 'uncertain', message: message(err) }
-      }
-    },
-
-    async latestChargeId(paymentIntentId, account) {
-      try {
-        const intent = await stripe.paymentIntents.retrieve(paymentIntentId, {}, { stripeAccount: account })
-        const charge = intent.latest_charge
-        return typeof charge === 'string' ? charge : (charge?.id ?? null)
-      } catch {
-        return null
-      }
-    }
-  }
-}
-```
-
-- [ ] **Step 2: Write the fake Stripe**
-
-Create `tests/db/helpers/fake-stripe.ts`:
-```ts
-import type { CheckoutConfig } from '@/lib/engine/checkout-config'
-import {
-  checkoutSessionParams,
-  type CreateSessionOutcome,
-  type ExpireSessionOutcome,
-  type GatewaySession,
-  type StripeGateway
-} from '@/app/_payments/stripe-gateway'
-
-type StoredSession = GatewaySession & { account: string }
-
-/**
- * Behaves like Stripe where it matters here:
- * - the same idempotency key with the same parameters returns the stored result, including a stored refusal
- * - the same key with different parameters is refused
- * - a new session must expire at least 30 minutes after it is created
- * - complete and expired sessions can't be expired again
- */
-export class FakeStripe implements StripeGateway {
-  readonly sessions = new Map<string, StoredSession>()
-  /** Forced outcomes for the next create calls: Stripe never saw it, Stripe made it but the reply was lost, or Stripe refuses */
-  nextCreate: Array<'uncertain-before' | 'uncertain-after' | 'refuse'> = []
-  createCalls = 0
-  private readonly byKey = new Map<string, { params: string; outcome: CreateSessionOutcome }>()
-  private counter = 0
-
-  constructor(private readonly now: () => Date = () => new Date()) {}
-
-  async createCheckoutSession(config: CheckoutConfig): Promise<CreateSessionOutcome> {
-    this.createCalls++
-    const forced = this.nextCreate.shift()
-    if (forced === 'uncertain-before') return { kind: 'uncertain', message: 'connection reset before Stripe' }
-
-    const params = JSON.stringify(checkoutSessionParams(config)) + config.account
-    const stored = this.byKey.get(config.idempotency_key)
-    if (stored) {
-      if (stored.params !== params) {
-        return { kind: 'refused', message: 'Keys for idempotent requests can only be used with the same parameters' }
-      }
-      return stored.outcome
-    }
-
-    let outcome: CreateSessionOutcome
-    if (forced === 'refuse') {
-      outcome = { kind: 'refused', message: 'Your account cannot currently make live charges.' }
-    } else if (config.expires_at * 1000 < this.now().getTime() + 30 * 60_000) {
-      return { kind: 'refused', message: 'expires_at must be at least 30 minutes in the future' }
-    } else {
-      const id = `cs_test_${++this.counter}`
-      const session: StoredSession = {
-        id, url: `https://checkout.stripe.test/${id}`, status: 'open', paymentStatus: 'unpaid',
-        amountTotal: config.total_cents, currency: config.currency, paymentIntentId: null,
-        metadata: { ...config.metadata }, account: config.account,
-      }
-      this.sessions.set(id, session)
-      outcome = { kind: 'created', session: this.view(session) }
-    }
-    this.byKey.set(config.idempotency_key, { params, outcome })
-    if (forced === 'uncertain-after') return { kind: 'uncertain', message: 'reply lost after Stripe created it' }
-    return outcome
-  }
-
-  async retrieveCheckoutSession(sessionId: string, account: string): Promise<GatewaySession | null> {
-    const session = this.sessions.get(sessionId)
-    return session && session.account === account ? this.view(session) : null
-  }
-
-  async expireCheckoutSession(sessionId: string, account: string): Promise<ExpireSessionOutcome> {
-    const session = this.sessions.get(sessionId)
-    if (!session || session.account !== account) return { kind: 'uncertain', message: 'No such checkout.session' }
-    if (session.status === 'complete') return { kind: 'already_complete', session: this.view(session) }
-    if (session.status === 'expired') return { kind: 'already_expired' }
-    session.status = 'expired'
-    return { kind: 'expired' }
-  }
-
-  async latestChargeId(paymentIntentId: string): Promise<string | null> {
-    return `ch_for_${paymentIntentId}`
-  }
-
-  /** The family pays on Stripe's page */
-  pay(sessionId: string): GatewaySession {
-    const session = this.sessions.get(sessionId)
-    if (!session || session.status !== 'open') throw new Error(`checkout ${sessionId} is not open`)
-    session.status = 'complete'
-    session.paymentStatus = 'paid'
-    session.paymentIntentId = `pi_${sessionId}`
-    return this.view(session)
-  }
-
-  /** Stripe expires the session on its own */
-  expire(sessionId: string): GatewaySession {
-    const session = this.sessions.get(sessionId)
-    if (!session || session.status !== 'open') throw new Error(`checkout ${sessionId} is not open`)
-    session.status = 'expired'
-    return this.view(session)
-  }
-
-  sessionsFor(registrationId: string): StoredSession[] {
-    return [...this.sessions.values()].filter((s) => s.metadata.registration_id === registrationId)
-  }
-
-  private view(session: StoredSession): GatewaySession {
-    const { account: _account, ...rest } = session
-    return { ...rest, metadata: { ...rest.metadata } }
-  }
-}
-```
-
-- [ ] **Step 3: Write the failing workflow tests**
-
-Create `tests/db/checkout-workflow.test.ts`:
-```ts
-import { randomUUID } from 'node:crypto'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { cancel, CHECKOUT_MESSAGES, pay, type CheckoutDeps } from '@/app/_payments/checkout-workflow'
-import { createOrderStore, type OrderStore } from '@/app/_payments/order-store'
-import { createTestDatabase, type TestDatabase } from './helpers/db'
-import { FakeStripe } from './helpers/fake-stripe'
-import { createDraftOrder, type DraftOrderFixture } from './helpers/fixtures'
-import { pgRpc } from './helpers/pg-rpc'
-
-let db: TestDatabase
-let store: OrderStore
-
-beforeAll(async () => {
-  db = await createTestDatabase()
-  store = createOrderStore(pgRpc(db.pool))
-})
-
-afterAll(async () => {
-  await db.drop()
-})
-
-function deps(stripe: FakeStripe): CheckoutDeps {
-  return { store, stripe, now: () => new Date(), baseUrl: 'https://runfeis.test', newClaimId: () => randomUUID() }
-}
-
-const ids = (order: DraftOrderFixture) => ({ registrationId: order.registrationId, householdId: order.family.householdId })
-
-async function orderRow(id: string) {
-  const { rows } = await db.pool.query('SELECT * FROM registrations WHERE id = $1', [id])
-  return rows[0]
-}
-
-describe('pay', () => {
-  it('creates one checkout and moves the order to pending_payment', async () => {
-    const stripe = new FakeStripe()
-    const order = await createDraftOrder(db.pool)
-    const result = await pay(deps(stripe), ids(order))
-    expect(result).toEqual({ kind: 'redirect', url: 'https://checkout.stripe.test/cs_test_1' })
-    const row = await orderRow(order.registrationId)
-    expect(row).toMatchObject({ status: 'pending_payment', stripe_checkout_session_id: 'cs_test_1' })
-    expect(row.checkout_config.payment_method_types).toEqual(['card'])
-    expect(stripe.sessions.size).toBe(1)
-  })
-
-  it('gives two simultaneous clicks one claim and one session', async () => {
-    const stripe = new FakeStripe()
-    const order = await createDraftOrder(db.pool)
-    const [a, b] = await Promise.all([pay(deps(stripe), ids(order)), pay(deps(stripe), ids(order))])
-    expect(a).toEqual(b)
-    expect(a.kind).toBe('redirect')
-    expect(stripe.sessionsFor(order.registrationId)).toHaveLength(1)
-  })
-
-  it('resumes the same session after the family backs out of Stripe', async () => {
-    const stripe = new FakeStripe()
-    const order = await createDraftOrder(db.pool)
-    const first = await pay(deps(stripe), ids(order))
-    const again = await pay(deps(stripe), ids(order))
-    expect(again).toEqual(first)
-    expect(stripe.createCalls).toBe(1)
-  })
-
-  it('recovers a session Stripe made before an earlier Pay stopped', async () => {
-    const stripe = new FakeStripe()
-    const order = await createDraftOrder(db.pool)
-    // An earlier Pay claimed and Stripe created the session, then the request died before attaching it
-    const first = await pay({ ...deps(stripe), store: { ...store, attachCheckoutSession: async () => { throw new Error('crashed') } } }, ids(order))
-      .catch(() => null)
-    expect(first).toBeNull()
-    expect((await orderRow(order.registrationId)).stripe_checkout_session_id).toBeNull()
-
-    const result = await pay(deps(stripe), ids(order))
-    expect(result).toEqual({ kind: 'redirect', url: 'https://checkout.stripe.test/cs_test_1' })
-    expect(stripe.sessionsFor(order.registrationId)).toHaveLength(1)
-    expect((await orderRow(order.registrationId)).stripe_checkout_session_id).toBe('cs_test_1')
-  })
-
-  it('replays an uncertain create with the identical request', async () => {
-    const stripe = new FakeStripe()
-    stripe.nextCreate = ['uncertain-before', 'uncertain-after']
-    const order = await createDraftOrder(db.pool)
-    const result = await pay(deps(stripe), ids(order))
-    expect(result.kind).toBe('redirect')
-    expect(stripe.createCalls).toBe(3)
-    expect(stripe.sessionsFor(order.registrationId)).toHaveLength(1)
-  })
-
-  it('reports a definite refusal, and a second Pay gets the same answer rather than a different request', async () => {
-    const stripe = new FakeStripe()
-    stripe.nextCreate = ['refuse']
-    const order = await createDraftOrder(db.pool)
-    expect(await pay(deps(stripe), ids(order))).toEqual({ kind: 'error', message: CHECKOUT_MESSAGES.couldNotStart })
-    expect(await pay(deps(stripe), ids(order))).toEqual({ kind: 'error', message: CHECKOUT_MESSAGES.couldNotStart })
-    expect(stripe.sessions.size).toBe(0)
-  })
-
-  it('starts no checkout once the organiser closes registration, and leaves the order alone', async () => {
-    const stripe = new FakeStripe()
-    const order = await createDraftOrder(db.pool)
-    await db.pool.query(`UPDATE feis_listings SET status = 'closed' WHERE id = $1`, [order.listing.listing.id])
-    expect(await pay(deps(stripe), ids(order)))
-      .toEqual({ kind: 'blocked', message: 'Registration has been closed by the organiser.' })
-    expect((await orderRow(order.registrationId)).checkout_claim_id).toBeNull()
-  })
-
-  it('lets a submitted order be paid after the deadline while registration stays open', async () => {
-    const stripe = new FakeStripe()
-    const order = await createDraftOrder(db.pool)
-    await db.pool.query(`UPDATE feis_listings SET reg_closes_at = now() - interval '1 minute' WHERE id = $1`, [order.listing.listing.id])
-    expect((await pay(deps(stripe), ids(order))).kind).toBe('redirect')
-  })
-
-  it('asks the family to start again once the hold has passed', async () => {
-    const stripe = new FakeStripe()
-    const order = await createDraftOrder(db.pool)
-    await db.pool.query(`UPDATE registrations SET hold_expires_at = now() - interval '1 minute' WHERE id = $1`, [order.registrationId])
-    expect(await pay(deps(stripe), ids(order))).toEqual({ kind: 'start_again', message: CHECKOUT_MESSAGES.expired })
-    expect(stripe.createCalls).toBe(0)
-  })
-})
-
-describe('cancel', () => {
-  it('cancels an unclaimed draft', async () => {
-    const order = await createDraftOrder(db.pool)
-    expect(await cancel(deps(new FakeStripe()), ids(order))).toEqual({ kind: 'cancelled' })
-    expect((await orderRow(order.registrationId)).status).toBe('cancelled')
-  })
-
-  it('closes the Stripe page before cancelling during checkout', async () => {
-    const stripe = new FakeStripe()
-    const order = await createDraftOrder(db.pool)
-    await pay(deps(stripe), ids(order))
-    expect(await cancel(deps(stripe), ids(order))).toEqual({ kind: 'cancelled' })
-    expect(stripe.sessions.get('cs_test_1')?.status).toBe('expired')
-    expect(() => stripe.pay('cs_test_1')).toThrow(/not open/)
-  })
-
-  it('refuses to cancel once the family has paid', async () => {
-    const stripe = new FakeStripe()
-    const order = await createDraftOrder(db.pool)
-    await pay(deps(stripe), ids(order))
-    stripe.pay('cs_test_1')
-    expect(await cancel(deps(stripe), ids(order)))
-      .toEqual({ kind: 'try_again', message: CHECKOUT_MESSAGES.paymentWentThrough })
-    expect((await orderRow(order.registrationId)).status).toBe('pending_payment')
-  })
-
-  it('finds and closes a session that Pay never attached', async () => {
-    const stripe = new FakeStripe()
-    const order = await createDraftOrder(db.pool)
-    await pay({ ...deps(stripe), store: { ...store, attachCheckoutSession: async () => { throw new Error('crashed') } } }, ids(order))
-      .catch(() => null)
-    expect(await cancel(deps(stripe), ids(order))).toEqual({ kind: 'cancelled' })
-    expect(stripe.sessions.get('cs_test_1')?.status).toBe('expired')
-  })
-
-  it('ends Pay racing Cancel in one consistent state, with no payable session the order does not know about', async () => {
-    for (let round = 0; round < 10; round++) {
-      const stripe = new FakeStripe()
-      const order = await createDraftOrder(db.pool)
-      await Promise.all([pay(deps(stripe), ids(order)), cancel(deps(stripe), ids(order))])
-
-      const row = await orderRow(order.registrationId)
-      const open = stripe.sessionsFor(order.registrationId).filter((s) => s.status === 'open')
-      expect(['cancelled', 'pending_payment']).toContain(row.status)
-      if (row.status === 'cancelled') expect(open).toEqual([])
-      else expect(open.map((s) => s.id)).toEqual([row.stripe_checkout_session_id])
-    }
-  })
-})
-```
-
-- [ ] **Step 4: Run them to confirm they fail**
-
-Run: `npm run test:db -- tests/db/checkout-workflow.test.ts`
-Expected: FAIL. `@/app/_payments/checkout-workflow` doesn't exist.
-
-- [ ] **Step 5: Write the workflow**
-
-Create `src/app/_payments/checkout-workflow.ts`:
-```ts
-import { buildCheckoutConfig, type CheckoutConfig } from '@/lib/engine/checkout-config'
-import { CHECKOUT_BLOCK_MESSAGES, checkoutBlockReason } from '@/lib/engine/checkout-policy'
-import type { CheckoutOrder, OrderStore } from './order-store'
-import type { GatewaySession, StripeGateway } from './stripe-gateway'
-
-export interface CheckoutDeps {
-  store: OrderStore
-  stripe: StripeGateway
-  now: () => Date
-  baseUrl: string
-  newClaimId: () => string
-}
-
-export type PayResult =
-  | { kind: 'redirect'; url: string }
-  | { kind: 'paid'; confirmationNumber: string | null }
-  | { kind: 'start_again'; message: string }
-  | { kind: 'blocked'; message: string }
-  | { kind: 'try_again'; message: string }
-  | { kind: 'review'; message: string; supportRef: string | null }
-  | { kind: 'error'; message: string }
-
-export type CancelResult =
-  | { kind: 'cancelled' }
-  | { kind: 'paid'; confirmationNumber: string | null }
-  | { kind: 'try_again'; message: string }
-  | { kind: 'review'; message: string; supportRef: string | null }
-  | { kind: 'error'; message: string }
-
-export const CHECKOUT_MESSAGES = {
-  notFound: 'Registration not found.',
-  expired: 'This registration has expired. Please start a new one.',
-  cancelled: 'This registration was cancelled. Please start a new one.',
-  starting: 'Payment is taking a moment to start. Please try again.',
-  couldNotStart: "Payment couldn't start for this feis. Please contact the organiser.",
-  paymentWentThrough: "Your payment went through. We're confirming it now.",
-  noCheckoutPage: "Stripe didn't return a payment page. Please try again."
-} as const
-
-/** Stripe calls per attempt to create a session: the first try plus three identical replays */
-const CREATE_TRIES = 4
-
-export async function pay(
-  deps: CheckoutDeps,
-  input: { registrationId: string; householdId: string }
-): Promise<PayResult> {
-  const order = await deps.store.getOrderForCheckout(input.registrationId, input.householdId)
-  if (!order) return { kind: 'error', message: CHECKOUT_MESSAGES.notFound }
-  return payOrder(deps, order)
-}
-
-async function payOrder(deps: CheckoutDeps, order: CheckoutOrder): Promise<PayResult> {
-  switch (order.status) {
-    case 'paid':
-      return { kind: 'paid', confirmationNumber: order.confirmation_number }
-    case 'expired':
-      return { kind: 'start_again', message: CHECKOUT_MESSAGES.expired }
-    case 'cancelled':
-      return { kind: 'start_again', message: CHECKOUT_MESSAGES.cancelled }
-    case 'pending_payment':
-      return resumePending(deps, order)
-    case 'draft':
-      break
-  }
-
-  // Another click is making the session, or an earlier Pay stopped part-way: adopt its claim
-  if (order.checkout_claim_id && order.checkout_config) {
-    return createAndAttach(deps, order, order.checkout_claim_id, order.checkout_config)
-  }
-
-  const block = checkoutBlockReason({
-    listingStatus: order.listing.status,
-    stripeAccountId: order.listing.stripe_account_id,
-    competitionIds: order.competition_ids,
-    enabledCompetitionIds: order.enabled_competition_ids,
-    totalCents: order.total_cents
-  })
-  if (block) return { kind: 'blocked', message: CHECKOUT_BLOCK_MESSAGES[block] }
-
-  const claimId = deps.newClaimId()
-  const config = buildCheckoutConfig({
-    registrationId: order.id,
-    feisListingId: order.feis_listing_id,
-    claimId,
-    account: order.listing.stripe_account_id!,
-    totalCents: order.total_cents,
-    applicationFeeCents: order.application_fee_cents,
-    eventFeeCents: order.event_fee_cents,
-    snapshot: order.purchase_snapshot,
-    baseUrl: deps.baseUrl,
-    now: deps.now()
-  })
-  const claim = await deps.store.claimCheckout({
-    registrationId: order.id,
-    householdId: order.household_id,
-    claimId,
-    config
-  })
-
-  if (claim.result === 'claimed' || claim.result === 'already_claimed') {
-    if (claim.status === 'draft') return createAndAttach(deps, order, claim.claim_id, claim.config)
-    return reread(deps, order)
-  }
-  if (claim.result === 'not_claimable') {
-    return claim.hold_expired
-      ? { kind: 'start_again', message: CHECKOUT_MESSAGES.expired }
-      : reread(deps, order)
-  }
-  return { kind: 'error', message: CHECKOUT_MESSAGES.notFound }
-}
-
-/** Another request changed the order; answer from its current state */
-async function reread(deps: CheckoutDeps, order: CheckoutOrder): Promise<PayResult> {
-  const fresh = await deps.store.getOrderForCheckout(order.id, order.household_id)
-  if (!fresh) return { kind: 'error', message: CHECKOUT_MESSAGES.notFound }
-  if (fresh.status === 'draft' && !fresh.checkout_claim_id) {
-    return { kind: 'start_again', message: CHECKOUT_MESSAGES.expired }
-  }
-  return payOrder(deps, fresh)
-}
-
-function redirectTo(session: GatewaySession): PayResult {
-  return session.url
-    ? { kind: 'redirect', url: session.url }
-    : { kind: 'error', message: CHECKOUT_MESSAGES.noCheckoutPage }
-}
-
-async function createAndAttach(
-  deps: CheckoutDeps,
-  order: CheckoutOrder,
-  claimId: string,
-  config: CheckoutConfig
-): Promise<PayResult> {
-  let outcome = await deps.stripe.createCheckoutSession(config)
-  for (let tries = 1; tries < CREATE_TRIES && outcome.kind === 'uncertain'; tries++) {
-    outcome = await deps.stripe.createCheckoutSession(config)
-  }
-  if (outcome.kind === 'uncertain') return { kind: 'try_again', message: CHECKOUT_MESSAGES.starting }
-  if (outcome.kind === 'refused') {
-    console.error(`[CHECKOUT] Stripe refused the checkout for order ${order.id}: ${outcome.message}`)
-    return { kind: 'error', message: CHECKOUT_MESSAGES.couldNotStart }
-  }
-
-  const session = outcome.session
-  const attach = await deps.store.attachCheckoutSession(order.id, claimId, session.id)
-  if (attach.result === 'attached' || attach.result === 'already_attached') {
-    return attach.status === 'pending_payment' ? redirectTo(session) : reread(deps, order)
-  }
-
-  // The order moved on while the session was being made: make sure nobody can pay it
-  await deps.stripe.expireCheckoutSession(session.id, config.account)
-  return reread(deps, order)
-}
-
-async function resumePending(deps: CheckoutDeps, order: CheckoutOrder): Promise<PayResult> {
-  const config = order.checkout_config
-  const sessionId = order.stripe_checkout_session_id
-  if (!config || !sessionId || !order.checkout_claim_id) {
-    return { kind: 'error', message: CHECKOUT_MESSAGES.notFound }
-  }
-  const session = await deps.stripe.retrieveCheckoutSession(sessionId, config.account)
-  if (!session) return { kind: 'try_again', message: CHECKOUT_MESSAGES.starting }
-  if (session.status === 'open') return redirectTo(session)
-  if (session.status === 'complete') {
-    // Task 11 confirms the payment here
-    return { kind: 'try_again', message: CHECKOUT_MESSAGES.paymentWentThrough }
-  }
-  await deps.store.expireCheckout({
-    registrationId: order.id,
-    claimId: order.checkout_claim_id,
-    sessionId,
-    account: config.account
-  })
-  return { kind: 'start_again', message: CHECKOUT_MESSAGES.expired }
-}
-
-export async function cancel(
-  deps: CheckoutDeps,
-  input: { registrationId: string; householdId: string }
-): Promise<CancelResult> {
-  // One re-read is allowed: a Pay click or the webhook may change the order underneath us
-  for (let round = 0; round < 2; round++) {
-    const order = await deps.store.getOrderForCheckout(input.registrationId, input.householdId)
-    if (!order) return { kind: 'error', message: CHECKOUT_MESSAGES.notFound }
-    if (order.status === 'paid') return { kind: 'paid', confirmationNumber: order.confirmation_number }
-    if (order.status === 'expired' || order.status === 'cancelled') return { kind: 'cancelled' }
-
-    if (!order.checkout_claim_id || !order.checkout_config) {
-      const result = await deps.store.cancelOrder(order.id, order.household_id, null)
-      if (result.result === 'cancelled') return { kind: 'cancelled' }
-      continue
-    }
-
-    const closed = await closeCheckout(deps, order, order.checkout_config)
-    if (closed.kind === 'stop') return closed.result
-    const result = await deps.store.cancelOrder(order.id, order.household_id, order.checkout_claim_id)
-    if (result.result === 'cancelled') return { kind: 'cancelled' }
-  }
-  return { kind: 'try_again', message: CHECKOUT_MESSAGES.starting }
-}
-
-type CloseOutcome = { kind: 'closed' } | { kind: 'stop'; result: CancelResult }
-
-/** Makes sure the order's checkout can't be paid: expires it, or proves Stripe never made one. */
-async function closeCheckout(deps: CheckoutDeps, order: CheckoutOrder, config: CheckoutConfig): Promise<CloseOutcome> {
-  let sessionId = order.stripe_checkout_session_id
-  if (!sessionId) {
-    // Pay claimed but never attached a session. Replaying the identical request tells us whether
-    // Stripe made one; a definite refusal means it didn't.
-    const replay = await deps.stripe.createCheckoutSession(config)
-    if (replay.kind === 'refused') return { kind: 'closed' }
-    if (replay.kind === 'uncertain') {
-      return { kind: 'stop', result: { kind: 'try_again', message: CHECKOUT_MESSAGES.starting } }
-    }
-    sessionId = replay.session.id
-  }
-
-  const expired = await deps.stripe.expireCheckoutSession(sessionId, config.account)
-  if (expired.kind === 'expired' || expired.kind === 'already_expired') return { kind: 'closed' }
-  if (expired.kind === 'already_complete') {
-    // Task 11 confirms the payment here
-    return { kind: 'stop', result: { kind: 'try_again', message: CHECKOUT_MESSAGES.paymentWentThrough } }
-  }
-  return { kind: 'stop', result: { kind: 'try_again', message: CHECKOUT_MESSAGES.starting } }
-}
-```
-
-- [ ] **Step 6: Run the tests**
-
-Run: `npm run test:db`
-Expected: PASS. If the Pay-versus-Cancel race ever fails, it has found a real ordering bug. Don't loosen the assertion; fix the workflow.
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add src/app/_payments/stripe-gateway.ts src/app/_payments/checkout-workflow.ts tests/db/helpers/fake-stripe.ts tests/db/checkout-workflow.test.ts
-git commit -m "feat: Pay and Cancel run on one frozen claim, recover uncertain creates and never leave a payable session behind"
-```
-
----
-
-### Task 10: Migration 015, confirmation in one transaction, payment cases and the parent view
+### Task 9: Migration 015, confirmation in one transaction, payment cases and the parent view
 
 **Files:**
 - Create: `supabase/migrations/015_payment_confirmation.sql`
@@ -4329,25 +3698,21 @@ git commit -m "feat: Pay and Cancel run on one frozen claim, recover uncertain c
   - `_assign_numbers_for_registration` (migration 007)
   - the claim functions (Task 8)
   - `buildCheckoutConfig` (Task 5)
-- Produces:
-  - **Tables:**
-    - `payment_exceptions`
-    - `notifications`, with every column §12 needs: `kind`, `dedupe_key`, `registration_id`, `exception_id`, `related_notification_id`, `recipient`, `payload`, `status`, `attempts`, `send_generation`, `last_outcome`, `first_attempt_at`, `next_attempt_at`, `claim_token`, `claimed_at`, `provider_message_id`, `last_error`, `sent_at` and `created_at`
-  - **SQL, internal:**
-    - `_random_code`, `new_confirmation_number` and `new_support_ref`
-    - `_record_payment_exception(...) → text` (the support reference)
-    - `_fulfil_order(...) → text` (the confirmation number)
-  - **SQL, service role:**
-    - `confirm_order_payment(p_registration_id uuid, p_claim_id uuid, p_session_id text, p_account text, p_amount_cents integer, p_currency text, p_payment_status text, p_payment_intent_id text, p_charge_id text, p_event_id text, p_source text) → jsonb`
-    - `record_payment_failure(p_registration_id uuid, p_claim_id uuid, p_session_id text, p_account text, p_event_id text) → jsonb`
-  - **SQL, authenticated:** `get_my_payment_reviews(p_registration_id uuid DEFAULT NULL) → jsonb`, a restricted array.
-  - **Store:**
-    - `confirmOrderPayment(input: ConfirmPaymentInput): Promise<ConfirmResult>`
-    - `recordPaymentFailure(input): Promise<PaymentFailureResult>`
-    - the types `PaymentExceptionReason`, `ConfirmPaymentInput`, `ConfirmResult` and `PaymentFailureResult`
-  - **Fixtures:**
-    - `checkoutConfigFor(order, claimId)`
-    - `readyToPay(pool, order, { attach })`, which resolves to `{ claimId, config, sessionId }`
+- Produces tables:
+  - `payment_exceptions`
+  - `notifications`, with every column §12 needs: `kind`, `dedupe_key`, `registration_id`, `exception_id`, `related_notification_id`, `recipient`, `payload`, `status`, `attempts`, `send_generation`, `last_outcome`, `first_attempt_at`, `next_attempt_at`, `claim_token`, `claimed_at`, `provider_message_id`, `last_error`, `sent_at` and `created_at`
+- Produces SQL functions:
+  - internal: `_random_code`, `new_confirmation_number`, `new_support_ref`, `_record_payment_exception(...) → text` (the support reference) and `_fulfil_order(...) → text` (the confirmation number)
+  - service role: `confirm_order_payment(p_registration_id uuid, p_claim_id uuid, p_session_id text, p_account text, p_amount_cents integer, p_currency text, p_payment_status text, p_payment_intent_id text, p_charge_id text, p_event_id text, p_source text) → jsonb`
+  - service role: `record_payment_failure(p_registration_id uuid, p_claim_id uuid, p_session_id text, p_account text, p_event_id text) → jsonb`
+  - authenticated: `get_my_payment_reviews(p_registration_id uuid DEFAULT NULL) → jsonb`, a restricted array
+- Produces store methods and types:
+  - `confirmOrderPayment(input: ConfirmPaymentInput): Promise<ConfirmResult>`
+  - `recordPaymentFailure(input): Promise<PaymentFailureResult>`
+  - types `PaymentExceptionReason` (which includes `claim_mismatch`), `ConfirmPaymentInput`, `ConfirmResult` and `PaymentFailureResult`
+- Produces fixtures:
+  - `checkoutConfigFor(order, claimId)`
+  - `readyToPay(pool, order, { attach })`, which resolves to `{ claimId, config, sessionId }`
 
 - [ ] **Step 1: Add the store methods and types**
 
@@ -4357,6 +3722,7 @@ export type PaymentExceptionReason =
   | 'amount_mismatch'
   | 'currency_mismatch'
   | 'account_mismatch'
+  | 'claim_mismatch'
   | 'session_mismatch'
   | 'payment_reused'
   | 'order_not_payable'
@@ -4386,7 +3752,7 @@ export type ConfirmResult =
 
 export type PaymentFailureResult = { result: 'recorded'; support_ref: string } | { result: 'ignored' }
 ```
-Then add these to the returned object:
+Then add these to the object `createOrderStore` returns:
 ```ts
     async confirmOrderPayment(input: ConfirmPaymentInput): Promise<ConfirmResult> {
       return (await rpc('confirm_order_payment', {
@@ -4423,7 +3789,7 @@ Then add these to the returned object:
 
 - [ ] **Step 2: Add the checkout fixtures**
 
-Append to `tests/db/helpers/fixtures.ts`, and move the new imports to the top of the file:
+Append to `tests/db/helpers/fixtures.ts`, and move the new import to the top of the file:
 ```ts
 import { buildCheckoutConfig, type CheckoutConfig } from '@/lib/engine/checkout-config'
 
@@ -4564,8 +3930,8 @@ describe('confirm_order_payment', () => {
     ['amount_mismatch', { amountCents: 3999 }],
     ['currency_mismatch', { currency: 'eur' }],
     ['account_mismatch', { account: 'acct_other' }],
+    ['claim_mismatch', { claimId: randomUUID() }],
     ['session_mismatch', { sessionId: 'cs_someone_else' }],
-    ['session_mismatch', { claimId: randomUUID() }],
   ] as const)('records a %s case instead of confirming, once per session', async (reason, overrides) => {
     const order = await createDraftOrder(db.pool)
     const ready = await readyToPay(db.pool, order)
@@ -4673,6 +4039,22 @@ describe('confirm_order_payment', () => {
     expect((await store.confirmOrderPayment(payment(order, ready))).result).toBe('confirmed')
   })
 
+  it('lets an unrelated uniqueness failure roll back for a retry instead of calling it a conflict', async () => {
+    const order = await createDraftOrder(db.pool)
+    const ready = await readyToPay(db.pool, order)
+    await db.pool.query(`
+      CREATE OR REPLACE FUNCTION public.fake_unique_failure() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE unique_violation USING MESSAGE = 'duplicate key in some other table', CONSTRAINT = 'some_other_unique'; END $$;
+      CREATE TRIGGER fake_unique_failure BEFORE INSERT ON pre_registration.registration_snapshots
+        FOR EACH ROW EXECUTE FUNCTION public.fake_unique_failure();`)
+    try {
+      expect(await refused(store.confirmOrderPayment(payment(order, ready)))).toMatch(/duplicate key in some other table/)
+      expect(await counts(order.registrationId)).toEqual({ snapshots: 0, emails: 0, numbers: 0, cases: 0 })
+    } finally {
+      await db.pool.query('DROP TRIGGER fake_unique_failure ON pre_registration.registration_snapshots')
+    }
+  })
+
   it('confirms, and flags it, when the feis has since switched Stripe accounts', async () => {
     const order = await createDraftOrder(db.pool)
     const ready = await readyToPay(db.pool, order)
@@ -4746,8 +4128,9 @@ CREATE TABLE IF NOT EXISTS payment_exceptions (
   support_ref text NOT NULL UNIQUE,
   severity text NOT NULL CHECK (severity IN ('blocking', 'notice')),
   reason text NOT NULL CHECK (reason IN (
-    'amount_mismatch', 'currency_mismatch', 'account_mismatch', 'session_mismatch', 'payment_reused',
-    'order_not_payable', 'late_payment_conflict', 'order_not_found', 'payment_failed', 'listing_account_changed')),
+    'amount_mismatch', 'currency_mismatch', 'account_mismatch', 'claim_mismatch', 'session_mismatch',
+    'payment_reused', 'order_not_payable', 'late_payment_conflict', 'order_not_found', 'payment_failed',
+    'listing_account_changed')),
   registration_id uuid REFERENCES registrations(id),
   household_id uuid REFERENCES households(id),
   feis_listing_id uuid REFERENCES feis_listings(id),
@@ -4977,7 +4360,7 @@ BEGIN
 
   -- Every check is against the order's own claim, never the listing's current settings
   v_reason := CASE
-    WHEN v_order.checkout_claim_id IS NULL OR v_order.checkout_claim_id IS DISTINCT FROM p_claim_id THEN 'session_mismatch'
+    WHEN v_order.checkout_claim_id IS NULL OR v_order.checkout_claim_id IS DISTINCT FROM p_claim_id THEN 'claim_mismatch'
     WHEN v_order.checkout_config ->> 'account' IS DISTINCT FROM p_account THEN 'account_mismatch'
     WHEN v_order.stripe_checkout_session_id IS NOT NULL
          AND v_order.stripe_checkout_session_id IS DISTINCT FROM p_session_id THEN 'session_mismatch'
@@ -5006,10 +4389,11 @@ BEGIN
       p_amount_cents, lower(p_currency));
   EXCEPTION WHEN unique_violation THEN
     GET STACKED DIAGNOSTICS v_constraint = CONSTRAINT_NAME;
+    -- Only the one-active-order rule means "a newer order got there first". Any other uniqueness
+    -- failure (numbers, payment reuse) rolls the whole transaction back so Stripe retries it.
     IF v_constraint IS DISTINCT FROM 'idx_registrations_active_unique' THEN
       RAISE;
     END IF;
-    -- A conflicting order slipped past the checks: keep both and record it, never fail
     v_ref := _record_payment_exception('blocking', 'late_payment_conflict', p_registration_id, p_claim_id,
       p_event_id, p_account, p_session_id, p_payment_intent_id, p_amount_cents, p_currency,
       v_details || jsonb_build_object('caught', v_constraint));
@@ -5108,31 +4492,51 @@ git commit -m "feat: confirm payments in one transaction and record every case t
 
 ---
 
-### Task 11: Confirmation sync, parent messages and the new webhook
+### Task 10: The Stripe gateway, a fake Stripe, and the Pay, Cancel and sync workflows
 
 **Files:**
 - Create: `src/lib/payment-review-messages.ts`
-- Modify: `src/app/_payments/checkout-workflow.ts` (real confirmation in place of the two placeholders, plus `syncConfirmation`)
-- Create: `src/app/_payments/webhook-handler.ts`
-- Modify: `src/app/api/webhooks/stripe/route.ts` (rewrite)
-- Test: `tests/payment-review-messages.test.ts`, `tests/db/webhook-handler.test.ts`
-- Modify: `tests/db/checkout-workflow.test.ts` (replace one test, add four)
+- Create: `src/app/_payments/stripe-gateway.ts`
+- Create: `src/app/_payments/checkout-workflow.ts`
+- Create: `tests/db/helpers/fake-stripe.ts`
+- Test: `tests/payment-review-messages.test.ts`, `tests/db/checkout-workflow.test.ts`
 
 **Interfaces:**
 - Consumes:
-  - `confirmOrderPayment`, `recordPaymentFailure`, `expireCheckout` and `ConfirmResult` (Tasks 8 and 10)
-  - `toGatewaySession` (Task 9)
+  - `CheckoutConfig` and `buildCheckoutConfig`, `checkoutBlockReason` and `CHECKOUT_BLOCK_MESSAGES`, `classifyStripeError` and `StripeFailure` (Task 5)
+  - `OrderStore`, `CheckoutOrder` (with `checkout_claimed_at`), `ClaimResult` and `ConfirmResult` (Tasks 6, 8 and 9)
 - Produces:
   - **Parent messages:**
     - `ReviewMessageCode = 'A' | 'B' | 'C'`
-    - `reviewCodeForReason(reason): ReviewMessageCode | null`
-    - `reviewMessage(code, supportRef): string`
+    - `reviewCodeForReason(reason)` and `reviewMessage(code, supportRef)`
+  - **Gateway:**
+    - `StripeGateway`, with `createCheckoutSession(config): CreateSessionOutcome`, `retrieveCheckoutSession(id, account)`, `listClaimSessions(account, claimId, from, to)`, `expireCheckoutSession(id, account): ExpireSessionOutcome` and `latestChargeId(...)`
+    - `GatewaySession`, `toGatewaySession` and `checkoutSessionParams`
+    - `createStripeGateway(stripe)`
   - **Workflow:**
-    - `payResultFromConfirmation(result): PayResult`
-    - `syncConfirmation(deps, { registrationId, householdId, sessionIdHint? }): Promise<PayResult | null>`
-  - **Webhook:** `handleStripeEvent(deps: WebhookDeps, event): Promise<WebhookOutcome>`, where `WebhookOutcome = { status: 200 | 500; registrationId: string | null; body }`.
+    - `CheckoutDeps`, which is `{ store, stripe, now, wait, baseUrl, newClaimId }`
+    - `PayResult` and `CancelResult`
+    - `pay(deps, ids)`, `cancel(deps, ids)` and `syncConfirmation(deps, ids)`
+    - `payResultFromConfirmation(result)` and `CHECKOUT_MESSAGES`
+    - `CREATE_DEADLINE_MS = 5 min` and `CREATE_SETTLED_AFTER_MS = 10 min`
+  - **Test double:** `FakeStripe`, a `StripeGateway` with:
+    - forced create outcomes `retry-before`, `retry-after`, `cached-500`, `in-progress` and `reject`
+    - `listFails`
+    - `pay(sessionId)`, `expire(sessionId)` and `sessionsFor(registrationId)`
 
-- [ ] **Step 1: Write the failing message tests**
+How a claim's session is found and settled (spec §6a), in one place:
+- **`locateClaimSession`:**
+  - If a session is attached, retrieve it.
+  - Otherwise, list the bound account's sessions created in the claim window and match the claim.
+  - The result is `none` only when nothing is found **and** the claim is more than 10 minutes old. By then no create request can still be running: Pay sends no create request more than 5 minutes after the claim.
+- **`settleSession`:**
+  - An `open` session is resumed, or expired and checked expired.
+  - An `expired` session counts as closed.
+  - A `complete` and paid session goes through `confirm_order_payment`.
+  - Anything else, including an expiry Stripe won't confirm, is unknown: the order is kept.
+- **Errors never decide on their own:** a Stripe error never by itself decides whether a session exists. When a create attempt ends without a session, the workflow looks the session up.
+
+- [ ] **Step 1: Write and pass the parent-message tests**
 
 Create `tests/payment-review-messages.test.ts`:
 ```ts
@@ -5155,7 +4559,7 @@ describe('parent review messages', () => {
   })
 
   it('shows families nothing for cases where the payer may not be them', () => {
-    for (const reason of ['account_mismatch', 'session_mismatch', 'payment_reused', 'order_not_found', 'listing_account_changed']) {
+    for (const reason of ['account_mismatch', 'claim_mismatch', 'session_mismatch', 'payment_reused', 'order_not_found', 'listing_account_changed']) {
       expect(reviewCodeForReason(reason)).toBeNull()
     }
   })
@@ -5165,9 +4569,6 @@ describe('parent review messages', () => {
   })
 })
 ```
-
-- [ ] **Step 2: Write the messages module**
-
 Create `src/lib/payment-review-messages.ts`:
 ```ts
 /** Parent-facing payment messages, worded exactly as in the payment hardening spec (§10). */
@@ -5202,28 +4603,474 @@ export function reviewMessage(code: ReviewMessageCode, supportRef: string | null
 Run: `npx vitest run tests/payment-review-messages.test.ts`
 Expected: PASS.
 
-- [ ] **Step 3: Write the failing workflow and webhook tests**
+- [ ] **Step 2: Write the Stripe gateway**
 
-In `tests/db/checkout-workflow.test.ts`:
-
-(a) Add `syncConfirmation` to the workflow import, and `readyToPay` to the fixtures import.
-
-(b) Replace the test `'refuses to cancel once the family has paid'` with:
+Create `src/app/_payments/stripe-gateway.ts`:
 ```ts
-  it('confirms the payment instead of cancelling once the family has paid', async () => {
-    const stripe = new FakeStripe()
-    const order = await createDraftOrder(db.pool)
-    await pay(deps(stripe), ids(order))
-    stripe.pay('cs_test_1')
-    const result = await cancel(deps(stripe), ids(order))
-    expect(result.kind).toBe('paid')
-    expect((await orderRow(order.registrationId)).status).toBe('paid')
-  })
+import type Stripe from 'stripe'
+import type { CheckoutConfig } from '@/lib/engine/checkout-config'
+import { classifyStripeError, type StripeFailure } from '@/lib/engine/stripe-errors'
+
+export interface GatewaySession {
+  id: string
+  url: string | null
+  status: 'open' | 'complete' | 'expired'
+  paymentStatus: 'paid' | 'unpaid' | 'no_payment_required'
+  amountTotal: number | null
+  currency: string | null
+  paymentIntentId: string | null
+  metadata: Record<string, string>
+}
+
+export type CreateSessionOutcome =
+  | { kind: 'created'; session: GatewaySession }
+  | { kind: 'failed'; failure: StripeFailure; message: string }
+
+/** What Stripe says the session is after an attempt to expire it. Read back, never assumed. */
+export type ExpireSessionOutcome =
+  | { kind: 'expired'; session: GatewaySession }
+  | { kind: 'complete'; session: GatewaySession }
+  | { kind: 'unknown'; message: string }
+
+export interface StripeGateway {
+  /** Sends exactly the frozen request, with its idempotency key, on its bound account */
+  createCheckoutSession(config: CheckoutConfig): Promise<CreateSessionOutcome>
+  /** null when Stripe couldn't be reached */
+  retrieveCheckoutSession(sessionId: string, account: string): Promise<GatewaySession | null>
+  /** The account's sessions created in the window whose metadata names this claim; null if Stripe couldn't be reached */
+  listClaimSessions(account: string, claimId: string, createdFrom: Date, createdTo: Date): Promise<GatewaySession[] | null>
+  expireCheckoutSession(sessionId: string, account: string): Promise<ExpireSessionOutcome>
+  latestChargeId(paymentIntentId: string, account: string): Promise<string | null>
+}
+
+export function toGatewaySession(session: Stripe.Checkout.Session): GatewaySession {
+  const paymentIntent = session.payment_intent
+  return {
+    id: session.id,
+    url: session.url ?? null,
+    status: session.status ?? 'open',
+    paymentStatus: session.payment_status,
+    amountTotal: session.amount_total ?? null,
+    currency: session.currency ?? null,
+    paymentIntentId: typeof paymentIntent === 'string' ? paymentIntent : (paymentIntent?.id ?? null),
+    metadata: (session.metadata ?? {}) as Record<string, string>
+  }
+}
+
+export function checkoutSessionParams(config: CheckoutConfig): Stripe.Checkout.SessionCreateParams {
+  return {
+    mode: 'payment',
+    line_items: config.line_items.map((item) => ({
+      price_data: {
+        currency: config.currency,
+        product_data: { name: item.name },
+        unit_amount: item.amount_cents
+      },
+      quantity: 1
+    })),
+    payment_method_types: [...config.payment_method_types],
+    payment_intent_data: { application_fee_amount: config.application_fee_cents },
+    success_url: config.success_url,
+    cancel_url: config.cancel_url,
+    expires_at: config.expires_at,
+    client_reference_id: config.client_reference_id,
+    // Built field by field, so a config read back from the database (jsonb reorders keys)
+    // produces exactly the same request as the one first sent
+    metadata: { registration_id: config.metadata.registration_id, claim_id: config.metadata.claim_id }
+  }
+}
+
+function message(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
+export function createStripeGateway(stripe: Stripe): StripeGateway {
+  async function retrieveCheckoutSession(sessionId: string, account: string): Promise<GatewaySession | null> {
+    try {
+      return toGatewaySession(await stripe.checkout.sessions.retrieve(sessionId, {}, { stripeAccount: account }))
+    } catch {
+      return null
+    }
+  }
+
+  return {
+    async createCheckoutSession(config) {
+      try {
+        const session = await stripe.checkout.sessions.create(checkoutSessionParams(config), {
+          stripeAccount: config.account,
+          idempotencyKey: config.idempotency_key
+        })
+        return { kind: 'created', session: toGatewaySession(session) }
+      } catch (err) {
+        return { kind: 'failed', failure: classifyStripeError(err), message: message(err) }
+      }
+    },
+
+    retrieveCheckoutSession,
+
+    async listClaimSessions(account, claimId, createdFrom, createdTo) {
+      try {
+        const found: GatewaySession[] = []
+        const sessions = stripe.checkout.sessions.list(
+          {
+            created: { gte: Math.floor(createdFrom.getTime() / 1000), lte: Math.ceil(createdTo.getTime() / 1000) },
+            limit: 100
+          },
+          { stripeAccount: account }
+        )
+        for await (const session of sessions) {
+          if (session.metadata?.claim_id === claimId) found.push(toGatewaySession(session))
+        }
+        return found
+      } catch {
+        return null
+      }
+    },
+
+    async expireCheckoutSession(sessionId, account) {
+      let failure = ''
+      try {
+        await stripe.checkout.sessions.expire(sessionId, {}, { stripeAccount: account })
+      } catch (err) {
+        // Stripe refuses for a session that is complete or already expired. Inspect it either way.
+        failure = message(err)
+      }
+      const current = await retrieveCheckoutSession(sessionId, account)
+      if (current?.status === 'expired') return { kind: 'expired', session: current }
+      if (current?.status === 'complete') return { kind: 'complete', session: current }
+      return {
+        kind: 'unknown',
+        message: current ? `checkout is still ${current.status}` : failure || 'Stripe could not be reached'
+      }
+    },
+
+    async latestChargeId(paymentIntentId, account) {
+      try {
+        const intent = await stripe.paymentIntents.retrieve(paymentIntentId, {}, { stripeAccount: account })
+        const charge = intent.latest_charge
+        return typeof charge === 'string' ? charge : (charge?.id ?? null)
+      } catch {
+        return null
+      }
+    }
+  }
+}
 ```
 
-(c) Add a new block:
+- [ ] **Step 3: Write the fake Stripe**
+
+Create `tests/db/helpers/fake-stripe.ts`:
 ```ts
-describe('confirmation without waiting for the webhook', () => {
+import type { CheckoutConfig } from '@/lib/engine/checkout-config'
+import type { StripeFailure } from '@/lib/engine/stripe-errors'
+import {
+  checkoutSessionParams,
+  type CreateSessionOutcome,
+  type ExpireSessionOutcome,
+  type GatewaySession,
+  type StripeGateway
+} from '@/app/_payments/stripe-gateway'
+
+type StoredSession = GatewaySession & { account: string; created: number }
+
+type ForcedCreate =
+  | 'retry-before' // Stripe never saw the request
+  | 'retry-after' // Stripe made the session, but the reply was lost
+  | 'cached-500' // Stripe made the session, answered 500, and replays that 500 for this key
+  | 'in-progress' // another request with this key is still running
+  | 'reject' // Stripe refuses, and replays the refusal for this key
+
+/**
+ * Behaves like Stripe where it matters here:
+ * - the same idempotency key with the same parameters returns the stored result, including a stored
+ *   refusal or a cached 500
+ * - the same key with different parameters is refused
+ * - a new session must expire at least 30 minutes after it is made
+ * - complete sessions can't be expired
+ */
+export class FakeStripe implements StripeGateway {
+  readonly sessions = new Map<string, StoredSession>()
+  nextCreate: ForcedCreate[] = []
+  /** Make every list call fail, as if Stripe were unreachable */
+  listFails = false
+  createCalls = 0
+  private readonly byKey = new Map<string, { params: string; outcome: CreateSessionOutcome }>()
+  private counter = 0
+
+  constructor(private readonly now: () => Date = () => new Date()) {}
+
+  async createCheckoutSession(config: CheckoutConfig): Promise<CreateSessionOutcome> {
+    this.createCalls++
+    const forced = this.nextCreate.shift()
+    if (forced === 'retry-before') return this.failure('retry', 'connection reset before Stripe')
+    if (forced === 'in-progress') return this.failure('in_progress', 'idempotency_key_in_use')
+
+    const params = JSON.stringify(checkoutSessionParams(config)) + config.account
+    const stored = this.byKey.get(config.idempotency_key)
+    if (stored) {
+      if (stored.params !== params) {
+        return this.failure('rejected', 'Keys for idempotent requests can only be used with the same parameters')
+      }
+      return stored.outcome
+    }
+
+    if (forced === 'reject') {
+      const refusal = this.failure('rejected', 'Your account cannot currently make live charges.')
+      this.byKey.set(config.idempotency_key, { params, outcome: refusal })
+      return refusal
+    }
+    if (config.expires_at * 1000 < this.now().getTime() + 30 * 60_000) {
+      return this.failure('rejected', 'expires_at must be at least 30 minutes in the future')
+    }
+
+    const session = this.makeSession(config)
+    if (forced === 'cached-500') {
+      const serverError = this.failure('retry', 'Stripe API error (500)')
+      this.byKey.set(config.idempotency_key, { params, outcome: serverError })
+      return serverError
+    }
+    const created: CreateSessionOutcome = { kind: 'created', session: this.view(session) }
+    this.byKey.set(config.idempotency_key, { params, outcome: created })
+    if (forced === 'retry-after') return this.failure('retry', 'reply lost after Stripe made the session')
+    return created
+  }
+
+  async retrieveCheckoutSession(sessionId: string, account: string): Promise<GatewaySession | null> {
+    const session = this.sessions.get(sessionId)
+    return session && session.account === account ? this.view(session) : null
+  }
+
+  async listClaimSessions(account: string, claimId: string, createdFrom: Date, createdTo: Date): Promise<GatewaySession[] | null> {
+    if (this.listFails) return null
+    return [...this.sessions.values()]
+      .filter((s) =>
+        s.account === account && s.metadata.claim_id === claimId &&
+        s.created >= createdFrom.getTime() && s.created <= createdTo.getTime())
+      .map((s) => this.view(s))
+  }
+
+  async expireCheckoutSession(sessionId: string, account: string): Promise<ExpireSessionOutcome> {
+    const session = this.sessions.get(sessionId)
+    if (!session || session.account !== account) return { kind: 'unknown', message: 'No such checkout.session' }
+    if (session.status === 'open') session.status = 'expired'
+    return session.status === 'complete'
+      ? { kind: 'complete', session: this.view(session) }
+      : { kind: 'expired', session: this.view(session) }
+  }
+
+  async latestChargeId(paymentIntentId: string): Promise<string | null> {
+    return `ch_for_${paymentIntentId}`
+  }
+
+  /** The family pays on Stripe's page */
+  pay(sessionId: string): GatewaySession {
+    const session = this.sessions.get(sessionId)
+    if (!session || session.status !== 'open') throw new Error(`checkout ${sessionId} is not open`)
+    session.status = 'complete'
+    session.paymentStatus = 'paid'
+    session.paymentIntentId = `pi_${sessionId}`
+    return this.view(session)
+  }
+
+  /** Stripe expires the session on its own */
+  expire(sessionId: string): GatewaySession {
+    const session = this.sessions.get(sessionId)
+    if (!session || session.status !== 'open') throw new Error(`checkout ${sessionId} is not open`)
+    session.status = 'expired'
+    return this.view(session)
+  }
+
+  sessionsFor(registrationId: string): StoredSession[] {
+    return [...this.sessions.values()].filter((s) => s.metadata.registration_id === registrationId)
+  }
+
+  private makeSession(config: CheckoutConfig): StoredSession {
+    const id = `cs_test_${++this.counter}`
+    const session: StoredSession = {
+      id, url: `https://checkout.stripe.test/${id}`, status: 'open', paymentStatus: 'unpaid',
+      amountTotal: config.total_cents, currency: config.currency, paymentIntentId: null,
+      metadata: { ...config.metadata }, account: config.account, created: this.now().getTime(),
+    }
+    this.sessions.set(id, session)
+    return session
+  }
+
+  private failure(failure: StripeFailure, message: string): CreateSessionOutcome {
+    return { kind: 'failed', failure, message }
+  }
+
+  private view(session: StoredSession): GatewaySession {
+    return {
+      id: session.id, url: session.url, status: session.status, paymentStatus: session.paymentStatus,
+      amountTotal: session.amountTotal, currency: session.currency, paymentIntentId: session.paymentIntentId,
+      metadata: { ...session.metadata },
+    }
+  }
+}
+```
+
+- [ ] **Step 4: Write the failing workflow tests**
+
+Create `tests/db/checkout-workflow.test.ts`:
+```ts
+import { randomUUID } from 'node:crypto'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { cancel, CHECKOUT_MESSAGES, pay, syncConfirmation, type CheckoutDeps } from '@/app/_payments/checkout-workflow'
+import { createOrderStore, type OrderStore } from '@/app/_payments/order-store'
+import { reviewMessage } from '@/lib/payment-review-messages'
+import { createTestDatabase, type TestDatabase } from './helpers/db'
+import { FakeStripe } from './helpers/fake-stripe'
+import { checkoutConfigFor, createDraftOrder, type DraftOrderFixture } from './helpers/fixtures'
+import { pgRpc } from './helpers/pg-rpc'
+
+let db: TestDatabase
+let store: OrderStore
+
+beforeAll(async () => {
+  db = await createTestDatabase()
+  store = createOrderStore(pgRpc(db.pool))
+})
+
+afterAll(async () => {
+  await db.drop()
+})
+
+function deps(stripe: FakeStripe, overrides: Partial<CheckoutDeps> = {}): CheckoutDeps {
+  return {
+    store, stripe, now: () => new Date(), wait: async () => undefined,
+    baseUrl: 'https://runfeis.test', newClaimId: () => randomUUID(),
+    ...overrides,
+  }
+}
+
+/** A clock this many minutes ahead of the database, as if the family came back later */
+const minutesLater = (minutes: number) => () => new Date(Date.now() + minutes * 60_000)
+
+const ids = (order: DraftOrderFixture) => ({ registrationId: order.registrationId, householdId: order.family.householdId })
+
+async function orderRow(id: string) {
+  const { rows } = await db.pool.query('SELECT * FROM registrations WHERE id = $1', [id])
+  return rows[0]
+}
+
+/** A store whose attach step dies, like a Pay request that stopped after Stripe made the session */
+const crashingAttach = (): OrderStore => ({ ...store, attachCheckoutSession: async () => { throw new Error('crashed') } })
+
+/** Claims checkout the way Pay does, without making a session: a Pay that stopped right after claiming */
+async function claimOnly(order: DraftOrderFixture) {
+  const claimId = randomUUID()
+  const config = checkoutConfigFor(order, claimId)
+  const claim = await store.claimCheckout({
+    registrationId: order.registrationId, householdId: order.family.householdId, claimId, config,
+  })
+  if (claim.result !== 'claimed') throw new Error('expected a claim')
+  return { claimId, config }
+}
+
+describe('pay', () => {
+  it('creates one checkout and moves the order to pending_payment', async () => {
+    const stripe = new FakeStripe()
+    const order = await createDraftOrder(db.pool)
+    expect(await pay(deps(stripe), ids(order))).toEqual({ kind: 'redirect', url: 'https://checkout.stripe.test/cs_test_1' })
+    const row = await orderRow(order.registrationId)
+    expect(row).toMatchObject({ status: 'pending_payment', stripe_checkout_session_id: 'cs_test_1' })
+    expect(row.checkout_config.payment_method_types).toEqual(['card'])
+    expect(stripe.sessions.size).toBe(1)
+  })
+
+  it('gives two simultaneous clicks one claim and one session', async () => {
+    const stripe = new FakeStripe()
+    const order = await createDraftOrder(db.pool)
+    const [a, b] = await Promise.all([pay(deps(stripe), ids(order)), pay(deps(stripe), ids(order))])
+    expect(a).toEqual(b)
+    expect(a.kind).toBe('redirect')
+    expect(stripe.sessionsFor(order.registrationId)).toHaveLength(1)
+  })
+
+  it('resumes the same session after the family backs out of Stripe', async () => {
+    const stripe = new FakeStripe()
+    const order = await createDraftOrder(db.pool)
+    const first = await pay(deps(stripe), ids(order))
+    expect(await pay(deps(stripe), ids(order))).toEqual(first)
+    expect(stripe.createCalls).toBe(1)
+  })
+
+  it('recovers a session Stripe made before an earlier Pay stopped', async () => {
+    const stripe = new FakeStripe()
+    const order = await createDraftOrder(db.pool)
+    expect(await pay({ ...deps(stripe), store: crashingAttach() }, ids(order)).catch(() => null)).toBeNull()
+    expect((await orderRow(order.registrationId)).stripe_checkout_session_id).toBeNull()
+
+    expect(await pay(deps(stripe), ids(order))).toEqual({ kind: 'redirect', url: 'https://checkout.stripe.test/cs_test_1' })
+    expect(stripe.sessionsFor(order.registrationId)).toHaveLength(1)
+    expect((await orderRow(order.registrationId)).stripe_checkout_session_id).toBe('cs_test_1')
+  })
+
+  it('replays retryable failures with the identical request', async () => {
+    const stripe = new FakeStripe()
+    stripe.nextCreate = ['retry-before', 'retry-after']
+    const order = await createDraftOrder(db.pool)
+    expect((await pay(deps(stripe), ids(order))).kind).toBe('redirect')
+    expect(stripe.createCalls).toBe(3)
+    expect(stripe.sessionsFor(order.registrationId)).toHaveLength(1)
+  })
+
+  it('finds a session hidden behind a cached 500 by looking it up, and resumes it', async () => {
+    const stripe = new FakeStripe()
+    stripe.nextCreate = ['cached-500']
+    const order = await createDraftOrder(db.pool)
+    expect(await pay(deps(stripe), ids(order))).toEqual({ kind: 'redirect', url: 'https://checkout.stripe.test/cs_test_1' })
+    expect(stripe.createCalls).toBe(4)
+    expect((await orderRow(order.registrationId)).stripe_checkout_session_id).toBe('cs_test_1')
+  })
+
+  it('waits instead of guessing while the same request is still in progress', async () => {
+    const stripe = new FakeStripe()
+    stripe.nextCreate = ['in-progress', 'in-progress', 'in-progress', 'in-progress']
+    const order = await createDraftOrder(db.pool)
+    expect(await pay(deps(stripe), ids(order))).toEqual({ kind: 'try_again', message: CHECKOUT_MESSAGES.starting })
+    const row = await orderRow(order.registrationId)
+    expect(row.status).toBe('draft')
+    expect(row.checkout_claim_id).not.toBeNull()
+  })
+
+  it('reports a refusal without cancelling, and frees the family only once no session can exist', async () => {
+    const stripe = new FakeStripe()
+    stripe.nextCreate = ['reject']
+    const order = await createDraftOrder(db.pool)
+    expect(await pay(deps(stripe), ids(order))).toEqual({ kind: 'error', message: CHECKOUT_MESSAGES.couldNotStart })
+    expect((await orderRow(order.registrationId)).status).toBe('draft')
+
+    // 11 minutes on: no create request can still be running, and Stripe has no session for the claim
+    expect((await pay(deps(stripe, { now: minutesLater(11) }), ids(order))).kind).toBe('start_again')
+    expect((await orderRow(order.registrationId)).status).toBe('cancelled')
+    expect(stripe.sessions.size).toBe(0)
+  })
+
+  it('starts no checkout once the organiser closes registration, and leaves the order alone', async () => {
+    const stripe = new FakeStripe()
+    const order = await createDraftOrder(db.pool)
+    await db.pool.query(`UPDATE feis_listings SET status = 'closed' WHERE id = $1`, [order.listing.listing.id])
+    expect(await pay(deps(stripe), ids(order)))
+      .toEqual({ kind: 'blocked', message: 'Registration has been closed by the organiser.' })
+    expect((await orderRow(order.registrationId)).checkout_claim_id).toBeNull()
+  })
+
+  it('lets a submitted order be paid after the deadline while registration stays open', async () => {
+    const stripe = new FakeStripe()
+    const order = await createDraftOrder(db.pool)
+    await db.pool.query(`UPDATE feis_listings SET reg_closes_at = now() - interval '1 minute' WHERE id = $1`, [order.listing.listing.id])
+    expect((await pay(deps(stripe), ids(order))).kind).toBe('redirect')
+  })
+
+  it('asks the family to start again once the hold has passed', async () => {
+    const stripe = new FakeStripe()
+    const order = await createDraftOrder(db.pool)
+    await db.pool.query(`UPDATE registrations SET hold_expires_at = now() - interval '1 minute' WHERE id = $1`, [order.registrationId])
+    expect(await pay(deps(stripe), ids(order))).toEqual({ kind: 'start_again', message: CHECKOUT_MESSAGES.expired })
+    expect(stripe.createCalls).toBe(0)
+  })
+
   it('confirms when the family paid and comes back before the webhook', async () => {
     const stripe = new FakeStripe()
     const order = await createDraftOrder(db.pool)
@@ -5234,23 +5081,129 @@ describe('confirmation without waiting for the webhook', () => {
     if (result.kind === 'paid') expect(result.confirmationNumber).toMatch(/^RF-/)
   })
 
+  it('settles a session that was paid while the order moved on, instead of trying to expire it', async () => {
+    const stripe = new FakeStripe()
+    const order = await createDraftOrder(db.pool)
+    // While Pay is attaching, the family has already paid and the order's hold has run out
+    const racing: OrderStore = {
+      ...store,
+      attachCheckoutSession: async (registrationId, claimId, sessionId) => {
+        stripe.pay(sessionId)
+        await store.expireCheckout({ registrationId, claimId, sessionId, account: 'acct_test_feis' })
+        return store.attachCheckoutSession(registrationId, claimId, sessionId)
+      },
+    }
+    expect((await pay({ ...deps(stripe), store: racing }, ids(order))).kind).toBe('paid')
+    expect((await orderRow(order.registrationId)).status).toBe('paid')
+  })
+})
+
+describe('cancel', () => {
+  it('cancels an unclaimed draft', async () => {
+    const order = await createDraftOrder(db.pool)
+    expect(await cancel(deps(new FakeStripe()), ids(order))).toEqual({ kind: 'cancelled' })
+    expect((await orderRow(order.registrationId)).status).toBe('cancelled')
+  })
+
+  it('closes the Stripe page, and checks it closed, before cancelling during checkout', async () => {
+    const stripe = new FakeStripe()
+    const order = await createDraftOrder(db.pool)
+    await pay(deps(stripe), ids(order))
+    expect(await cancel(deps(stripe), ids(order))).toEqual({ kind: 'cancelled' })
+    expect(stripe.sessions.get('cs_test_1')?.status).toBe('expired')
+    expect(() => stripe.pay('cs_test_1')).toThrow(/not open/)
+  })
+
+  it('confirms the payment instead of cancelling once the family has paid', async () => {
+    const stripe = new FakeStripe()
+    const order = await createDraftOrder(db.pool)
+    await pay(deps(stripe), ids(order))
+    stripe.pay('cs_test_1')
+    expect((await cancel(deps(stripe), ids(order))).kind).toBe('paid')
+    expect((await orderRow(order.registrationId)).status).toBe('paid')
+  })
+
+  it('finds and closes a session that Pay never attached', async () => {
+    const stripe = new FakeStripe()
+    const order = await createDraftOrder(db.pool)
+    await pay({ ...deps(stripe), store: crashingAttach() }, ids(order)).catch(() => null)
+    expect(await cancel(deps(stripe), ids(order))).toEqual({ kind: 'cancelled' })
+    expect(stripe.sessions.get('cs_test_1')?.status).toBe('expired')
+  })
+
+  it('will not cancel while a session may still be being made, and cancels once it can', async () => {
+    const stripe = new FakeStripe()
+    const order = await createDraftOrder(db.pool)
+    await claimOnly(order) // Pay has claimed; its create request may still be running
+    expect(await cancel(deps(stripe), ids(order))).toEqual({ kind: 'try_again', message: CHECKOUT_MESSAGES.cancelLater })
+    expect((await orderRow(order.registrationId)).status).toBe('draft')
+
+    // Pay finishes making the session, then the family cancels
+    expect((await pay(deps(stripe), ids(order))).kind).toBe('redirect')
+    expect(await cancel(deps(stripe), ids(order))).toEqual({ kind: 'cancelled' })
+    expect(stripe.sessions.get('cs_test_1')?.status).toBe('expired')
+  })
+
+  it('finds a session behind a cached 500 and closes it before cancelling', async () => {
+    const stripe = new FakeStripe()
+    const order = await createDraftOrder(db.pool)
+    const { config } = await claimOnly(order)
+    stripe.nextCreate = ['cached-500']
+    expect((await stripe.createCheckoutSession(config)).kind).toBe('failed')
+    expect(await cancel(deps(stripe), ids(order))).toEqual({ kind: 'cancelled' })
+    expect(stripe.sessions.get('cs_test_1')?.status).toBe('expired')
+  })
+
+  it('cancels a claim that never made a session, once that is established', async () => {
+    const stripe = new FakeStripe()
+    const order = await createDraftOrder(db.pool)
+    await claimOnly(order)
+    expect(await cancel(deps(stripe, { now: minutesLater(11) }), ids(order))).toEqual({ kind: 'cancelled' })
+  })
+
+  it('keeps the order when Stripe cannot be reached to check', async () => {
+    const stripe = new FakeStripe()
+    stripe.listFails = true
+    const order = await createDraftOrder(db.pool)
+    await claimOnly(order)
+    expect(await cancel(deps(stripe, { now: minutesLater(11) }), ids(order)))
+      .toEqual({ kind: 'try_again', message: CHECKOUT_MESSAGES.cancelLater })
+    expect((await orderRow(order.registrationId)).status).toBe('draft')
+  })
+
+  it('ends Pay racing Cancel in one consistent state, with no payable session the order does not know about', async () => {
+    for (let round = 0; round < 10; round++) {
+      const stripe = new FakeStripe()
+      const order = await createDraftOrder(db.pool)
+      await Promise.all([pay(deps(stripe), ids(order)), cancel(deps(stripe), ids(order))])
+
+      const row = await orderRow(order.registrationId)
+      const open = stripe.sessionsFor(order.registrationId).filter((s) => s.status === 'open')
+      expect(['cancelled', 'pending_payment']).toContain(row.status)
+      if (row.status === 'cancelled') expect(open).toEqual([])
+      else expect(open.map((s) => s.id)).toEqual([row.stripe_checkout_session_id])
+    }
+  })
+})
+
+describe('syncConfirmation', () => {
   it('confirms from the success page when Stripe says the checkout is complete', async () => {
     const stripe = new FakeStripe()
     const order = await createDraftOrder(db.pool)
     await pay(deps(stripe), ids(order))
     stripe.pay('cs_test_1')
-    expect((await syncConfirmation(deps(stripe), { ...ids(order), sessionIdHint: 'cs_test_1' }))?.kind).toBe('paid')
+    expect((await syncConfirmation(deps(stripe), ids(order)))?.kind).toBe('paid')
   })
 
-  it("ignores a session id in the URL that is not this order's own", async () => {
+  it("never confirms from another order's session", async () => {
     const stripe = new FakeStripe()
     const theirs = await createDraftOrder(db.pool)
     await pay(deps(stripe), ids(theirs))
     stripe.pay('cs_test_1')
 
     const mine = await createDraftOrder(db.pool)
-    await readyToPay(db.pool, mine, { attach: false })
-    expect(await syncConfirmation(deps(stripe), { ...ids(mine), sessionIdHint: 'cs_test_1' })).toBeNull()
+    await claimOnly(mine)
+    expect(await syncConfirmation(deps(stripe), ids(mine))).toBeNull()
     const { rows } = await db.pool.query('SELECT count(*)::int AS n FROM payment_exceptions WHERE registration_id = $1', [mine.registrationId])
     expect(rows[0].n).toBe(0)
     expect((await orderRow(mine.registrationId)).status).toBe('draft')
@@ -5262,13 +5215,475 @@ describe('confirmation without waiting for the webhook', () => {
     await pay(deps(stripe), ids(order))
     stripe.pay('cs_test_1')
     const broken = { ...deps(stripe), store: { ...store, confirmOrderPayment: async () => { throw new Error('database is down') } } }
-    expect(await pay(broken, ids(order))).toEqual({
-      kind: 'try_again', message: "We're checking your payment. Please don't try again until this updates.",
-    })
+    expect(await pay(broken, ids(order))).toEqual({ kind: 'try_again', message: reviewMessage('C', null) })
   })
 })
 ```
-`readyToPay` uses its own claim, so `mine` has a claim and no attached session. That's exactly the case where a hint would be used.
+
+- [ ] **Step 5: Run them to confirm they fail**
+
+Run: `npm run test:db -- tests/db/checkout-workflow.test.ts`
+Expected: FAIL. `@/app/_payments/checkout-workflow` doesn't exist.
+
+- [ ] **Step 6: Write the workflow**
+
+Create `src/app/_payments/checkout-workflow.ts`:
+```ts
+import { buildCheckoutConfig, type CheckoutConfig } from '@/lib/engine/checkout-config'
+import { CHECKOUT_BLOCK_MESSAGES, checkoutBlockReason } from '@/lib/engine/checkout-policy'
+import { reviewCodeForReason, reviewMessage } from '@/lib/payment-review-messages'
+import type { CheckoutOrder, ConfirmResult, OrderStore } from './order-store'
+import type { GatewaySession, StripeGateway } from './stripe-gateway'
+
+export interface CheckoutDeps {
+  store: OrderStore
+  stripe: StripeGateway
+  now: () => Date
+  wait: (ms: number) => Promise<void>
+  baseUrl: string
+  newClaimId: () => string
+}
+
+export type PayResult =
+  | { kind: 'redirect'; url: string }
+  | { kind: 'paid'; confirmationNumber: string | null }
+  | { kind: 'start_again'; message: string }
+  | { kind: 'blocked'; message: string }
+  | { kind: 'try_again'; message: string }
+  | { kind: 'review'; message: string; supportRef: string | null }
+  | { kind: 'error'; message: string }
+
+export type CancelResult =
+  | { kind: 'cancelled' }
+  | { kind: 'paid'; confirmationNumber: string | null }
+  | { kind: 'try_again'; message: string }
+  | { kind: 'review'; message: string; supportRef: string | null }
+  | { kind: 'error'; message: string }
+
+export const CHECKOUT_MESSAGES = {
+  notFound: 'Registration not found.',
+  expired: 'This registration has expired. Please start a new one.',
+  cancelled: 'This registration was cancelled. Please start a new one.',
+  starting: 'Payment is taking a moment to start. Please try again.',
+  couldNotStart: "Payment couldn't start for this feis. Please contact the organiser.",
+  cancelLater: "We can't cancel this yet because a payment may still be starting. Please try again in a few minutes.",
+  noCheckoutPage: "Stripe didn't return a payment page. Please try again."
+} as const
+
+/** Pay sends no create request once a claim is this old */
+export const CREATE_DEADLINE_MS = 5 * 60_000
+/** By this age every create request for a claim has finished, so a session that can't be found was never made */
+export const CREATE_SETTLED_AFTER_MS = 10 * 60_000
+/** Look this far before the claim time too, in case the clocks differ */
+const CLAIM_LOOKUP_BEFORE_MS = 60_000
+/** Calls per attempt to create a session: the first try plus identical replays */
+const CREATE_TRIES = 4
+
+type ClaimedOrder = CheckoutOrder & {
+  checkout_claim_id: string
+  checkout_config: CheckoutConfig
+  checkout_claimed_at: string
+}
+
+function isClaimed(order: CheckoutOrder): order is ClaimedOrder {
+  return Boolean(order.checkout_claim_id && order.checkout_config && order.checkout_claimed_at)
+}
+
+function claimAge(deps: CheckoutDeps, order: ClaimedOrder): number {
+  return deps.now().getTime() - new Date(order.checkout_claimed_at).getTime()
+}
+
+function redirectTo(session: GatewaySession): PayResult {
+  return session.url
+    ? { kind: 'redirect', url: session.url }
+    : { kind: 'error', message: CHECKOUT_MESSAGES.noCheckoutPage }
+}
+
+// ─── Pay ───
+
+export async function pay(
+  deps: CheckoutDeps,
+  input: { registrationId: string; householdId: string }
+): Promise<PayResult> {
+  const order = await deps.store.getOrderForCheckout(input.registrationId, input.householdId)
+  if (!order) return { kind: 'error', message: CHECKOUT_MESSAGES.notFound }
+  return payOrder(deps, order)
+}
+
+async function payOrder(deps: CheckoutDeps, order: CheckoutOrder): Promise<PayResult> {
+  switch (order.status) {
+    case 'paid':
+      return { kind: 'paid', confirmationNumber: order.confirmation_number }
+    case 'expired':
+      return { kind: 'start_again', message: CHECKOUT_MESSAGES.expired }
+    case 'cancelled':
+      return { kind: 'start_again', message: CHECKOUT_MESSAGES.cancelled }
+    case 'draft':
+    case 'pending_payment':
+      break
+  }
+  if (isClaimed(order)) return resumeClaim(deps, order)
+  if (order.status !== 'draft') return { kind: 'error', message: CHECKOUT_MESSAGES.notFound }
+
+  // A quick check for a clear message; claim_checkout makes the final decision under its lock
+  const block = checkoutBlockReason({
+    listingStatus: order.listing.status,
+    stripeAccountId: order.listing.stripe_account_id,
+    competitionIds: order.competition_ids,
+    enabledCompetitionIds: order.enabled_competition_ids,
+    totalCents: order.total_cents
+  })
+  if (block) return { kind: 'blocked', message: CHECKOUT_BLOCK_MESSAGES[block] }
+
+  const claimId = deps.newClaimId()
+  const config = buildCheckoutConfig({
+    registrationId: order.id,
+    feisListingId: order.feis_listing_id,
+    claimId,
+    account: order.listing.stripe_account_id!,
+    totalCents: order.total_cents,
+    applicationFeeCents: order.application_fee_cents,
+    eventFeeCents: order.event_fee_cents,
+    snapshot: order.purchase_snapshot,
+    baseUrl: deps.baseUrl,
+    now: deps.now()
+  })
+  const claim = await deps.store.claimCheckout({
+    registrationId: order.id,
+    householdId: order.household_id,
+    claimId,
+    config
+  })
+  switch (claim.result) {
+    case 'claimed':
+      return createAndAttach(deps, {
+        ...order,
+        checkout_claim_id: claim.claim_id,
+        checkout_config: claim.config,
+        checkout_claimed_at: claim.claimed_at
+      })
+    case 'already_claimed':
+      return reread(deps, order)
+    case 'blocked':
+      return { kind: 'blocked', message: CHECKOUT_BLOCK_MESSAGES[claim.reason] }
+    case 'not_claimable':
+      return claim.hold_expired
+        ? { kind: 'start_again', message: CHECKOUT_MESSAGES.expired }
+        : reread(deps, order)
+    case 'not_found':
+      return { kind: 'error', message: CHECKOUT_MESSAGES.notFound }
+  }
+}
+
+/** Another request changed the order: answer from its current state */
+async function reread(deps: CheckoutDeps, order: CheckoutOrder): Promise<PayResult> {
+  const fresh = await deps.store.getOrderForCheckout(order.id, order.household_id)
+  if (!fresh) return { kind: 'error', message: CHECKOUT_MESSAGES.notFound }
+  if (fresh.status === 'draft' && !isClaimed(fresh)) {
+    return { kind: 'start_again', message: CHECKOUT_MESSAGES.expired }
+  }
+  return payOrder(deps, fresh)
+}
+
+/** The order already has its one claim: carry on with it, never replace it. */
+async function resumeClaim(deps: CheckoutDeps, order: ClaimedOrder): Promise<PayResult> {
+  if (order.status === 'draft' && !order.stripe_checkout_session_id && claimAge(deps, order) < CREATE_DEADLINE_MS) {
+    // Another click is making the session, or an earlier Pay stopped: replay the identical request
+    return createAndAttach(deps, order)
+  }
+  const located = await locateClaimSession(deps, order)
+  switch (located.kind) {
+    case 'found':
+      return order.stripe_checkout_session_id
+        ? settleForPay(deps, order, located.session)
+        : attachOrSettle(deps, order, located.session)
+    case 'none':
+      return abandonClaim(deps, order, CHECKOUT_MESSAGES.expired)
+    case 'unknown':
+      return { kind: 'try_again', message: CHECKOUT_MESSAGES.starting }
+  }
+}
+
+async function createAndAttach(deps: CheckoutDeps, order: ClaimedOrder): Promise<PayResult> {
+  let refused = false
+  for (let tries = 0; tries < CREATE_TRIES && claimAge(deps, order) < CREATE_DEADLINE_MS; tries++) {
+    const outcome = await deps.stripe.createCheckoutSession(order.checkout_config)
+    if (outcome.kind === 'created') return attachOrSettle(deps, order, outcome.session)
+    if (outcome.failure === 'rejected') {
+      console.error(`[CHECKOUT] Stripe refused the checkout for order ${order.id}: ${outcome.message}`)
+      refused = true
+      break
+    }
+    // 'retry' or 'in_progress': pause, then replay the identical request
+    await deps.wait(500 * (tries + 1))
+  }
+
+  // No session in hand. An error, even a refusal, says nothing certain about earlier attempts
+  // with this key, so look the session up instead of guessing (spec §6a).
+  const located = await locateClaimSession(deps, order)
+  if (located.kind === 'found') return attachOrSettle(deps, order, located.session)
+  if (located.kind === 'none') {
+    return abandonClaim(deps, order, refused ? CHECKOUT_MESSAGES.couldNotStart : CHECKOUT_MESSAGES.expired)
+  }
+  return refused
+    ? { kind: 'error', message: CHECKOUT_MESSAGES.couldNotStart }
+    : { kind: 'try_again', message: CHECKOUT_MESSAGES.starting }
+}
+
+/** Attaches a session made or found for this claim, or settles it if the order moved on meanwhile. */
+async function attachOrSettle(deps: CheckoutDeps, order: ClaimedOrder, session: GatewaySession): Promise<PayResult> {
+  const attach = await deps.store.attachCheckoutSession(order.id, order.checkout_claim_id, session.id)
+  if (attach.result === 'attached' || attach.result === 'already_attached') {
+    if (attach.status === 'pending_payment') {
+      return settleForPay(deps, { ...order, status: 'pending_payment', stripe_checkout_session_id: session.id }, session)
+    }
+    if (attach.status === 'paid') return reread(deps, order)
+  }
+  // Cancelled, expired or confirmed while the session was being made: settle the session itself
+  const settled = await settleSession(deps, order, session, 'close')
+  if (settled.kind === 'result') return settled.result
+  if (settled.kind === 'unknown') return unknownResult(settled)
+  return reread(deps, order)
+}
+
+async function settleForPay(deps: CheckoutDeps, order: ClaimedOrder, session: GatewaySession): Promise<PayResult> {
+  const settled = await settleSession(deps, order, session, 'resume')
+  switch (settled.kind) {
+    case 'open':
+      return redirectTo(settled.session)
+    case 'result':
+      return settled.result
+    case 'unknown':
+      return unknownResult(settled)
+    case 'closed':
+      // Stripe has expired this checkout: record that here, then the family starts again
+      await deps.store.expireCheckout({
+        registrationId: order.id,
+        claimId: order.checkout_claim_id,
+        sessionId: session.id,
+        account: order.checkout_config.account
+      })
+      return reread(deps, order)
+  }
+}
+
+/** The claim never produced a session and never will (established by locateClaimSession). */
+async function abandonClaim(deps: CheckoutDeps, order: ClaimedOrder, message: string): Promise<PayResult> {
+  if (order.status === 'draft') {
+    await deps.store.cancelOrder(order.id, order.household_id, order.checkout_claim_id)
+  }
+  return { kind: 'start_again', message }
+}
+
+// ─── Finding and settling a claim's session (spec §6a) ───
+
+type Located = { kind: 'found'; session: GatewaySession } | { kind: 'none' } | { kind: 'unknown' }
+
+/**
+ * Finds the session this claim produced: by its id if attached, otherwise by listing the bound
+ * account's sessions from the claim window. 'none' only once no create request can still be running.
+ */
+async function locateClaimSession(deps: CheckoutDeps, order: ClaimedOrder): Promise<Located> {
+  const account = order.checkout_config.account
+  if (order.stripe_checkout_session_id) {
+    const session = await deps.stripe.retrieveCheckoutSession(order.stripe_checkout_session_id, account)
+    return session ? { kind: 'found', session } : { kind: 'unknown' }
+  }
+  const claimedAt = new Date(order.checkout_claimed_at).getTime()
+  const sessions = await deps.stripe.listClaimSessions(
+    account,
+    order.checkout_claim_id,
+    new Date(claimedAt - CLAIM_LOOKUP_BEFORE_MS),
+    new Date(claimedAt + CREATE_SETTLED_AFTER_MS)
+  )
+  if (!sessions) return { kind: 'unknown' }
+  const mine = sessions.find((s) => s.metadata.registration_id === order.id)
+  if (mine) return { kind: 'found', session: mine }
+  return claimAge(deps, order) > CREATE_SETTLED_AFTER_MS ? { kind: 'none' } : { kind: 'unknown' }
+}
+
+type Settled =
+  | { kind: 'open'; session: GatewaySession }
+  | { kind: 'closed' }
+  | { kind: 'result'; result: PayResult }
+  | { kind: 'unknown'; paymentMayHaveHappened: boolean }
+
+/**
+ * The one place a claim's session is settled. Open: resume it, or expire it and check it expired.
+ * Expired: it can't be paid. Complete and paid: confirm through the same checks as the webhook.
+ * Anything else is unknown, and the order is kept.
+ */
+async function settleSession(
+  deps: CheckoutDeps,
+  order: ClaimedOrder,
+  session: GatewaySession,
+  intent: 'resume' | 'close'
+): Promise<Settled> {
+  let current = session
+  if (current.status === 'open') {
+    if (intent === 'resume') return { kind: 'open', session: current }
+    const expired = await deps.stripe.expireCheckoutSession(current.id, order.checkout_config.account)
+    if (expired.kind === 'unknown') return { kind: 'unknown', paymentMayHaveHappened: false }
+    current = expired.session
+  }
+  if (current.status === 'expired') return { kind: 'closed' }
+  if (current.paymentStatus === 'paid') {
+    return { kind: 'result', result: await confirmFromSession(deps, order, current) }
+  }
+  // Complete without a payment: only a delayed payment method does this. Keep the order and check.
+  return { kind: 'unknown', paymentMayHaveHappened: true }
+}
+
+function unknownResult(settled: { paymentMayHaveHappened: boolean }): PayResult {
+  return {
+    kind: 'try_again',
+    message: settled.paymentMayHaveHappened ? reviewMessage('C', null) : CHECKOUT_MESSAGES.starting
+  }
+}
+
+// ─── Confirmation from a session the server fetched itself ───
+
+export function payResultFromConfirmation(result: ConfirmResult): PayResult {
+  switch (result.result) {
+    case 'confirmed':
+    case 'already_confirmed':
+      return { kind: 'paid', confirmationNumber: result.confirmation_number }
+    case 'exception': {
+      const code = reviewCodeForReason(result.reason) ?? 'C'
+      const supportRef = code === 'A' ? result.support_ref : null
+      return { kind: 'review', message: reviewMessage(code, supportRef), supportRef }
+    }
+    case 'not_paid':
+      return { kind: 'try_again', message: reviewMessage('C', null) }
+  }
+}
+
+async function confirmFromSession(
+  deps: Pick<CheckoutDeps, 'store' | 'stripe'>,
+  order: Pick<ClaimedOrder, 'id' | 'checkout_config'>,
+  session: GatewaySession
+): Promise<PayResult> {
+  const account = order.checkout_config.account
+  try {
+    const chargeId = session.paymentIntentId ? await deps.stripe.latestChargeId(session.paymentIntentId, account) : null
+    const result = await deps.store.confirmOrderPayment({
+      registrationId: order.id,
+      claimId: session.metadata.claim_id ?? null,
+      sessionId: session.id,
+      account,
+      amountCents: session.amountTotal,
+      currency: session.currency,
+      paymentStatus: session.paymentStatus,
+      paymentIntentId: session.paymentIntentId,
+      chargeId,
+      eventId: `sync:${session.id}`,
+      source: 'sync'
+    })
+    return payResultFromConfirmation(result)
+  } catch (err) {
+    console.error(`[CHECKOUT] Confirming order ${order.id} from Stripe failed:`, err)
+    return { kind: 'try_again', message: reviewMessage('C', null) }
+  }
+}
+
+// ─── Cancel ───
+
+function cancelResultFrom(result: PayResult): CancelResult {
+  if (result.kind === 'paid' || result.kind === 'review' || result.kind === 'try_again' || result.kind === 'error') {
+    return result
+  }
+  return { kind: 'try_again', message: CHECKOUT_MESSAGES.cancelLater }
+}
+
+export async function cancel(
+  deps: CheckoutDeps,
+  input: { registrationId: string; householdId: string }
+): Promise<CancelResult> {
+  // One re-read is allowed: a Pay click or the webhook may change the order underneath us
+  for (let round = 0; round < 2; round++) {
+    const order = await deps.store.getOrderForCheckout(input.registrationId, input.householdId)
+    if (!order) return { kind: 'error', message: CHECKOUT_MESSAGES.notFound }
+    if (order.status === 'paid') return { kind: 'paid', confirmationNumber: order.confirmation_number }
+    if (order.status === 'expired' || order.status === 'cancelled') return { kind: 'cancelled' }
+
+    if (!isClaimed(order)) {
+      const result = await deps.store.cancelOrder(order.id, order.household_id, null)
+      if (result.result === 'cancelled') return { kind: 'cancelled' }
+      continue
+    }
+
+    // Never cancel on a guess: find the claim's session and settle it first (spec §7)
+    const located = await locateClaimSession(deps, order)
+    if (located.kind === 'unknown') return { kind: 'try_again', message: CHECKOUT_MESSAGES.cancelLater }
+    if (located.kind === 'found') {
+      const settled = await settleSession(deps, order, located.session, 'close')
+      if (settled.kind === 'result') return cancelResultFrom(settled.result)
+      if (settled.kind === 'unknown') {
+        return {
+          kind: 'try_again',
+          message: settled.paymentMayHaveHappened ? reviewMessage('C', null) : CHECKOUT_MESSAGES.cancelLater
+        }
+      }
+    }
+    // Stripe confirms the checkout can't be paid, or it is established that none was ever made
+    const result = await deps.store.cancelOrder(order.id, order.household_id, order.checkout_claim_id)
+    if (result.result === 'cancelled') return { kind: 'cancelled' }
+  }
+  return { kind: 'try_again', message: CHECKOUT_MESSAGES.cancelLater }
+}
+
+// ─── The success page ───
+
+/**
+ * If Stripe says this order's checkout is complete but the order isn't paid, confirm it now.
+ * It finds the order's own session by its claim; it never uses a session id from the URL.
+ */
+export async function syncConfirmation(
+  deps: CheckoutDeps,
+  input: { registrationId: string; householdId: string }
+): Promise<PayResult | null> {
+  const order = await deps.store.getOrderForCheckout(input.registrationId, input.householdId)
+  if (!order) return null
+  if (order.status === 'paid') return { kind: 'paid', confirmationNumber: order.confirmation_number }
+  if (order.status === 'cancelled' || !isClaimed(order)) return null
+
+  const located = await locateClaimSession(deps, order)
+  if (located.kind !== 'found' || located.session.status !== 'complete') return null
+  const settled = await settleSession(deps, order, located.session, 'resume')
+  if (settled.kind === 'result') return settled.result
+  if (settled.kind === 'unknown') return unknownResult(settled)
+  return null
+}
+```
+
+- [ ] **Step 7: Run the tests**
+
+Run: `npm test && npm run test:db`
+Expected: PASS. If the Pay-versus-Cancel race ever fails, it has found a real ordering bug. Don't loosen the assertion; fix the workflow.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add src/lib/payment-review-messages.ts src/app/_payments/stripe-gateway.ts src/app/_payments/checkout-workflow.ts tests/db/helpers/fake-stripe.ts tests/payment-review-messages.test.ts tests/db/checkout-workflow.test.ts
+git commit -m "feat: Pay, Cancel and the sync find and settle a claim's session instead of guessing from errors"
+```
+
+---
+
+### Task 11: The new webhook
+
+**Files:**
+- Create: `src/app/_payments/webhook-handler.ts`
+- Modify: `src/app/api/webhooks/stripe/route.ts` (rewrite)
+- Test: `tests/db/webhook-handler.test.ts`
+
+**Interfaces:**
+- Consumes:
+  - `confirmOrderPayment`, `recordPaymentFailure` and `expireCheckout` (Tasks 8 and 9)
+  - `toGatewaySession` and `StripeGateway` (Task 10)
+- Produces: `handleStripeEvent(deps: WebhookDeps, event): Promise<WebhookOutcome>`, where `WebhookOutcome = { status: 200 | 500; registrationId: string | null; body }`.
+
+- [ ] **Step 1: Write the failing tests**
 
 Create `tests/db/webhook-handler.test.ts`:
 ```ts
@@ -5392,126 +5807,12 @@ describe('handleStripeEvent', () => {
 })
 ```
 
-- [ ] **Step 4: Run them to confirm they fail**
+- [ ] **Step 2: Run them to confirm they fail**
 
-Run: `npm run test:db -- tests/db/webhook-handler.test.ts tests/db/checkout-workflow.test.ts`
-Expected: FAIL. `webhook-handler` and `syncConfirmation` don't exist yet, and the replaced Cancel test expects `paid`.
+Run: `npm run test:db -- tests/db/webhook-handler.test.ts`
+Expected: FAIL. `@/app/_payments/webhook-handler` doesn't exist.
 
-- [ ] **Step 5: Confirm in the workflow**
-
-In `src/app/_payments/checkout-workflow.ts`:
-
-(a) Add these imports:
-```ts
-import { reviewCodeForReason, reviewMessage } from '@/lib/payment-review-messages'
-import type { ConfirmResult } from './order-store'
-```
-
-(b) Add these functions above `resumePending`:
-```ts
-export function payResultFromConfirmation(result: ConfirmResult): PayResult {
-  switch (result.result) {
-    case 'confirmed':
-    case 'already_confirmed':
-      return { kind: 'paid', confirmationNumber: result.confirmation_number }
-    case 'exception': {
-      const code = reviewCodeForReason(result.reason) ?? 'C'
-      const supportRef = code === 'A' ? result.support_ref : null
-      return { kind: 'review', message: reviewMessage(code, supportRef), supportRef }
-    }
-    case 'not_paid':
-      return { kind: 'try_again', message: reviewMessage('C', null) }
-  }
-}
-
-/** Confirms from a session the server fetched from Stripe itself, through the same checks as the webhook. */
-async function confirmFromSession(
-  deps: Pick<CheckoutDeps, 'store' | 'stripe'>,
-  order: Pick<CheckoutOrder, 'id' | 'checkout_config'>,
-  session: GatewaySession
-): Promise<PayResult> {
-  const account = order.checkout_config?.account ?? ''
-  try {
-    const chargeId = session.paymentIntentId ? await deps.stripe.latestChargeId(session.paymentIntentId, account) : null
-    const result = await deps.store.confirmOrderPayment({
-      registrationId: order.id,
-      claimId: session.metadata.claim_id ?? null,
-      sessionId: session.id,
-      account,
-      amountCents: session.amountTotal,
-      currency: session.currency,
-      paymentStatus: session.paymentStatus,
-      paymentIntentId: session.paymentIntentId,
-      chargeId,
-      eventId: `sync:${session.id}`,
-      source: 'sync'
-    })
-    return payResultFromConfirmation(result)
-  } catch (err) {
-    console.error(`[CHECKOUT] Confirming order ${order.id} from Stripe failed:`, err)
-    return { kind: 'try_again', message: reviewMessage('C', null) }
-  }
-}
-
-function cancelResultFrom(result: PayResult): CancelResult {
-  if (result.kind === 'paid' || result.kind === 'review' || result.kind === 'try_again' || result.kind === 'error') {
-    return result
-  }
-  return { kind: 'try_again', message: CHECKOUT_MESSAGES.starting }
-}
-
-/**
- * For the success page: if Stripe says this order's checkout is complete but the order isn't paid,
- * confirm it now. The URL's session id is only a hint, used when no session is attached yet, and
- * only if Stripe says that session belongs to this order's own claim.
- */
-export async function syncConfirmation(
-  deps: CheckoutDeps,
-  input: { registrationId: string; householdId: string; sessionIdHint?: string | null }
-): Promise<PayResult | null> {
-  const order = await deps.store.getOrderForCheckout(input.registrationId, input.householdId)
-  if (!order) return null
-  if (order.status === 'paid') return { kind: 'paid', confirmationNumber: order.confirmation_number }
-  if (order.status === 'cancelled' || !order.checkout_claim_id || !order.checkout_config) return null
-
-  const sessionId = order.stripe_checkout_session_id ?? input.sessionIdHint ?? null
-  if (!sessionId) return null
-  const session = await deps.stripe.retrieveCheckoutSession(sessionId, order.checkout_config.account)
-  if (!session || session.status !== 'complete') return null
-  if (session.metadata.registration_id !== order.id || session.metadata.claim_id !== order.checkout_claim_id) {
-    return null
-  }
-  return confirmFromSession(deps, order, session)
-}
-```
-
-(c) In `resumePending`, replace:
-```ts
-  if (session.status === 'complete') {
-    // Task 11 confirms the payment here
-    return { kind: 'try_again', message: CHECKOUT_MESSAGES.paymentWentThrough }
-  }
-```
-with:
-```ts
-  if (session.status === 'complete') return confirmFromSession(deps, order, session)
-```
-
-(d) In `closeCheckout`, replace:
-```ts
-  if (expired.kind === 'already_complete') {
-    // Task 11 confirms the payment here
-    return { kind: 'stop', result: { kind: 'try_again', message: CHECKOUT_MESSAGES.paymentWentThrough } }
-  }
-```
-with:
-```ts
-  if (expired.kind === 'already_complete') {
-    return { kind: 'stop', result: cancelResultFrom(await confirmFromSession(deps, order, expired.session)) }
-  }
-```
-
-- [ ] **Step 6: Write the webhook handler**
+- [ ] **Step 3: Write the webhook handler**
 
 Create `src/app/_payments/webhook-handler.ts`:
 ```ts
@@ -5605,7 +5906,7 @@ export async function handleStripeEvent(deps: WebhookDeps, event: Stripe.Event):
 }
 ```
 
-- [ ] **Step 7: Rewrite the webhook route**
+- [ ] **Step 4: Rewrite the webhook route**
 
 Replace `src/app/api/webhooks/stripe/route.ts` with:
 ```ts
@@ -5650,16 +5951,16 @@ export async function POST(request: Request) {
 }
 ```
 
-- [ ] **Step 8: Run all the tests and the build**
+- [ ] **Step 5: Run all the tests and the build**
 
 Run: `npm test && npm run test:db && npm run build`
 Expected: PASS, and the build succeeds.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add src/lib/payment-review-messages.ts src/app/_payments/checkout-workflow.ts src/app/_payments/webhook-handler.ts src/app/api/webhooks/stripe/route.ts tests/payment-review-messages.test.ts tests/db/webhook-handler.test.ts tests/db/checkout-workflow.test.ts
-git commit -m "feat: webhook and success-page sync confirm through the same checks; parents see evidence-based messages"
+git add src/app/_payments/webhook-handler.ts src/app/api/webhooks/stripe/route.ts tests/db/webhook-handler.test.ts
+git commit -m "feat: the webhook confirms, records failures and expires checkouts through the same database checks"
 ```
 
 ---
@@ -5676,9 +5977,9 @@ git commit -m "feat: webhook and success-page sync confirm through the same chec
 
 **Interfaces:**
 - Consumes:
-  - `pay`, `cancel`, `syncConfirmation`, `PayResult` and `CancelResult` (Tasks 9 and 11)
-  - `reviewMessage` (Task 11)
-  - `get_my_payment_reviews` (Task 10)
+  - `pay`, `cancel`, `syncConfirmation`, `PayResult` and `CancelResult` (Task 10)
+  - `reviewMessage` (Task 10)
+  - `get_my_payment_reviews` (Task 9)
 - Produces:
   - `createCheckoutSession(registrationId): Promise<PayResult>`
   - `cancelRegistration(registrationId): Promise<CancelResult>`
@@ -5705,6 +6006,7 @@ export function checkoutDeps(): CheckoutDeps {
     store: createOrderStore(supabaseRpc(createServiceClient())),
     stripe: createStripeGateway(getStripe()),
     now: () => new Date(),
+    wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     baseUrl: process.env.NEXT_PUBLIC_BASE_URL ?? 'http://localhost:3000',
     newClaimId: () => randomUUID()
   }
@@ -5906,13 +6208,12 @@ export default async function SuccessPage({ params, searchParams }: SuccessPageP
   let checking = false
 
   // Don't wait for the webhook: if Stripe says this order's checkout is complete, confirm it now (spec §9).
-  // The sync reads the session from Stripe itself; the URL's session id is only a hint.
+  // The sync finds the order's own session by its claim; it never uses the URL's session id.
   if (status !== 'paid' && status !== 'cancelled') {
     try {
       const synced = await syncConfirmation(checkoutDeps(), {
         registrationId: order.id,
-        householdId: household.id,
-        sessionIdHint: sessionId ?? null
+        householdId: household.id
       })
       if (synced?.kind === 'paid') {
         status = 'paid'
@@ -6076,7 +6377,7 @@ git commit -m "feat: Pay and Cancel use the claim workflow; success page confirm
 
 **Interfaces:**
 - Consumes:
-  - the `notifications` table, plus the alert and confirmation rows queued by Task 10
+  - the `notifications` table, plus the alert and confirmation rows queued by Task 9
   - `PurchaseSnapshot` (Task 4)
   - `formatCents` and `formatDate` (`src/lib/format.ts`)
 - Produces:
@@ -6841,6 +7142,18 @@ describe('the notification queue', () => {
     const { rows } = await db.pool.query(`SELECT count(*)::int AS n FROM notifications WHERE kind = 'delivery_failure_alert'`)
     expect(rows[0].n).toBe(0)
   })
+
+  it('never raises an alert about an alert that may not have been delivered', async () => {
+    await confirmedOrder({ amountCents: 1 })
+    const email = new FakeEmail()
+    email.next = ['uncertain-before']
+    await processNotifications(worker(email))
+    advance(23 * 60 + 1)
+    await processNotifications(worker(email))
+    expect(await row('payment_exception_alert')).toMatchObject({ status: 'needs_check' })
+    const { rows } = await db.pool.query(`SELECT count(*)::int AS n FROM notifications WHERE kind = 'delivery_failure_alert'`)
+    expect(rows[0].n).toBe(0)
+  })
 })
 ```
 
@@ -7138,7 +7451,7 @@ git commit -m "feat: email queue with frozen messages, claim tokens and provider
 **Interfaces:**
 - Consumes:
   - `lock_household_feis` (Task 6)
-  - `_fulfil_order` and `payment_exceptions` (Task 10)
+  - `_fulfil_order` and `payment_exceptions` (Task 9)
   - the fixtures `createDraftOrder`, `readyToPay`, `buildPayload` and `checkoutConfigFor`
 - Produces:
   - **Table:** `admin_actions`
@@ -7223,9 +7536,18 @@ describe('payments_admin.confirm_late_payment', () => {
     expect(audit.evidence.cancelled_orders).toEqual([newerId])
   })
 
-  it('refuses while the newer order still has an open checkout', async () => {
-    const { supportRef } = await lateConflict('claimed')
-    expect(await refused(confirmLate(supportRef))).toMatch(/still has a checkout open/)
+  it('refuses when another order was taken to checkout, even once that checkout has expired', async () => {
+    const { supportRef, newerId } = await lateConflict('claimed')
+    expect(await refused(confirmLate(supportRef))).toMatch(/was taken to checkout/)
+
+    // The newer order's checkout runs out, but a delayed payment for it could still arrive
+    const { rows: [newer] } = await db.pool.query(
+      'SELECT checkout_claim_id, stripe_checkout_session_id, checkout_config FROM registrations WHERE id = $1', [newerId])
+    await store.expireCheckout({
+      registrationId: newerId, claimId: newer.checkout_claim_id, sessionId: newer.stripe_checkout_session_id,
+      account: newer.checkout_config.account,
+    })
+    expect(await refused(confirmLate(supportRef))).toMatch(/was taken to checkout/)
   })
 
   it('refuses when the family paid twice; that case is closed with a refund', async () => {
@@ -7316,8 +7638,9 @@ REVOKE ALL ON SCHEMA payments_admin FROM PUBLIC;
 REVOKE ALL ON SCHEMA payments_admin FROM anon, authenticated, service_role;
 
 -- A late payment that conflicts with a newer order: confirm it only if the recorded payment passes
--- every confirmation check, the newer order is unpaid and can no longer be paid, and the payment
--- isn't already on another order. Cancels the newer order and fulfils the late one, atomically.
+-- every confirmation check, no other order for the family and feis can have a payment on the way,
+-- and the payment isn't already on another order. Cancels the newer unpaid order and fulfils the late
+-- one, atomically, and closes the case as confirmed_late_payment in the same transaction.
 CREATE OR REPLACE FUNCTION payments_admin.confirm_late_payment(p_support_ref text, p_note text)
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -7369,22 +7692,28 @@ BEGIN
     RAISE EXCEPTION 'payment % is already recorded on an order', v_case.stripe_payment_intent_id;
   END IF;
 
+  -- Another order may only be replaced when no payment for it can exist. An order that never had a
+  -- checkout claim can't have been paid; one cancelled through Cancel had its checkout settled first.
+  -- Anything else that reached checkout, even if it has since expired, could still have a delayed
+  -- payment on the way, so the case is resolved by refund instead (spec §11).
   FOR v_other IN
     SELECT * FROM registrations
     WHERE household_id = v_order.household_id AND feis_listing_id = v_order.feis_listing_id
-      AND id <> v_order.id AND status IN ('draft', 'pending_payment', 'paid')
+      AND id <> v_order.id
     ORDER BY id
     FOR UPDATE
   LOOP
     IF v_other.status = 'paid' THEN
       RAISE EXCEPTION 'the family also paid order %; refund one payment instead', v_other.id;
     END IF;
-    IF v_other.checkout_claim_id IS NOT NULL AND v_other.checkout_expires_at > now() THEN
-      RAISE EXCEPTION 'order % still has a checkout open until %; wait for it or cancel it first',
-        v_other.id, v_other.checkout_expires_at;
+    IF v_other.checkout_claim_id IS NOT NULL AND v_other.status <> 'cancelled' THEN
+      RAISE EXCEPTION 'order % was taken to checkout, so a payment for it may still arrive; refund the late payment instead',
+        v_other.id;
     END IF;
-    UPDATE registrations SET status = 'cancelled' WHERE id = v_other.id;
-    v_cancelled := v_cancelled || v_other.id;
+    IF v_other.status = 'draft' THEN
+      UPDATE registrations SET status = 'cancelled' WHERE id = v_other.id;
+      v_cancelled := v_cancelled || v_other.id;
+    END IF;
   END LOOP;
 
   v_number := _fulfil_order(v_order.id, v_case.stripe_checkout_session_id, v_case.stripe_payment_intent_id,
@@ -7432,7 +7761,8 @@ BEGIN
 
   IF p_resolution = 'refunded' THEN
     IF v_case.reason NOT IN ('amount_mismatch', 'currency_mismatch', 'order_not_payable', 'payment_reused',
-                             'account_mismatch', 'session_mismatch', 'order_not_found', 'late_payment_conflict') THEN
+                             'account_mismatch', 'claim_mismatch', 'session_mismatch', 'order_not_found',
+                             'late_payment_conflict') THEN
       RAISE EXCEPTION '% cases are not closed by a refund', v_case.reason;
     END IF;
     IF p_stripe_refund_id IS NULL OR p_stripe_refund_id !~ '^(re|pyr)_[A-Za-z0-9]+$' THEN
@@ -7488,7 +7818,7 @@ git commit -m "feat: per-reason case resolutions in a schema the API can't reach
 - Modify: `CLAUDE.md`
 
 **Interfaces:**
-- Consumes: the functions and tables from Tasks 10, 13 and 14.
+- Consumes: the functions and tables from Tasks 9, 13 and 14.
 - Produces: the runbook that alert emails point to, and project rules that match the new payment code.
 
 - [ ] **Step 1: Write the runbook**
@@ -7528,13 +7858,14 @@ Then find the payment in Stripe: Dashboard → Connect → the feis's account �
 
 | Reason | What happened | Do this |
 |---|---|---|
-| `late_payment_conflict` | The family paid after their order expired, and they have a newer order for the same feis. | Ring or email the family. If they want the paid order and the newer one is unpaid, confirm it (3a). If they paid twice, refund one payment (3b). |
+| `late_payment_conflict` | The family paid after their order expired, and they have a newer order for the same feis. | Ring or email the family. If they want the paid order and the newer order never reached checkout, confirm it (3a). Otherwise refund one payment (3b). |
 | `amount_mismatch` | Stripe charged a different amount from the order total. | Refund it (3b). The family registers again. |
 | `currency_mismatch` | The charge wasn't in USD. | Refund it (3b). |
 | `order_not_payable` | A payment arrived for a cancelled order, or for an order already paid by a different checkout. | Refund it (3b). |
 | `payment_reused` | A payment that is already recorded on another order arrived for this one. | Check both orders in Stripe. Refund anything that was charged twice (3b). |
 | `account_mismatch` | A payment for this order arrived on a different Stripe account. The payer may not be this family. | Investigate in both accounts. Refund the charge (3b). |
-| `session_mismatch` | A payment arrived for a checkout this order doesn't own. The payer may not be this family. | Investigate. Refund the charge (3b). |
+| `claim_mismatch` | A payment for this order came from a checkout this order didn't claim. The payer may not be this family. | Investigate. Refund the charge (3b). |
+| `session_mismatch` | A payment arrived for a checkout session this order doesn't own. The payer may not be this family. | Investigate. Refund the charge (3b). |
 | `order_not_found` | A payment named an order that doesn't exist. | Investigate. Refund the charge (3b). |
 | `payment_failed` | A delayed payment failed. No money moved. | Close it with no action (3c). The family can register again. |
 | `listing_account_changed` (notice) | The order is confirmed, but the feis has switched Stripe accounts since checkout. | Check the new account is right, then acknowledge it (3d). |
@@ -7543,9 +7874,10 @@ Then find the payment in Stripe: Dashboard → Connect → the feis's account �
 
 Every function needs a note saying what you checked and decided. Each one writes an `admin_actions` row.
 
-**3a. Confirm a late payment** (only `late_payment_conflict`). This cancels the newer unpaid order, then
+**3a. Confirm a late payment** (only `late_payment_conflict`). This cancels the family's newer unpaid order, then
 confirms the paid one: confirmation number, snapshot, competitor numbers and confirmation email. It
-refuses if the newer order still has an open checkout (wait up to an hour), or if the newer order is paid too.
+refuses if any other order for the family and feis is paid, or reached checkout and isn't cancelled: a
+delayed payment for it could still arrive. Refund instead (3b).
 ```sql
 SELECT payments_admin.confirm_late_payment('PAY-XXXXX', 'Rang the family; they want the paid order');
 ```
@@ -8055,16 +8387,16 @@ Record the results under "Live verification".
 
   | Spec section | Task |
   |---|---|
-  | §1 (functions, locks, security) | 6, 8, 10, 13, 14 |
+  | §1 (functions, locks, security) | 6, 8, 9, 13, 14 |
   | §2 (permissions) | 3 |
   | §3 (immutability, transitions) | 2, 3 |
   | §4 (Submit) | 4, 6, 7 |
-  | §5 (deadline policy) | 5, 9 |
-  | §6 (Pay) | 5, 8, 9 |
-  | §7 (Cancel) | 8, 9 |
+  | §5 (deadline policy, organiser stop at the claim) | 5, 8, 10 |
+  | §6 and §6a (Pay; finding and settling a claim's session) | 5, 8, 10 |
+  | §7 (Cancel) | 8, 10 |
   | §8 (events) | 11 |
-  | §9 (confirmation, sync) | 10, 11 |
-  | §10 (cases, messages, parent view) | 10, 11, 12 |
+  | §9 (confirmation, sync) | 9, 10 |
+  | §10 (cases, messages, parent view) | 9, 10, 12 |
   | §11 (resolutions) | 14, 15 |
   | §12 (notifications) | 13 |
   | §13 (expiry) | 3, 8 |
@@ -8074,5 +8406,6 @@ Record the results under "Live verification".
   - The spec's "migration 012" is delivered as 012–017, split by concern.
   - The notification claim and backoff rules live in SQL (016) rather than TypeScript, so they're atomic. Only error classification is a pure TypeScript function.
   - 012 also re-schedules the hold-expiry job with schema-qualified names, because pg_cron runs jobs with the default `search_path`.
+  - The success-page sync finds the order's own session by its claim, rather than taking a session id from the URL.
   - The spec was updated to match all three.
 

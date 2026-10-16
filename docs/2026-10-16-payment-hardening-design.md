@@ -1,7 +1,7 @@
 # Payment Hardening
 
 **Date:** 2026-10-16
-**Status:** Revision 2 of the written spec. It answers the review of revision 1 (see "Changes in Revision 2"). The implementation plan follows this document.
+**Status:** Revision 3, the implementation baseline. Revision 2 answered the review of revision 1. Revision 3 makes the three payment-correctness fixes and the clarifications from the review of revision 2 (see "Changes in Revision 3"). The implementation plan is `docs/2026-10-16-payment-hardening.md`.
 **Goal:**
 - An order counts as paid only when three things are true:
   - The right amount reached the Stripe account the order was bound to.
@@ -10,6 +10,15 @@
 - Every family who is charged ends up either confirmed or in a recorded review case with a reference number. Nobody is charged and forgotten.
 
 ---
+
+## Changes in Revision 3
+
+| Review point | Where it's handled |
+|---|---|
+| 1. A Stripe 4xx doesn't prove no session exists, and a cached 500 can hide one that does | §6 step 4: errors are classified by Stripe type and code, and describe only that one request. §6a: a claim's session is found by retrieving or listing. "None" holds only once nothing is found and no create request can still be running. §7: Cancel never infers anything from an error. |
+| 2. An expired checkout doesn't prove the competing order was unpaid | §11: the admin confirmation never replaces an order that reached checkout, unless it was cancelled through Cancel; those cases are refunded. It closes its case as `confirmed_late_payment` in the same transaction. |
+| 3. Recovery paths must handle a session that is already complete | §6a: one outcome handler for every recovered session, used by §6 step 5, §7 and the success-page sync |
+| Clarifications | §5: the 60-minute payment window (the 15 minutes is a reconciliation buffer), and the organiser stop decided inside `claim_checkout`. §5 and §6: fixed pricing replaces "recalculate at Pay". §9: the `claim_mismatch` reason, and only the active-order conflict is caught. §12: alerts never alert about themselves. November section: the unique index and the manual rule. |
 
 ## Changes in Revision 2
 
@@ -225,13 +234,13 @@ Nothing is visible to other requests until the transaction commits, and nothing 
 
 - **The deadline.** A submitted order is a fixed quote, and the family can pay it within its hold even if the registration deadline passes in between:
   - They have 30 minutes from Submit to press Pay.
-  - Once they press Pay, the claim gives them up to 75 minutes.
+  - Once they press Pay, they have 60 minutes to pay. The hold runs 15 minutes longer only as an internal buffer for reconciling late payment notices; checkout isn't open for longer.
   - Prices are never recalculated.
 
   For example, a family submits at 11:58 pm for an 11:59 pm deadline, presses Pay at 12:05 am, and pays at 12:20 am. Their order is confirmed at the price they were quoted. Submit itself is refused after the deadline.
-- **The organiser stops registration.** If the organiser closes registration (the listing is no longer `open`), or disables a competition that's in the order, no new checkout starts. Pay says "Registration has been closed by the organiser". It changes nothing, and the draft expires with its hold.
+- **The organiser stops registration.** If the organiser closes registration (the listing is no longer `open`), or disables a competition that's in the order, no new checkout starts. Pay says "Registration has been closed by the organiser". It changes nothing, and the draft expires with its hold. `claim_checkout` makes this decision under its locks. A successful claim is the boundary: once a checkout is claimed, that attempt may finish even if registration closes afterwards.
 - **A checkout that's already open** can still be paid until it expires (at most 60 minutes), and is confirmed normally. If the whole event is cancelled, the organiser refunds through Stripe (§11).
-- **What Pay doesn't check:** the deadline, and prices.
+- **What Pay doesn't check:** the deadline, and prices. Fixed pricing deliberately replaces revision 1's "recalculate at Pay" rule: the server creates and prices each order, and orders never change.
 
 ### 6. Pay (`createCheckoutSession`)
 
@@ -257,32 +266,52 @@ Nothing is visible to other requests until the transaction commits, and nothing 
      - `expires_at = now + 60 min`
      - metadata `{ registration_id, claim_id }`
      - the idempotency key `checkout:<order id>:<claim id>`
-   - Then call `claim_checkout(order_id, household_id, claim_id, checkout_config)`, which locks the row and does one of three things:
-     - If the order is a draft, unclaimed and inside its hold: store the claim and config, set `hold_expires_at = expires_at + 15 min`, and return them.
+   - Then call `claim_checkout(order_id, household_id, claim_id, checkout_config)`, which locks the row and does one of four things:
+     - If the order is a draft, unclaimed and inside its hold, and the organiser hasn't stopped registration (checked here, under the lock): store the claim, the time of the claim and the config, set `hold_expires_at = expires_at + 15 min`, and return them.
+     - If the organiser has stopped registration: return `blocked` and change nothing.
      - If it's already claimed: return the existing claim and config.
      - Otherwise: return the current state.
-4. **Create the session using exactly `checkout_config`** (every parameter, and its key):
-   - **Success:** go to step 5.
-   - **Uncertain** (a timeout, a network error or a Stripe 5xx): replay the identical request with the same key and parameters, up to three times. Stripe returns the session if it was created. If the result is still uncertain, tell the family "Payment is taking a moment to start, please try again". The next Pay adopts the claim and replays.
-   - **Definite refusal** (a Stripe 4xx): tell the family the payment couldn't start and that they should contact the organiser. The order expires with its hold, or the family can cancel it (§7). Stripe replays a stored error for the same key for 24 hours, so a refused claim is never retried with different parameters.
+4. **Create the session using exactly `checkout_config`** (every parameter, and its key). Pay sends no create request more than 5 minutes after the claim.
+   - **Created:** go to step 5.
+   - **Failed:** the error is classified by its Stripe type and code. The class describes only that one request:
+     - *In progress* (`idempotency_key_in_use`, a 409): the same request is still running. Pause, then replay with the same key.
+     - *Retry* (a network error, a Stripe 5xx or a rate limit): the outcome is unknown. Pause, then replay with the same key. Stripe may have made the session even though it answered 500, and it can keep replaying that cached 500.
+     - *Rejected* (invalid parameters, a key reused with different parameters, authentication or permissions): Stripe refused this request. That says nothing about what an earlier attempt with the same key did.
+   - **No session after the attempts:** look it up through §6a.
+     - If it's found, go to step 5.
+     - If it's established that none exists, the claim is dead: cancel the order and ask the family to start again.
+     - Otherwise keep the order. Tell the family to try again shortly, or, after a refusal, that payment couldn't start and to contact the organiser.
 5. **Call `attach_checkout_session(order_id, claim_id, session_id)`:**
    - If the order is a draft with the same claim and no session yet, it becomes `pending_payment` with this session. Return the URL.
    - If the same session is already attached (a parallel click got there first), return the URL.
-   - Anything else means the order was cancelled or expired in the meantime. Expire this session at Stripe on the bound account, and report the order's state.
+   - Anything else means the order moved on in the meantime: cancelled, expired or confirmed. Settle this session through §6a. An open session is expired and checked; a complete, paid one is confirmed or recorded as a case. Never assume a session can be expired.
 
 The bound account in `checkout_config` is used for every later call about this checkout: retrieve, expire and confirm. It never switches to the listing's current account.
+
+### 6a. Finding and settling a claim's session
+
+Pay, Cancel and the success page all use the same two steps whenever they need to know what happened to a claim's checkout.
+
+1. **Find it.** If a session is attached, retrieve it on the bound account. Otherwise, list the bound account's Checkout Sessions created in the claim window, from 1 minute before the claim to 10 minutes after, and pick the one whose metadata names this claim and order.
+   - **Found:** go to step 2.
+   - **Nothing found, and the claim is more than 10 minutes old:** no session exists. Pay sends no create request more than 5 minutes after the claim, so by then every request has finished.
+   - **Anything else, including when Stripe can't be reached:** unknown. Keep the order, and ask the family to try again in a few minutes.
+2. **Settle it.**
+   - **`open`:** resume it (Pay), or expire it and read it back to check it's expired (Cancel, or an order that moved on).
+   - **`expired`:** it can't be paid. Bring the order's state in line with `expire_checkout` or `cancel_order`.
+   - **`complete` and paid:** run confirmation (§9), which confirms the order or records the right case.
+   - **`complete` but unpaid, or an expiry Stripe won't confirm:** unknown. Keep the order and show message C.
+
+An error never stands in for this lookup.
 
 ### 7. Cancel (`cancelRegistration`)
 
 1. Authenticate, confirm ownership and read the order.
 2. **A draft without a claim:** call `cancel_order(order_id, household_id, expected_claim => null)`. It only cancels a draft that is still unclaimed. If a claim has appeared in the meantime, it returns the new state, and the action follows from there.
-3. **A draft with a claim but no session:** find out whether Stripe created one by replaying the creation request with the same key and parameters.
-   - If Stripe returns a session, expire it, then call `cancel_order` with the claim.
-   - If Stripe definitely refuses, no session exists, so call `cancel_order` with the claim.
-   - If the result is uncertain, refuse: "Try again in a moment."
-4. **`pending_payment`:** expire the session at Stripe on the bound account.
-   - If Stripe says it's complete, refuse ("Your payment went through, we're confirming it") and run the confirmation sync.
-   - If it's expired (just now, or already), call `cancel_order` with the claim. If no row changes, re-read the order; the webhook may have confirmed it.
+3. **An order with a claim** (a draft, with or without a session, or `pending_payment`): find and settle its session through §6a, with the intent to close it. Cancel never replays the create request.
+   - **Closed and checked, or established that no session exists:** call `cancel_order` with the claim. If no row changes, re-read the order; the webhook may have confirmed it.
+   - **Complete and paid:** the payment is confirmed, or recorded as a case, instead of the order being cancelled.
+   - **Unknown, including while a create request may still be running:** refuse ("We can't cancel this yet… try again in a few minutes") and keep the order.
 
 When a claim exists, `cancel_order` requires that exact claim, so one request can't cancel or finish another request's newer operation.
 
@@ -316,7 +345,7 @@ It runs as one transaction:
 2. **Already done.** If the order is already `paid` with this session, return `already_confirmed`, with no side effects.
 3. **Payment checks.** Every check is against the order's own claim, never the listing's current settings:
    - the payment status is `paid`
-   - the claim ID matches
+   - the claim ID matches (otherwise `claim_mismatch`)
    - the account is `checkout_config.account`
    - the session is the attached one; if none is attached, the claim must match, and this session gets attached now
    - the currency is `checkout_config.currency`
@@ -334,7 +363,7 @@ It runs as one transaction:
    - Competitor numbers are assigned with `_assign_numbers_for_registration`.
    - The confirmation email is queued with key `confirmation:<order id>`. The recipient is frozen from `auth.users` now.
 
-   If any step fails, everything rolls back. The order stays as it was, and the webhook returns 500 so Stripe retries. If a unique-constraint error slips past the checks during the status change, the function catches it and records `late_payment_conflict` instead of failing.
+   If any step fails, everything rolls back. The order stays as it was, and the webhook returns 500 so Stripe retries. If the one-active-order index (`idx_registrations_active_unique`) rejects the status change, a conflicting order slipped past the checks. The function then records `late_payment_conflict` instead of failing. Any other uniqueness failure, such as numbering or payment reuse, is not relabelled: it rolls back, and Stripe retries.
 7. **A changed Stripe account.** If the listing's current Stripe account differs from the bound account, the function also records a notice-level `listing_account_changed` case. The order is still confirmed, because the money went to the account that was the feis's when the family paid.
 
 **The confirmation sync:** Pay, Cancel and the success page call this same function after retrieving the session from Stripe themselves, on the bound account. They never use data from the URL. This updates the project rule "success page is cosmetic", which `CLAUDE.md` will reflect. Stripe's own fulfilment guidance recommends handling both the webhook and the return page this way.
@@ -360,7 +389,7 @@ It runs as one transaction:
 |---|---|---|
 | `amount_mismatch`, `currency_mismatch`, `late_payment_conflict`, `order_not_payable` | The charge is verified, but the registration isn't resolved | Message A |
 | `payment_failed` | The payment failed | Message B |
-| `account_mismatch`, `session_mismatch`, `payment_reused`, `order_not_found` | The payer may not be this family | Nothing. Admin alert only. |
+| `account_mismatch`, `claim_mismatch`, `session_mismatch`, `payment_reused`, `order_not_found` | The payer may not be this family | Nothing. Admin alert only. |
 | `listing_account_changed` | Notice only; the order is confirmed | Nothing. Admin alert only. |
 
 **Parent messages:**
@@ -386,14 +415,14 @@ Resolutions are allowed by reason. No function marks an order paid by skipping c
 
 | Reason | Allowed resolutions |
 |---|---|
-| `late_payment_conflict` | (a) Refund the late payment in Stripe and record it. Or (b) `payments_admin.confirm_late_payment(support_ref, note)`, which is allowed only when **all** of these hold: the recorded evidence passes every check in §9.3; the conflicting order is unpaid and can no longer be paid (no claim, or its `checkout_config.expires_at` has passed); and the payment intent isn't used by another order. In one transaction, under the household-and-feis lock, it cancels the conflicting order, confirms the late one through the same steps as §9.6, and writes an audit row. If the conflicting order is paid (the family paid twice), only (a) is allowed. |
-| `amount_mismatch`, `currency_mismatch`, `order_not_payable`, `payment_reused`, `account_mismatch`, `session_mismatch`, `order_not_found` | Check the payment in the Stripe dashboard, refund it there, and record the refund. The family starts a new order if they still want to enter. |
+| `late_payment_conflict` | (a) Refund the late payment in Stripe and record it. Or (b) `payments_admin.confirm_late_payment(support_ref, note)`, which is allowed only when **all** of these hold: the recorded evidence passes every check in §9.3; the payment intent isn't used by another order; and no other order for this family and feis can have a payment on the way. That means each other order either never reached checkout (no claim, so no payment can exist) or was cancelled through Cancel, which settles its checkout first (§7). In one transaction, under the household-and-feis lock and after re-checking those orders, it does four things: cancels the family's other unpaid orders that never reached checkout, confirms the late one through the same steps as §9.6, closes the case as `confirmed_late_payment`, and writes an audit row. If any other order is paid, or reached checkout and isn't cancelled, only (a) is allowed. A checkout that has since expired still counts, because a delayed payment for it could still arrive. |
+| `amount_mismatch`, `currency_mismatch`, `order_not_payable`, `payment_reused`, `account_mismatch`, `claim_mismatch`, `session_mismatch`, `order_not_found` | Check the payment in the Stripe dashboard, refund it there, and record the refund. The family starts a new order if they still want to enter. |
 | `payment_failed` | No money moved. Close as `no_action`. |
 | `listing_account_changed` | Check that the new account is right, then close as `acknowledged`. |
 
 **Recording a resolution:**
 - Use `payments_admin.close_exception(support_ref, resolution, stripe_refund_id, note)`.
-- The resolution is one of `refunded`, `no_action` or `acknowledged`.
+- The resolution is one of `refunded`, `no_action` or `acknowledged`. A case closed by `confirm_late_payment` is marked `confirmed_late_payment`.
 - `refunded` requires the Stripe refund ID.
 - Every admin function writes an `admin_actions` audit row: who, when, what, and the evidence.
 
@@ -431,7 +460,7 @@ These claim, backoff and outcome rules are database functions (migration 016), s
 - **Accepted:** mark it `sent` and save `provider_message_id`.
 - **Explicit failure** (Resend rejected it, so nothing was sent): increase `send_generation`, set it back to `pending`, and wait before the next try: 5 min, 15 min, 1 h, 3 h, 6 h, then 12 h. After the last try it's `failed`.
   - A failed confirmation queues an alert.
-  - A failed alert is only logged (`[NOTIFICATION_FAILED]`), so failures can't loop.
+  - A failed alert is only logged (`[NOTIFICATION_FAILED]`), so failures can't loop. The same applies when an alert becomes `needs_check` (below): it never raises another alert.
 - **Uncertain** (a timeout, a network error or a 5xx): retry with the same key, so Resend deduplicates it, while within 23 hours of `first_attempt_at`. After that it becomes `needs_check` and an alert is raised. It's never sent again automatically. The runbook covers checking Resend's logs and resending by hand.
 
 **What this guarantees:** at most one email per notification within Resend's 24-hour window. Outside that window, an uncertain delivery waits for a person rather than risking a duplicate.
@@ -476,7 +505,11 @@ The agreed model is one purchase per order record. The November work must meet t
 **How this spec keeps the November work possible:**
 - Paid orders can't change.
 - Each order has its own frozen details, claim, snapshot and payment record.
-- The one-active-order assumption appears in two places only: `create_order`'s check and the late-payment conflict rule. Both are listed above.
+- The one-active-order assumption appears in four places, and all four change together in November:
+  - the unique index `idx_registrations_active_unique`
+  - `create_order`'s check
+  - the automatic late-payment conflict rule in `confirm_order_payment`
+  - the manual rule in `payments_admin.confirm_late_payment`
 
 ---
 
@@ -522,12 +555,17 @@ These run on Vitest, using node-postgres (`pg`, added as a dev dependency), agai
 | Submit races a late payment for the same family and feis | Either the late payment is confirmed and Submit is refused, or Submit wins and a `late_payment_conflict` case is recorded. Nothing is lost and nothing fails unhandled. |
 | Pay races Cancel | One consistent end state, and no payable session the order doesn't know about |
 | Two Pay clicks | One claim, one session |
+| Cancel while Pay's create request may still be running (an in-progress 409 for the same key) | Cancel keeps the order and says to try again. Once the session exists, Cancel expires it and then cancels. |
+| A cached 500: Stripe made the session but keeps answering 500 for the key | Pay finds the session by listing and resumes it; Cancel finds it and closes it |
+| A recovered session is already complete (Cancel, or Pay after the order moved on) | Confirmed, or recorded as a case; never treated as expired |
+| A claim that never produced a session | The order is kept until that's established (10 minutes), then cancelled |
 | Pay crashes after Stripe creates the session, before attaching it | The next Pay or Cancel adopts the claim and recovers the session, or the webhook confirms by claim |
 | Snapshot or numbering fails during confirmation | Everything rolls back, and a retry then succeeds |
 | An email is accepted and the worker crashes before recording it | The retry uses the same key and Resend deduplicates it. After 23 hours the notification becomes `needs_check`. |
+| An alert that may not have been delivered becomes `needs_check` | No further alert is raised |
 | An old worker finishes after a newer claim | Refused; the newer claim stands |
 | A profile changes after Submit | The snapshot and purchased entries are unchanged |
-| Checkout across the deadline | Allowed within the hold. Refused once the organiser has stopped registration. |
+| Checkout across the deadline | Allowed within the hold. Refused if the organiser stopped registration before the claim; a checkout claimed before the stop may finish. |
 | Expiry notice for an old session arrives after the order is paid | No change |
 | Late payment confirmed while email isn't configured | The notification stays `pending` and no attempts are used |
 
