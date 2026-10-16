@@ -3,11 +3,12 @@ import { Archivo } from 'next/font/google'
 import { Geist_Mono } from 'next/font/google'
 import './globals.css'
 
-// Brand type: Archivo 400/500/700 for body, 900 italic for the logo and headlines
+// Brand type: variable Archivo. The width axis gives the narrow, heavy style used for
+// competitor numbers and competition codes, like a printed number card.
 const archivo = Archivo({
   variable: '--font-body',
   subsets: ['latin'],
-  weight: ['400', '500', '600', '700', '900'],
+  axes: ['wdth'],
   style: ['normal', 'italic'],
   display: 'swap',
 })

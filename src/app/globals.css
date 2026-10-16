@@ -325,4 +325,119 @@
   .feis-urgency {
     animation: urgency-pulse 2s ease-in-out infinite;
   }
+
+  /* ─── Entry page: built from the paper a family handles at a feis ─── */
+
+  /* Narrow, heavy type for numbers and competition codes, as on a printed card */
+  .feis-narrow {
+    font-feature-settings: normal;
+    font-stretch: 70%;
+    font-weight: 800;
+  }
+
+  /* Feis programme cover */
+  .feis-cover {
+    background: var(--color-feis-green-700);
+    color: #fff;
+    border-bottom: 6px double var(--color-feis-gold);
+  }
+  .feis-cover-title {
+    color: #fff;
+    font-stretch: 68%;
+    font-weight: 900;
+    line-height: 0.95;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+  }
+
+  /* Competitor number card: white stock, ink border, two punched holes */
+  .feis-number-card {
+    position: relative;
+    background: #fff;
+    border: 1.5px solid var(--color-feis-charcoal);
+    border-radius: 6px;
+    padding: 22px 14px 14px;
+  }
+  .feis-number-card::before,
+  .feis-number-card::after {
+    content: '';
+    position: absolute;
+    top: 9px;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--color-feis-cream);
+    border: 1.5px solid var(--color-feis-charcoal);
+  }
+  .feis-number-card::before { left: 10px; }
+  .feis-number-card::after { right: 10px; }
+  .feis-card-number {
+    font-feature-settings: normal;
+    font-stretch: 62%;
+    font-weight: 900;
+    line-height: 0.9;
+  }
+  .feis-card-number-pending {
+    color: transparent;
+    -webkit-text-stroke: 1.5px #CFC6B2;
+  }
+
+  /* The competition sticker on the back of the card */
+  .feis-sticker {
+    background: #FFF6C9;
+    border: 1px solid #E6D88E;
+  }
+
+  /* Paper entry form: ruled rows with tick boxes */
+  .feis-entry-form {
+    background: #fff;
+    border: 1.5px solid var(--color-feis-charcoal);
+  }
+  .feis-tick {
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    margin: 0;
+    display: grid;
+    place-items: center;
+    background: #fff;
+    border: 1.5px solid var(--color-feis-charcoal);
+    border-radius: 2px;
+    cursor: pointer;
+  }
+  .feis-tick:checked::after {
+    content: '✓';
+    font-weight: 900;
+    font-size: 15px;
+    line-height: 1;
+    color: var(--color-feis-green);
+  }
+  .feis-tick:disabled {
+    border-color: var(--color-feis-cream-dark);
+    cursor: default;
+  }
+
+  /* Printed receipt with a torn bottom edge */
+  .feis-receipt {
+    position: relative;
+    background: #fff;
+    filter: drop-shadow(0 6px 10px rgba(20, 22, 20, 0.12));
+  }
+  .feis-receipt::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -8px;
+    height: 8px;
+    background:
+      linear-gradient(-45deg, transparent 6px, #fff 0) 0 0 / 12px 8px repeat-x,
+      linear-gradient(45deg, transparent 6px, #fff 0) 0 0 / 12px 8px repeat-x;
+  }
+  .feis-leader {
+    flex: 1;
+    min-width: 12px;
+    border-bottom: 1.5px dotted #CFC6B2;
+    transform: translateY(-4px);
+  }
 }
