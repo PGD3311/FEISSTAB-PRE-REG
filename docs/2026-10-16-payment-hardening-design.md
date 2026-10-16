@@ -142,7 +142,7 @@ TypeScript makes the Stripe and Resend calls between these functions, and calls 
 ### 2. Database permissions
 
 **The three order tables** (registrations, entries and snapshots):
-- Migration `012_payment_hardening.sql` drops every existing policy on them. It loops over `pg_policies`, so a policy applied by hand can't survive.
+- Migration `012_order_integrity.sql` drops every existing policy on them. This work ships as migrations 012–017, split by concern; see the implementation plan. It loops over `pg_policies`, so a policy applied by hand can't survive.
 - It then creates exactly two policies on each:
   - parent `SELECT` on their own household's rows (`auth_household_id()`)
   - organiser `SELECT` for their own feiseanna
@@ -423,6 +423,8 @@ Resolutions are allowed by reason. No function marks an order paid by skipping c
 
 `complete_notification(id, claim_token, …)` only works if the token still matches, so an old worker can never finish a newer worker's claim.
 
+These claim, backoff and outcome rules are database functions (migration 016), so each step is atomic. Classifying a Resend error is a pure function in `src/lib/engine/email-errors.ts`.
+
 **Sending:** the worker sends through Resend with idempotency key `<dedupe_key>:<send_generation>`. The Resend SDK in use (6.9.4) supports idempotency keys, and Resend keeps them for 24 hours.
 
 **Outcomes:**
@@ -434,7 +436,7 @@ Resolutions are allowed by reason. No function marks an order paid by skipping c
 
 **What this guarantees:** at most one email per notification within Resend's 24-hour window. Outside that window, an uncertain delivery waits for a person rather than risking a duplicate.
 
-**When email isn't configured** (`RESEND_API_KEY` or `EMAIL_FROM` is missing), the worker claims nothing. Rows stay `pending` without using up attempts, and the worker logs that email is paused.
+**When email isn't configured** (`RESEND_API_KEY`, `EMAIL_FROM` or `PAYMENTS_ALERT_EMAIL` is missing), the worker claims nothing. Rows stay `pending` without using up attempts, and the worker logs that email is paused.
 
 **When the worker runs:**
 - right after a confirmation, as a best effort
@@ -444,7 +446,7 @@ The schedule is set up by hand for each environment, following the runbook. The 
 
 ### 13. Expiry job
 
-The rule doesn't change: an order in `draft` or `pending_payment` whose hold has passed (`hold_expires_at < now()`) becomes `expired`.
+The rule doesn't change: an order in `draft` or `pending_payment` whose hold has passed (`hold_expires_at < now()`) becomes `expired`. Migration 012 re-schedules the job with schema-qualified table names, because pg_cron runs jobs with the default `search_path`. The live check looks at whether the old job has been failing.
 
 Holds:
 - An unclaimed draft holds for 30 minutes from Submit.
@@ -484,7 +486,7 @@ The agreed model is one purchase per order record. The November work must meet t
 
 These run on Vitest, using node-postgres (`pg`, added as a dev dependency), against a temporary Postgres 17:
 - Global setup runs `initdb` into a temporary folder and starts the server on a free port.
-- It applies stand-ins for Supabase's `auth` schema, roles and `cron`, then migrations 001–012.
+- It applies stand-ins for Supabase's `auth` schema, roles and `cron`, then every migration up to 017.
 - Teardown stops the server and deletes the folder. Nothing keeps running.
 - The command is `npm run test:db`.
 - Parent tests switch to the real `authenticated` role with JWT claims.
@@ -571,7 +573,7 @@ This runs with the real Stripe setup, using test keys and a connected test accou
    - the number of orders by status
    - unpaid orders without `purchase_snapshot`
 
-   Adjust 012 to what's there. If the 011 trigger or functions exist, 012 removes them. Duplicates are resolved before the unique keys are added.
+   Adjust the migrations to what's there. If the 011 trigger or functions exist, 012 removes them. Duplicates are resolved before the unique keys are added.
 2. **Existing orders.**
    - Unpaid orders (`draft` and `pending_payment`) can't have a `purchase_snapshot`, because the column is new. Step 1 confirms that no feis has taken real registrations and that none of these orders has an open Stripe session; with Stripe still simulated, none can. 012 then expires them.
    - Paid orders keep `purchase_snapshot = NULL`. No purchase record is made up for them, and Launch keeps reading live data for those orders.
@@ -583,7 +585,7 @@ This runs with the real Stripe setup, using test keys and a connected test accou
    - `NOTIFICATIONS_CRON_SECRET`
 
    The Stripe and Resend keys come with their own items.
-5. **Apply 012, deploy straight after, then schedule the notification job.** The old code can't write under the new permissions, so the migration and the deploy go out together.
+5. **Apply 012–017, deploy straight after, then schedule the notification job.** The old code can't write under the new permissions, so the migration and the deploy go out together.
 6. **Run the live verification** and record the result here.
 
 ---
@@ -598,7 +600,7 @@ This runs with the real Stripe setup, using test keys and a connected test accou
 
 ## Dependencies
 
-- **Supabase connector** reconnected to the RunFeis organisation, for the live check, applying 012 and the live verification. Otherwise Daniel pastes the SQL in.
+- **Supabase connector** reconnected to the RunFeis organisation, for the live check, applying 012–017 and the live verification. Otherwise Daniel pastes the SQL in.
 - **Vercel connector** reconnected to the cgds-projects team, for the environment variables. Otherwise Daniel sets them.
 - **Resend.** Emails are only sent once Resend is configured (the domain and email item). Until then they wait as `pending` without using up attempts (§12), and alerts can be seen in the logs and in `payment_exceptions`.
 - **Stripe test keys and a connected test account** (the real Stripe item), for the end-to-end run.
