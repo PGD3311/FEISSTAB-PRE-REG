@@ -3,6 +3,7 @@ import { formatCents, formatDate } from '@/lib/format'
 import { entryDeadline, formatDeadline } from '@/lib/entry-display'
 import type { FeisListing } from '@/lib/types/feis-listing'
 import { RunFeisLogo } from '@/components/runfeis-logo'
+import { LogoutButton } from '@/components/logout-button'
 
 export interface CoverLink {
   href: string
@@ -10,7 +11,16 @@ export interface CoverLink {
 }
 
 /** The dark green band with a gold double rule, like the cover of a feis programme. */
-export function CoverBand({ links, children }: { links: CoverLink[]; children: React.ReactNode }) {
+export function CoverBand({
+  links,
+  signOut = false,
+  children
+}: {
+  links: CoverLink[]
+  /** Show a Sign out button, for pages a signed-in person is looking at */
+  signOut?: boolean
+  children: React.ReactNode
+}) {
   return (
     <header className="feis-cover">
       <div className="mx-auto grid max-w-6xl gap-x-6 gap-y-2 px-4 pt-4 pb-6 sm:px-7 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
@@ -28,6 +38,7 @@ export function CoverBand({ links, children }: { links: CoverLink[]; children: R
                 {link.label}
               </Link>
             ))}
+            {signOut && <LogoutButton />}
           </div>
         </nav>
         {children}
@@ -43,15 +54,16 @@ interface FeisCoverProps {
   >
   lateFeeCents: number | null
   links: CoverLink[]
+  signOut?: boolean
 }
 
 /** One feis's cover: its name, date and venue, and when entries close. */
-export function FeisCover({ listing, lateFeeCents, links }: FeisCoverProps) {
+export function FeisCover({ listing, lateFeeCents, links, signOut = false }: FeisCoverProps) {
   const deadline = entryDeadline(listing)
   const timeZone = listing.timezone ?? 'America/New_York'
 
   return (
-    <CoverBand links={links}>
+    <CoverBand links={links} signOut={signOut}>
       <div className="min-w-0 pt-3">
         <h1 className="feis-cover-title text-[clamp(34px,6vw,56px)]">{listing.name}</h1>
         <p className="mt-1.5 opacity-85">

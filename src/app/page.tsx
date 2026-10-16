@@ -168,7 +168,7 @@ export default async function HomePage() {
 
   return (
     <div className="flex min-h-screen flex-col bg-[var(--color-feis-cream)]">
-      <CoverBand links={links}>
+      <CoverBand links={links} signOut={!!user}>
         <div className="min-w-0 pt-3">
           <h1 className="feis-cover-title text-[clamp(34px,6vw,56px)]">Upcoming feiseanna</h1>
           <p className="mt-1.5 max-w-[52ch] opacity-85">
