@@ -142,18 +142,18 @@ export function HouseholdForm({
               label="City"
               defaultValue={household?.city ?? null}
               autoComplete="address-level2"
-              className="sm:col-span-3"
+              className="sm:col-span-2"
             />
             <Field
               name="state_region"
-              label="State / Province"
+              label="State"
               defaultValue={household?.state_region ?? null}
               autoComplete="address-level1"
-              className="sm:col-span-1"
+              className="sm:col-span-2"
             />
             <Field
               name="postal_code"
-              label="ZIP / Postal code"
+              label="ZIP code"
               defaultValue={household?.postal_code ?? null}
               autoComplete="postal-code"
               className="sm:col-span-2"

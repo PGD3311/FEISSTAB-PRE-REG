@@ -83,9 +83,11 @@ export default async function DashboardPage() {
         title="My entries"
         intro="Every feis your family has entered, with what you paid and your confirmation numbers."
         action={
-          <Link href="/" className="feis-btn feis-btn-primary">
-            Find a feis to enter
-          </Link>
+          hasRegistrations ? (
+            <Link href="/" className="feis-btn feis-btn-primary">
+              Find a feis to enter
+            </Link>
+          ) : undefined
         }
       />
 
@@ -112,7 +114,7 @@ export default async function DashboardPage() {
       )}
 
       {!hasRegistrations ? (
-        <div className="feis-sticker max-w-xl rounded px-5 py-5">
+        <div className="feis-sticker max-w-3xl rounded px-5 py-5">
           <p className="font-bold">No entries yet</p>
           <p className="mt-1 text-sm text-muted-foreground">
             Pick a feis that&apos;s taking entries, choose dances for your dancers and pay once for

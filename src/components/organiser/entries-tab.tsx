@@ -128,14 +128,20 @@ export function EntriesTab({ listingId }: { listingId: string }) {
   useEffect(() => {
     async function load() {
       setLoading(true)
-      const result = await getFeisEntries(listingId)
-      if ('error' in result) {
-        setError(result.error ?? 'Unknown error')
-      } else {
-        setEntries(result.entries as unknown as EntryRow[])
-        setSummary(result.summary)
+      try {
+        const result = await getFeisEntries(listingId)
+        if ('error' in result) {
+          setError(result.error ?? 'Unknown error')
+        } else {
+          setEntries(result.entries as unknown as EntryRow[])
+          setSummary(result.summary)
+        }
+      } catch (err) {
+        console.error('Failed to load entries:', err)
+        setError(err instanceof Error ? err.message : 'Unknown error')
+      } finally {
+        setLoading(false)
       }
-      setLoading(false)
     }
     load()
   }, [listingId])

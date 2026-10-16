@@ -81,7 +81,7 @@ export function FeisWizard({ listing, feeSchedule, competitionsCount }: FeisWiza
         href="/organiser/feiseanna"
         className="text-sm text-muted-foreground underline underline-offset-2 hover:text-foreground"
       >
-        Back to feiseanna
+        Back to your feiseanna
       </Link>
       <div className="mt-3">
         <PageTitle

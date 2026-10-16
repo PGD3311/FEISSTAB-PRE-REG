@@ -18,10 +18,12 @@ Found during the October 2026 restyle and left for later. RunFeis is for Northea
 - **The after-payment page says a confirmation email was sent** even when email isn't set up (`RESEND_API_KEY` missing means the email is only logged).
 - **The "See receipt" link on My entries** builds `?session_id=null` when a registration has no Stripe session, and the page then falls back to the latest registration for that feis.
 - **The entry page links to `/terms` and `/privacy`, which don't exist yet.**
-- **Sign-in and sign-up have no loading fallback** in their `Suspense` boundaries.
 
 ## Already tracked elsewhere
 Payment and Stripe webhook problems, and changing entries after paying, are being handled on the `payment-hardening` branch.
 
 ## Fixed: signed-out pages crashed in development ("frame.join is not a function")
 React 19.2's dev mode records the value of every `await` in a server component. For a signed-out visitor, `supabase.auth.getUser()` resolves to an "Auth session missing" error object. When a page also passed whole feis listings (including the full syllabus) to small components, React's dev data budget ran out, the error's stack was replaced with an "omitted" note, and Next 16.2.0's dev tools crashed reading it. Fixed by reading the user through `getSignedInUser()` in `src/lib/supabase/server.ts` and passing components only the fields they show. Keep both habits on public pages.
+
+## Fixed: parts of pages never came to life in development (stuck "Loading entries…")
+The `loading.tsx` files added during the restyle wrapped pages in a loading boundary. In development with Next 16.2.0, the browser waited forever on a debug-data chunk the server never sent, so the parts of pages inside that boundary never hydrated. The organiser's Entries tab showed "Loading entries…" indefinitely. The loading files were removed (the original app had none); client pages keep their own loading messages. Don't add `loading.tsx` back without checking that the page still hydrates in development.

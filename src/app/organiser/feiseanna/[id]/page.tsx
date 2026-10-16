@@ -171,7 +171,7 @@ function OverviewTab({
         </section>
       </div>
 
-      <aside className="feis-receipt px-[18px] pt-5 pb-[18px]">
+      <aside className="feis-receipt w-full max-w-md px-[18px] pt-5 pb-[18px] lg:max-w-none">
         <h2 className="feis-display text-[22px]">At a glance</h2>
         <p className="mb-3 text-[13px] text-muted-foreground">
           {formatDate(listing.feis_date, { fallback: 'No date set yet' })}

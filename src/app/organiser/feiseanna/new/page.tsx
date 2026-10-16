@@ -11,7 +11,7 @@ export default async function NewFeisPage() {
   const supabase = await createClient()
   const { data: listings, error } = await supabase
     .from('feis_listings')
-    .select('id, name, feis_date, status')
+    .select('id, name, feis_date, status, reg_closes_at, late_reg_closes_at')
     .order('feis_date', { ascending: false })
 
   const hasExisting = !error && listings && listings.length > 0

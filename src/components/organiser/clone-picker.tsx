@@ -12,6 +12,8 @@ interface ClonePickerListing {
   name: string
   feis_date: string
   status: ListingStatus
+  reg_closes_at: string | null
+  late_reg_closes_at: string | null
 }
 
 interface ClonePickerProps {
@@ -63,7 +65,7 @@ export function ClonePicker({ listings }: ClonePickerProps) {
                   </span>
                   <span className="mt-0.5 flex items-center gap-2 text-[13px] text-muted-foreground">
                     {formatDate(listing.feis_date, { month: 'short', fallback: 'No date' })}
-                    <ListingStatusTag listing={{ status: listing.status as ListingStatus }} />
+                    <ListingStatusTag listing={listing} />
                   </span>
                 </span>
                 <span className="shrink-0 text-sm font-bold text-[var(--color-feis-green)] underline underline-offset-[3px]">

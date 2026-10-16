@@ -57,14 +57,16 @@ export default async function DancersPage() {
         title="Dancers"
         intro="Set each dancer up once with their school and levels. Every feis then shows only the competitions they can enter."
         action={
-          <Link href="/dashboard/dancers/new" className="feis-btn feis-btn-primary">
-            Add a dancer
-          </Link>
+          activeDancers.length > 0 ? (
+            <Link href="/dashboard/dancers/new" className="feis-btn feis-btn-primary">
+              Add a dancer
+            </Link>
+          ) : undefined
         }
       />
 
       {activeDancers.length === 0 ? (
-        <div className="feis-sticker max-w-xl rounded px-5 py-5">
+        <div className="feis-sticker max-w-3xl rounded px-5 py-5">
           <p className="font-bold">No dancers yet</p>
           <p className="mt-1 text-sm text-muted-foreground">
             Add your first dancer to start entering feiseanna.
