@@ -25,6 +25,7 @@ SET search_path = pre_registration, pg_temp
 AS $$
 DECLARE
   v_listing feis_listings%ROWTYPE;
+  v_row registrations%ROWTYPE;
   v_close timestamptz;
   v_existing uuid;
   v_id uuid := gen_random_uuid();
@@ -53,9 +54,11 @@ BEGIN
   WHERE household_id = p_household_id AND feis_listing_id = p_feis_listing_id
     AND status IN ('draft', 'pending_payment') AND hold_expires_at < now();
 
+  -- Active means what idx_registrations_active_unique (002) means: neither expired nor cancelled. A live
+  -- database still holding 011's confirmed orders then refuses here, not with a unique-index error.
   SELECT id INTO v_existing FROM registrations
   WHERE household_id = p_household_id AND feis_listing_id = p_feis_listing_id
-    AND status IN ('draft', 'pending_payment', 'paid')
+    AND status NOT IN ('expired', 'cancelled')
   LIMIT 1;
   IF FOUND THEN
     RETURN jsonb_build_object('status', 'refused', 'reason', 'active_order_exists', 'registration_id', v_existing);
@@ -89,13 +92,15 @@ BEGIN
     RAISE EXCEPTION 'an order needs at least one entry';
   END IF;
 
-  -- The entries must be exactly the snapshot's entries, fee for fee
+  -- The entries must be exactly the snapshot's entries, fee category and fee for fee
   WITH stored AS (
-    SELECT dancer_id, feis_competition_id AS competition_id, base_fee_cents, late_fee_cents, day_of_surcharge_cents
+    SELECT dancer_id, feis_competition_id AS competition_id, fee_category,
+      base_fee_cents, late_fee_cents, day_of_surcharge_cents
     FROM registration_entries WHERE registration_id = v_id
   ), frozen AS (
-    SELECT s.dancer_id, s.competition_id, s.base_fee_cents, s.late_fee_cents, s.day_of_surcharge_cents
-    FROM jsonb_to_recordset(v_snapshot -> 'entries') AS s(dancer_id uuid, competition_id uuid,
+    SELECT s.dancer_id, s.competition_id, s.fee_category,
+      s.base_fee_cents, s.late_fee_cents, s.day_of_surcharge_cents
+    FROM jsonb_to_recordset(v_snapshot -> 'entries') AS s(dancer_id uuid, competition_id uuid, fee_category text,
       base_fee_cents integer, late_fee_cents integer, day_of_surcharge_cents integer)
   )
   SELECT count(*) INTO v_mismatches FROM (
@@ -116,6 +121,16 @@ BEGIN
          - (v_breakdown ->> 'family_cap_savings_cents')::integer)
         IS DISTINCT FROM (p_order ->> 'total_cents')::integer THEN
     RAISE EXCEPTION 'order totals do not match the purchase snapshot';
+  END IF;
+
+  -- The order row's late flag and agreement are the ones the snapshot froze
+  SELECT * INTO v_row FROM registrations WHERE id = v_id;
+  IF v_row.is_late IS DISTINCT FROM ((v_breakdown ->> 'active_late_tier') IS NOT NULL) THEN
+    RAISE EXCEPTION 'order late flag does not match the purchase snapshot';
+  END IF;
+  IF v_row.consent_version IS DISTINCT FROM (v_snapshot -> 'rules' ->> 'consent_version')
+     OR v_row.platform_terms_version IS DISTINCT FROM (v_snapshot -> 'rules' ->> 'platform_terms_version') THEN
+    RAISE EXCEPTION 'order consent or terms version does not match the purchase snapshot';
   END IF;
 
   -- Every dancer is this family's and active; every competition is this feis's and enabled

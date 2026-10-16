@@ -31,6 +31,50 @@ async function ordersFor(householdId: string): Promise<number> {
   return rows[0].n
 }
 
+/** The orders and entries a family has: on its own orders, or for its own dancers */
+async function createdFor(householdId: string): Promise<{ orders: number; entries: number }> {
+  const { rows } = await db.pool.query(
+    `SELECT
+       (SELECT count(*)::int FROM registrations WHERE household_id = $1) AS orders,
+       (SELECT count(*)::int FROM registration_entries e
+        JOIN registrations r ON r.id = e.registration_id
+        JOIN dancers d ON d.id = e.dancer_id
+        WHERE r.household_id = $1 OR d.household_id = $1) AS entries`,
+    [householdId]
+  )
+  return rows[0]
+}
+
+/** A family and a feis, with a one-dance order create_order accepts as it stands */
+async function oneDanceOrder() {
+  const family = await createFamily(db.pool)
+  const listing = await createListing(db.pool)
+  const dancer = await createDancer(db.pool, family.householdId)
+  const payload = buildPayload({
+    listing,
+    dancers: [dancer],
+    entries: [{ dancerId: dancer.id, competitionId: listing.competitions[0].id }]
+  })
+  const submit = () => store.createOrder(family.householdId, listing.listing.id, payload)
+  return { family, listing, dancer, payload, submit }
+}
+
+/** Runs statements in one transaction with triggers off, as the superuser the tests connect as */
+async function withTriggersOff(...statements: string[]): Promise<void> {
+  const client = await db.pool.connect()
+  try {
+    await client.query('BEGIN')
+    await client.query('SET LOCAL session_replication_role = replica')
+    for (const statement of statements) await client.query(statement)
+    await client.query('COMMIT')
+  } catch (err) {
+    await client.query('ROLLBACK')
+    throw err
+  } finally {
+    client.release()
+  }
+}
+
 describe('create_order', () => {
   it('creates the order, its entries and its frozen details in one step', async () => {
     const order = await createDraftOrder(db.pool)
@@ -76,10 +120,15 @@ describe('create_order', () => {
 
   it('expires a draft whose hold has passed instead of being blocked by it', async () => {
     const old = await createDraftOrder(db.pool)
+    // Lapsed drafts that aren't this family's order for this feis: another family's at the same
+    // feis, and this family's at another feis
+    const neighbour = await createDraftOrder(db.pool, { listing: old.listing })
+    const elsewhere = await createDraftOrder(db.pool, { family: old.family })
+    const others = [neighbour.registrationId, elsewhere.registrationId]
     await asService(db.pool, (c) =>
       c.query(
-        `UPDATE registrations SET hold_expires_at = now() - interval '1 minute' WHERE id = $1`,
-        [old.registrationId]
+        `UPDATE registrations SET hold_expires_at = now() - interval '1 minute' WHERE id = ANY($1)`,
+        [[old.registrationId, ...others]]
       )
     )
 
@@ -93,13 +142,54 @@ describe('create_order', () => {
     expect(again.registration_id).not.toBe(old.registrationId)
 
     const { rows } = await db.pool.query(
-      'SELECT id, status FROM registrations WHERE household_id = $1 ORDER BY created_at',
-      [old.family.householdId]
+      `SELECT id, status FROM registrations WHERE household_id = $1 AND feis_listing_id = $2
+       ORDER BY created_at`,
+      [old.family.householdId, old.listing.listing.id]
     )
     expect(rows).toEqual([
       { id: old.registrationId, status: 'expired' },
       { id: again.registration_id, status: 'draft' }
     ])
+
+    // Only this family's orders for this feis expire here; the expiry job ends the others
+    const { rows: untouched } = await db.pool.query(
+      'SELECT id, status FROM registrations WHERE id = ANY($1) ORDER BY created_at',
+      [others]
+    )
+    expect(untouched).toEqual([
+      { id: neighbour.registrationId, status: 'draft' },
+      { id: elsewhere.registrationId, status: 'draft' }
+    ])
+  })
+
+  it('refuses while a 011 confirmed order is active, as the unique index does', async () => {
+    const order = await createDraftOrder(db.pool)
+    const statusCheck = (statuses: string) =>
+      `ALTER TABLE registrations DROP CONSTRAINT registrations_status_check;
+       ALTER TABLE registrations ADD CONSTRAINT registrations_status_check
+         CHECK (status IN (${statuses}))`
+    // The live database may still carry 011's status check and a confirmed order. Nothing in the
+    // app makes a confirmed order any more, so this one is made with triggers off.
+    await withTriggersOff(
+      statusCheck(`'draft', 'pending_payment', 'confirmed', 'paid', 'expired', 'cancelled'`),
+      `UPDATE registrations SET status = 'confirmed' WHERE id = '${order.registrationId}'`
+    )
+    try {
+      expect(
+        await store.createOrder(order.family.householdId, order.listing.listing.id, order.payload)
+      ).toEqual({
+        status: 'refused',
+        reason: 'active_order_exists',
+        registration_id: order.registrationId
+      })
+      expect(await ordersFor(order.family.householdId)).toBe(1)
+    } finally {
+      // Back to 002's status check for the rest of this file
+      await withTriggersOff(
+        `UPDATE registrations SET status = 'cancelled' WHERE id = '${order.registrationId}'`,
+        statusCheck(`'draft', 'pending_payment', 'paid', 'expired', 'cancelled'`)
+      )
+    }
   })
 
   it('refuses once the organiser closes registration, and after the deadline', async () => {
@@ -143,7 +233,7 @@ describe('create_order', () => {
     payload.entries[0].base_fee_cents = 1
     expect(
       await refused(store.createOrder(family.householdId, listing.listing.id, payload))
-    ).toMatch(/do not match the purchase snapshot/)
+    ).toMatch(/order entries do not match the purchase snapshot/)
     expect(await ordersFor(family.householdId)).toBe(0)
   })
 
@@ -177,6 +267,129 @@ describe('create_order', () => {
       await refused(store.createOrder(family.householdId, listing.listing.id, payload))
     ).toMatch(/not available/)
     expect(await ordersFor(family.householdId)).toBe(0)
+  })
+
+  it("creates nothing when an entry names another competition than the snapshot's", async () => {
+    const order = await oneDanceOrder()
+    // Another enabled competition of the same feis at the same fee: the totals still add up
+    expect(order.listing.competitions[1]).toMatchObject({
+      enabled: true,
+      fee_category: order.payload.entries[0].fee_category,
+      fee_cents: null
+    })
+    order.payload.entries[0].feis_competition_id = order.listing.competitions[1].id
+    expect(await refused(order.submit())).toMatch(/order entries do not match/)
+    expect(await createdFor(order.family.householdId)).toEqual({ orders: 0, entries: 0 })
+  })
+
+  it("creates nothing when an entry's fee category differs from the snapshot's", async () => {
+    const order = await oneDanceOrder()
+    order.payload.entries[0].fee_category = 'prelim_champ'
+    expect(await refused(order.submit())).toMatch(/order entries do not match/)
+    expect(await createdFor(order.family.householdId)).toEqual({ orders: 0, entries: 0 })
+  })
+
+  it("creates nothing when entries plus fees less the family max isn't the total", async () => {
+    const order = await oneDanceOrder()
+    // The order's total is still the snapshot's grand total; only the identity between them breaks
+    order.payload.purchase_snapshot.pricing.breakdown.family_cap_savings_cents += 100
+    expect(await refused(order.submit())).toMatch(/totals do not match/)
+    expect(await createdFor(order.family.householdId)).toEqual({ orders: 0, entries: 0 })
+  })
+
+  it("creates nothing when the late flag disagrees with the snapshot's late tier", async () => {
+    const order = await oneDanceOrder()
+    order.payload.is_late = true
+    expect(await refused(order.submit())).toMatch(/late flag does not match/)
+
+    // The same order priced in a late tier, sent as on time
+    const lateListing = {
+      ...order.listing,
+      feeSchedule: {
+        ...order.listing.feeSchedule,
+        late_fee_tiers: [
+          {
+            starts_at: new Date(Date.now() - 86_400_000).toISOString(),
+            fee_cents: 2500,
+            family_max_cents: null
+          }
+        ]
+      }
+    }
+    const late = buildPayload({
+      listing: lateListing,
+      dancers: [order.dancer],
+      entries: [{ dancerId: order.dancer.id, competitionId: order.listing.competitions[0].id }]
+    })
+    expect(late.is_late).toBe(true)
+    late.is_late = false
+    expect(
+      await refused(store.createOrder(order.family.householdId, order.listing.listing.id, late))
+    ).toMatch(/late flag does not match/)
+    expect(await createdFor(order.family.householdId)).toEqual({ orders: 0, entries: 0 })
+  })
+
+  it("creates nothing when the consent or terms version differs from the snapshot's", async () => {
+    const order = await oneDanceOrder()
+    order.payload.consent_version = 'consent-2026-01-01'
+    expect(await refused(order.submit())).toMatch(/consent or terms version does not match/)
+
+    order.payload.consent_version = CONSENT_VERSION
+    order.payload.platform_terms_version = 'runfeis-terms-2026-01-01/privacy-2026-01-01'
+    expect(await refused(order.submit())).toMatch(/consent or terms version does not match/)
+    expect(await createdFor(order.family.householdId)).toEqual({ orders: 0, entries: 0 })
+  })
+
+  it("creates nothing for another feis's competition", async () => {
+    const family = await createFamily(db.pool)
+    const listing = await createListing(db.pool)
+    const other = await createListing(db.pool)
+    const dancer = await createDancer(db.pool, family.householdId)
+    // Priced and frozen on the other feis, so the entries match the snapshot
+    const payload = buildPayload({
+      listing: other,
+      dancers: [dancer],
+      entries: [{ dancerId: dancer.id, competitionId: other.competitions[0].id }]
+    })
+    expect(
+      await refused(store.createOrder(family.householdId, listing.listing.id, payload))
+    ).toMatch(/not available/)
+    expect(await createdFor(family.householdId)).toEqual({ orders: 0, entries: 0 })
+  })
+
+  it('creates nothing for a competition turned off after the order was priced', async () => {
+    const order = await oneDanceOrder()
+    await db.pool.query('UPDATE feis_competitions SET enabled = false WHERE id = $1', [
+      order.listing.competitions[0].id
+    ])
+    expect(await refused(order.submit())).toMatch(/not available/)
+    expect(await createdFor(order.family.householdId)).toEqual({ orders: 0, entries: 0 })
+  })
+
+  it('creates nothing for a dancer deactivated after the order was priced', async () => {
+    const order = await oneDanceOrder()
+    await db.pool.query('UPDATE dancers SET is_active = false WHERE id = $1', [order.dancer.id])
+    expect(await refused(order.submit())).toMatch(
+      /order entries name a dancer or competition that is not available/
+    )
+    expect(await createdFor(order.family.householdId)).toEqual({ orders: 0, entries: 0 })
+  })
+
+  it('refuses before registration opens', async () => {
+    const order = await oneDanceOrder()
+    await db.pool.query(
+      `UPDATE feis_listings SET reg_opens_at = now() + interval '1 day' WHERE id = $1`,
+      [order.listing.listing.id]
+    )
+    expect(await order.submit()).toEqual({ status: 'refused', reason: 'outside_window' })
+    expect(await createdFor(order.family.householdId)).toEqual({ orders: 0, entries: 0 })
+  })
+
+  it('creates nothing for an order with no entries', async () => {
+    const order = await oneDanceOrder()
+    order.payload.entries = []
+    expect(await refused(order.submit())).toMatch(/an order needs at least one entry/)
+    expect(await createdFor(order.family.householdId)).toEqual({ orders: 0, entries: 0 })
   })
 
   it('keeps the order unchanged when the parent edits the dancer afterwards', async () => {
