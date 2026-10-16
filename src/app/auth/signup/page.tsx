@@ -168,7 +168,6 @@ function AuthShell({
 }) {
   return (
     <AuthLayout
-      headline="One family account for every feis."
       title={title}
       intro={intro}
       switchLink={{ href: loginHref, label: 'Sign in', prompt: 'Already have an account?' }}

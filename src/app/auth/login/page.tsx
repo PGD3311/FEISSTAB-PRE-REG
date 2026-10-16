@@ -50,7 +50,6 @@ function LoginForm() {
 
   return (
     <AuthLayout
-      headline="Enter your dancers once. Pay once. Done."
       title="Sign in"
       intro="Families and organisers use the same RunFeis account."
       switchLink={{ href: signupHref, label: 'Create an account', prompt: 'New to RunFeis?' }}
