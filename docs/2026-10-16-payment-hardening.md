@@ -50,6 +50,13 @@
   - `authenticated` reads `registrations` column by column, without `consent_ip` and `checkout_config`.
   - App reads use `REGISTRATION_COLUMNS`.
   - The consent checkbox also covers someone entering a dancer with the parent or guardian's permission (`CONSENT_VERSION = 'consent-2026-10-16b'`).
+- **Tasks 5–7 are built, reviewed and fixed** (batch 2): commits `4b403da..61f92cd`.
+  - The code is the record where it differs from the task text below:
+    - `create_order` compares the whole frozen record (fee category, late flag, consent and terms versions).
+    - `create_order`'s active-order check uses the unique index's predicate.
+    - `create_order` expires this household's lapsed orders for the feis first.
+    - Stripe shows late and day-of fees as their own lines, and respects its 100-line limit.
+    - The `competition_unavailable` message points at Change entries.
 - **Tasks 5–16 are revised** to fit the as-built code and the redesigned registration pages. Tasks 7 and 12 were rewritten for the new entry page, success page and dashboard.
 
 ## Global Constraints
@@ -2002,7 +2009,7 @@ git commit -m "feat: server-side order checks and frozen purchase details"
 
 ---
 
-### Task 5: The frozen Stripe request, checkout policy and Stripe errors (pure)
+### Task 5: The frozen Stripe request, checkout policy and Stripe errors (pure) (done)
 
 **Files:**
 - Create: `src/lib/engine/checkout-config.ts`
@@ -2385,7 +2392,7 @@ git commit -m "feat: frozen Stripe checkout request, checkout policy and Stripe 
 
 ---
 
-### Task 6: Migration 013 (`create_order`) and the order store
+### Task 6: Migration 013 (`create_order`) and the order store (done)
 
 **Files:**
 - Create: `supabase/migrations/013_create_order.sql`
@@ -2919,7 +2926,7 @@ git commit -m "feat: create orders in one transaction, checked against their fro
 
 ---
 
-### Task 7: Submit action and the register page
+### Task 7: Submit action and the register page (done)
 
 **Files:**
 - Create: `src/lib/fetch-all-rows.ts`
@@ -7393,7 +7400,7 @@ In `src/components/registration/entry-page.tsx`, replace everything from `async 
     }
   }
 ```
-The page's price is worked out when the cart changes, so if the order Submit creates costs something other than the total the Pay button showed (a late tier started while the page was open), Pay keeps the held order, shows the new total and stops, and the next press, which has an order id, goes straight to Pay: no family reaches Stripe at a price they weren't shown.
+The page's price is worked out when the cart changes, so if the order Submit creates costs something other than the total the Pay button showed (a late tier started, or the organiser changed a fee, while the page was open), Pay keeps the held order, shows the new total and stops, and the next press, which has an order id, goes straight to Pay: no family reaches Stripe at a price they weren't shown.
 
 How each answer is handled:
 - **`review`** goes to the success page, because Stripe has the money. That page shows message A, with the reference, for a recorded case, or message C while confirmation is still unfinished. On the entry page, the family would see a Pay button next to "Please don't pay again".
