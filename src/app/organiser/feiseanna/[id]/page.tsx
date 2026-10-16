@@ -2,19 +2,14 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 
 import { createClient } from '@/lib/supabase/server'
-import type {
-  FeisListing,
-  FeeSchedule,
-  ListingStatus,
-} from '@/lib/types/feis-listing'
+import type { FeisListing, FeeSchedule, LateFeeTier } from '@/lib/types/feis-listing'
 import {
   formatTimezone,
   formatDate,
   formatDateTime,
   formatCents,
   formatCentsOrNull,
-  formatLateTier,
-  sortLateTiers,
+  sortLateTiers
 } from '@/lib/format'
 import { StatusActions } from '@/components/organiser/status-actions'
 import { DeleteDraftButton } from '@/components/organiser/delete-draft-button'
@@ -22,8 +17,10 @@ import { CloneFeisButton } from '@/components/organiser/clone-feis-button'
 import { EntriesTab } from '@/components/organiser/entries-tab'
 import {
   CompetitionEditor,
-  type EditorCompetition,
+  type EditorCompetition
 } from '@/components/organiser/competition-editor'
+import { PageTitle } from '@/components/page-title'
+import { ListingStatusTag } from '@/components/organiser/listing-status-tag'
 
 export const dynamic = 'force-dynamic'
 
@@ -32,152 +29,168 @@ const TABS = [
   { key: 'entries', label: 'Entries' },
   { key: 'syllabus', label: 'Syllabus' },
   { key: 'fees', label: 'Fees' },
-  { key: 'settings', label: 'Settings' },
+  { key: 'settings', label: 'Settings' }
 ] as const
 
 type TabKey = (typeof TABS)[number]['key']
 
-function StatusBadge({ status }: { status: ListingStatus }) {
-  const styles: Record<ListingStatus, string> = {
-    draft: 'bg-muted text-muted-foreground',
-    open: 'bg-secondary text-primary',
-    closed: 'bg-feis-orange-light text-feis-orange-ink',
-    launched: 'bg-primary text-primary-foreground',
-  }
-
+/** One line of a printed summary: label, dotted leader, value. */
+function LeaderLine({
+  label,
+  value,
+  note,
+  big = false
+}: {
+  label: string
+  value: string | number
+  note?: string
+  big?: boolean
+}) {
   return (
-    <span
-      className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium capitalize ${styles[status]}`}
-    >
-      {status}
-    </span>
+    <div className="py-1">
+      <div className="flex items-baseline gap-1.5 text-sm">
+        <span>{label}</span>
+        <span className="feis-leader" />
+        <span
+          className={
+            big ? 'feis-narrow text-[30px] leading-none tabular-nums' : 'text-right tabular-nums'
+          }
+        >
+          {value}
+        </span>
+      </div>
+      {note && <p className="text-[12.5px] text-muted-foreground">{note}</p>}
+    </div>
+  )
+}
+
+/** A ruled row of the details sheet. */
+function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="grid gap-x-4 gap-y-0.5 border-t border-[#E2DCCD] px-4 py-2.5 first:border-t-0 sm:grid-cols-[140px_minmax(0,1fr)]">
+      <dt className="text-[13px] font-bold text-muted-foreground">{label}</dt>
+      <dd className="min-w-0">{children}</dd>
+    </div>
+  )
+}
+
+function NotSet() {
+  return <span className="text-muted-foreground">Not set</span>
+}
+
+function SetupLink({ listingId, children }: { listingId: string; children: React.ReactNode }) {
+  return (
+    <Link href={`/organiser/feiseanna/${listingId}/setup`} className="feis-link text-sm">
+      {children}
+    </Link>
   )
 }
 
 function OverviewTab({
   listing,
-  competitionsCount,
+  competitionsCount
 }: {
   listing: FeisListing
   competitionsCount: number
 }) {
   return (
-    <div className="space-y-6">
-      {/* Details card */}
-      <div className="feis-card p-5">
-        <h2 className="mb-4 text-lg font-semibold">Details</h2>
-        <dl className="grid gap-4 sm:grid-cols-2">
-          <div>
-            <dt className="text-sm text-muted-foreground">Date</dt>
-            <dd className="mt-0.5 font-medium">
-              {formatDate(listing.feis_date, { fallback: 'Not set' })}
-              {listing.end_date && ` — ${formatDate(listing.end_date, { fallback: 'Not set' })}`}
-            </dd>
-          </div>
-          <div>
-            <dt className="text-sm text-muted-foreground">Venue</dt>
-            <dd className="mt-0.5 font-medium">
-              {listing.venue_name ?? 'Not set'}
-            </dd>
-            {listing.venue_address && (
-              <dd className="text-sm text-muted-foreground">
-                {listing.venue_address}
-              </dd>
-            )}
-          </div>
-          <div>
-            <dt className="text-sm text-muted-foreground">Timezone</dt>
-            <dd className="mt-0.5 font-medium">
-              {listing.timezone ? formatTimezone(listing.timezone) : 'Not set'}
-            </dd>
-          </div>
-          <div>
-            <dt className="text-sm text-muted-foreground">Contact</dt>
-            <dd className="mt-0.5 font-medium">
-              {listing.contact_email ?? 'Not set'}
-            </dd>
-            {listing.contact_phone && (
-              <dd className="text-sm text-muted-foreground">
-                {listing.contact_phone}
-              </dd>
-            )}
-          </div>
-        </dl>
-      </div>
-
-      {/* Quick stats */}
-      <div className="grid gap-4 sm:grid-cols-2">
-        <div className="feis-card p-5">
-          <p className="text-sm text-muted-foreground">Competitions</p>
-          <p className="feis-stat mt-1">{competitionsCount}</p>
-        </div>
-        <div className="feis-card p-5">
-          <p className="text-sm text-muted-foreground">
-            Registration Deadline
-          </p>
-          <p className="mt-1 text-lg font-semibold">
-            {formatDateTime(listing.reg_closes_at, 'Not set')}
-          </p>
-        </div>
-      </div>
-
-      {/* Launched banner */}
-      {listing.status === 'launched' && (
-        <div className="feis-card border-primary/30 p-5">
-          <h2 className="mb-2 text-lg font-semibold">Feis Day Launched</h2>
-          <p className="text-sm text-muted-foreground">
-            Registration data was transferred to RunFeis on{' '}
-            {formatDateTime(listing.launched_at, 'Not set')}.
-            This listing is now read-only.
-          </p>
-          {listing.launched_event_id && (
-            <p className="mt-2 text-sm text-muted-foreground">
-              Phase 1 Event ID:{' '}
-              <code className="font-mono text-xs">
-                {listing.launched_event_id}
-              </code>
+    <div className="grid items-start gap-8 lg:grid-cols-[minmax(0,1fr)_320px]">
+      <div className="grid gap-8">
+        {listing.status === 'launched' && (
+          <div className="border-l-4 border-[var(--color-feis-green)] bg-[var(--color-feis-green-light)] px-5 py-4">
+            <h2 className="feis-display text-[20px]">Feis day launched</h2>
+            <p className="mt-1 text-sm">
+              The entries were sent to RunFeis for the day on{' '}
+              <strong>{formatDateTime(listing.launched_at, 'an unknown date')}</strong>. This feis
+              can no longer be changed here.
             </p>
-          )}
-        </div>
-      )}
-
-      {/* Status actions */}
-      {listing.status !== 'launched' && (
-        <div className="feis-card p-5">
-          <h2 className="mb-4 text-lg font-semibold">Actions</h2>
-          <div className="flex flex-wrap items-center gap-3">
-            <StatusActions
-              listingId={listing.id}
-              status={listing.status}
-            />
-            {listing.status === 'closed' && (
-              <Link
-                href={`/organiser/feiseanna/${listing.id}/launch`}
-                className="rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-feis-green-600"
-              >
-                Launch Feis Day
-              </Link>
+            {listing.launched_event_id && (
+              <p className="mt-2 text-[13px] text-muted-foreground">
+                Feis-day event ID{' '}
+                <code className="font-mono text-xs">{listing.launched_event_id}</code>
+              </p>
             )}
-            <Link
-              href={`/organiser/feiseanna/${listing.id}/edit`}
-              className="rounded-md bg-secondary px-4 py-2 text-sm font-medium text-secondary-foreground hover:bg-muted"
-            >
-              Edit Details
-            </Link>
-            <CloneFeisButton listingId={listing.id} />
           </div>
-        </div>
-      )}
+        )}
 
-      {/* Clone for launched listings */}
-      {listing.status === 'launched' && (
-        <div className="feis-card p-5">
-          <h2 className="mb-4 text-lg font-semibold">Actions</h2>
+        <section>
+          <h2 className="feis-display mb-2 text-[22px]">Details</h2>
+          <dl className="feis-entry-form">
+            <DetailRow label="Date">
+              {listing.feis_date ? (
+                <>
+                  {formatDate(listing.feis_date, { weekday: 'long' })}
+                  {listing.end_date && ` to ${formatDate(listing.end_date, { weekday: 'long' })}`}
+                </>
+              ) : (
+                <NotSet />
+              )}
+            </DetailRow>
+            <DetailRow label="Venue">
+              {listing.venue_name ?? <NotSet />}
+              {listing.venue_address && (
+                <span className="block text-sm text-muted-foreground">{listing.venue_address}</span>
+              )}
+            </DetailRow>
+            <DetailRow label="Time zone">
+              {listing.timezone ? formatTimezone(listing.timezone) : <NotSet />}
+            </DetailRow>
+            <DetailRow label="Contact">
+              {listing.contact_email ?? <NotSet />}
+              {listing.contact_phone && (
+                <span className="block text-sm text-muted-foreground">{listing.contact_phone}</span>
+              )}
+            </DetailRow>
+          </dl>
+        </section>
+
+        <section>
+          <h2 className="feis-display mb-3 text-[22px]">Manage this feis</h2>
           <div className="flex flex-wrap items-center gap-3">
+            {listing.status !== 'launched' && (
+              <>
+                <StatusActions listingId={listing.id} status={listing.status} />
+                {listing.status === 'closed' && (
+                  <Link
+                    href={`/organiser/feiseanna/${listing.id}/launch`}
+                    className="feis-btn feis-btn-primary"
+                  >
+                    Launch feis day
+                  </Link>
+                )}
+                <Link
+                  href={`/organiser/feiseanna/${listing.id}/edit`}
+                  className="feis-btn feis-btn-outline"
+                >
+                  Edit details
+                </Link>
+              </>
+            )}
             <CloneFeisButton listingId={listing.id} />
           </div>
+        </section>
+      </div>
+
+      <aside className="feis-receipt px-[18px] pt-5 pb-[18px]">
+        <h2 className="feis-display text-[22px]">At a glance</h2>
+        <p className="mb-3 text-[13px] text-muted-foreground">
+          {formatDate(listing.feis_date, { fallback: 'No date set yet' })}
+        </p>
+        <LeaderLine label="Competitions" value={competitionsCount} big />
+        <div className="mt-2.5 border-t-[3px] border-[var(--color-feis-gold)] pt-2.5">
+          <p className="text-sm font-bold">Entries close</p>
+          <p className="text-[22px] leading-tight font-extrabold [font-stretch:75%]">
+            {formatDateTime(listing.reg_closes_at, 'Not set yet')}
+          </p>
         </div>
-      )}
+        <p className="mt-3 text-[13px] text-muted-foreground">
+          See who&apos;s entered and what&apos;s been paid on the{' '}
+          <Link href={`/organiser/feiseanna/${listing.id}?tab=entries`} className="feis-link">
+            Entries
+          </Link>{' '}
+          tab.
+        </p>
+      </aside>
     </div>
   )
 }
@@ -185,7 +198,7 @@ function OverviewTab({
 function SyllabusTab({
   competitions,
   listing,
-  feeSchedule,
+  feeSchedule
 }: {
   competitions: EditorCompetition[]
   listing: FeisListing
@@ -200,22 +213,23 @@ function SyllabusTab({
         ageGroups={listing.syllabus_snapshot?.age_groups ?? []}
         editable={listing.status === 'draft' || listing.status === 'open'}
       />
-      <div>
-        <Link
-          href={`/organiser/feiseanna/${listing.id}/setup`}
-          className="text-sm font-medium text-primary hover:underline"
-        >
-          Change the syllabus in the wizard
-        </Link>
-      </div>
+      <SetupLink listingId={listing.id}>Change the syllabus in the setup steps</SetupLink>
     </div>
   )
+}
+
+function tierStart(tier: LateFeeTier, timeZone: string): string {
+  return new Date(tier.starts_at).toLocaleDateString('en-US', {
+    timeZone,
+    month: 'short',
+    day: 'numeric'
+  })
 }
 
 function FeesTab({
   feeSchedule,
   listingId,
-  timeZone,
+  timeZone
 }: {
   feeSchedule: FeeSchedule | null
   listingId: string
@@ -224,132 +238,104 @@ function FeesTab({
   if (!feeSchedule) {
     return (
       <div className="space-y-4">
-        <div className="feis-card px-6 py-12 text-center text-muted-foreground">
-          No fees configured.
+        <div className="feis-sticker max-w-xl rounded px-5 py-5">
+          <p className="font-bold">No fees set yet</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Families can&apos;t pay until the fees are in. Add them in the setup steps.
+          </p>
         </div>
-        <div>
-          <Link
-            href={`/organiser/feiseanna/${listingId}/setup`}
-            className="text-sm font-medium text-primary hover:underline"
-          >
-            Edit in Wizard
-          </Link>
-        </div>
+        <SetupLink listingId={listingId}>Set the fees</SetupLink>
       </div>
     )
   }
 
-  const fees = [
-    { label: 'Event Fee (per family)', value: formatCents(feeSchedule.event_fee_cents) },
-    { label: 'Solo Fee (per dance)', value: formatCents(feeSchedule.solo_fee_cents) },
-    { label: 'Prelim Championship Fee', value: formatCents(feeSchedule.prelim_champ_fee_cents) },
-    { label: 'Open Championship Fee', value: formatCents(feeSchedule.open_champ_fee_cents) },
-    {
-      label: 'Competition Entry Max (per family)',
-      value: formatCentsOrNull(feeSchedule.family_cap_cents, 'None'),
-    },
-    ...sortLateTiers(feeSchedule.late_fee_tiers).map((tier, i) => ({
-      label: `Late Fee, Tier ${i + 1}`,
-      value: formatLateTier(tier, timeZone),
-    })),
-    { label: 'Day-of Surcharge (per dancer)', value: formatCents(feeSchedule.day_of_surcharge_cents) },
-  ]
-
   return (
-    <div className="space-y-4">
-      <div className="feis-card overflow-hidden">
-        <table className="w-full">
-          <thead className="feis-thead">
-            <tr>
-              <th className="text-left">Fee Category</th>
-              <th className="text-right">Amount</th>
-            </tr>
-          </thead>
-          <tbody className="feis-tbody">
-            {fees.map((fee) => (
-              <tr key={fee.label}>
-                <td className="px-4 py-3 text-sm">{fee.label}</td>
-                <td className="px-4 py-3 text-right text-sm font-medium">
-                  {fee.value}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <div>
-        <Link
-          href={`/organiser/feiseanna/${listingId}/setup`}
-          className="text-sm font-medium text-primary hover:underline"
-        >
-          Edit in Wizard
-        </Link>
-      </div>
+    <div className="space-y-5">
+      <section className="feis-receipt max-w-md px-[18px] pt-5 pb-[18px]">
+        <h2 className="feis-display mb-2 text-[22px]">Fees</h2>
+        <LeaderLine
+          label="Family fee"
+          value={formatCents(feeSchedule.event_fee_cents)}
+          note="Once per family"
+        />
+        <LeaderLine label="Each solo dance" value={formatCents(feeSchedule.solo_fee_cents)} />
+        <LeaderLine
+          label="Preliminary championship"
+          value={formatCents(feeSchedule.prelim_champ_fee_cents)}
+        />
+        <LeaderLine
+          label="Open championship"
+          value={formatCents(feeSchedule.open_champ_fee_cents)}
+        />
+        <LeaderLine
+          label="Most a family pays for entries"
+          value={formatCentsOrNull(feeSchedule.family_cap_cents, 'No limit')}
+        />
+        {sortLateTiers(feeSchedule.late_fee_tiers).map((tier) => (
+          <LeaderLine
+            key={tier.starts_at}
+            label={`Late fee from ${tierStart(tier, timeZone)}`}
+            value={formatCents(tier.fee_cents)}
+            note={
+              tier.family_max_cents === null
+                ? 'Per dancer'
+                : `Per dancer, no more than ${formatCents(tier.family_max_cents)} a family`
+            }
+          />
+        ))}
+        <LeaderLine
+          label="Entering on the day"
+          value={formatCents(feeSchedule.day_of_surcharge_cents)}
+          note="Extra per dancer"
+        />
+      </section>
+      <SetupLink listingId={listingId}>Change the fees in the setup steps</SetupLink>
     </div>
   )
 }
 
 function SettingsTab({ listing }: { listing: FeisListing }) {
   return (
-    <div className="space-y-6">
-      {/* Deadlines */}
-      <div className="feis-card p-5">
-        <h2 className="mb-4 text-lg font-semibold">Deadlines</h2>
-        <dl className="grid gap-4 sm:grid-cols-2">
-          <div>
-            <dt className="text-sm text-muted-foreground">
-              Registration Opens
-            </dt>
-            <dd className="mt-0.5 font-medium">
-              {formatDateTime(listing.reg_opens_at, 'Not set')}
-            </dd>
-          </div>
-          <div>
-            <dt className="text-sm text-muted-foreground">
-              Registration Closes
-            </dt>
-            <dd className="mt-0.5 font-medium">
-              {formatDateTime(listing.reg_closes_at, 'Not set')}
-            </dd>
-          </div>
-          <div>
-            <dt className="text-sm text-muted-foreground">
-              Late Registration Closes
-            </dt>
-            <dd className="mt-0.5 font-medium">
-              {formatDateTime(listing.late_reg_closes_at, 'Not set')}
-            </dd>
-          </div>
+    <div className="grid max-w-2xl gap-8">
+      <section>
+        <h2 className="feis-display mb-2 text-[22px]">Deadlines</h2>
+        <dl className="feis-entry-form">
+          <DetailRow label="Entries open">
+            {formatDateTime(listing.reg_opens_at, '') || <NotSet />}
+          </DetailRow>
+          <DetailRow label="Entries close">
+            {formatDateTime(listing.reg_closes_at, '') || <NotSet />}
+          </DetailRow>
+          <DetailRow label="Late entries close">
+            {formatDateTime(listing.late_reg_closes_at, '') || <NotSet />}
+          </DetailRow>
         </dl>
-      </div>
+      </section>
 
-      {/* Stripe */}
-      <div className="feis-card p-5">
-        <h2 className="mb-4 text-lg font-semibold">Payments</h2>
-        <div className="flex items-center gap-2">
-          <span className="text-sm">Stripe:</span>
+      <section>
+        <h2 className="feis-display mb-2 text-[22px]">Payments</h2>
+        <p className="flex flex-wrap items-center gap-2 text-sm">
+          Card payments through Stripe
           {listing.stripe_charges_enabled ? (
-            <span className="inline-block rounded-full bg-secondary px-2.5 py-0.5 text-xs font-medium text-primary">
+            <span className="inline-block rounded-[2px] bg-[var(--color-feis-green-light)] px-1.5 py-0.5 text-xs font-bold text-[var(--color-feis-green)]">
               Connected
             </span>
           ) : (
-            <span className="inline-block rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground">
-              Not Connected
+            <span className="inline-block rounded-[2px] bg-[var(--color-feis-orange-light)] px-1.5 py-0.5 text-xs font-bold text-[var(--color-feis-orange-ink)]">
+              Not connected
             </span>
           )}
-        </div>
-      </div>
+        </p>
+      </section>
 
-      {/* Delete */}
       {listing.status === 'draft' && (
-        <div className="feis-card border-destructive/30 p-5">
-          <h2 className="mb-2 text-lg font-semibold">Danger Zone</h2>
-          <p className="mb-4 text-sm text-muted-foreground">
-            Deleting a draft listing permanently removes it along with all
-            associated competitions and fee schedules.
+        <section className="border-l-4 border-destructive bg-white px-5 py-4">
+          <h2 className="feis-display text-[20px]">Delete this draft</h2>
+          <p className="mt-1 mb-4 text-sm text-muted-foreground">
+            Removes the draft for good, with its competitions and fees. Only drafts can be deleted.
           </p>
           <DeleteDraftButton listingId={listing.id} />
-        </div>
+        </section>
       )}
     </div>
   )
@@ -357,7 +343,7 @@ function SettingsTab({ listing }: { listing: FeisListing }) {
 
 export default async function FeisDashboardPage({
   params,
-  searchParams,
+  searchParams
 }: {
   params: Promise<{ id: string }>
   searchParams: Promise<{ tab?: string }>
@@ -388,64 +374,62 @@ export default async function FeisDashboardPage({
         'id, display_name, display_code, competition_type, fee_category, fee_cents, exclude_from_family_cap, grades_only, enabled, age_group_label'
       )
       .eq('feis_listing_id', id)
-      .order('sort_order', { ascending: true }),
+      .order('sort_order', { ascending: true })
   ])
 
   const typedCompetitions = (competitions ?? []) as EditorCompetition[]
   const competitionsCount = typedCompetitions.length
 
   const activeTab: TabKey =
-    tabParam && TABS.some((t) => t.key === tabParam)
-      ? (tabParam as TabKey)
-      : 'overview'
+    tabParam && TABS.some((t) => t.key === tabParam) ? (tabParam as TabKey) : 'overview'
 
   return (
     <div>
-      {/* Header */}
-      <div className="mb-2">
-        <Link
-          href="/organiser/feiseanna"
-          className="text-sm text-muted-foreground hover:text-foreground"
-        >
-          &larr; Back to Feiseanna
-        </Link>
-      </div>
+      <Link
+        href="/organiser/feiseanna"
+        className="mb-3 inline-block text-sm font-semibold text-muted-foreground underline underline-offset-2 hover:text-foreground"
+      >
+        Back to your feiseanna
+      </Link>
 
-      <div className="mb-6 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <h1 className="text-2xl">
-            {typedListing.name ?? 'Untitled Feis'}
-          </h1>
-          <StatusBadge status={typedListing.status} />
-        </div>
-      </div>
+      <PageTitle
+        title={typedListing.name || 'Untitled feis'}
+        intro={
+          <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <ListingStatusTag listing={typedListing} />
+            <span>
+              {formatDate(typedListing.feis_date, { weekday: 'long', fallback: 'No date set yet' })}
+              {typedListing.venue_name ? `, ${typedListing.venue_name}` : ''}
+            </span>
+          </span>
+        }
+      />
 
-      {/* Tab bar */}
-      <div className="feis-segmented-bar mb-6">
+      <nav
+        aria-label="Feis sections"
+        className="feis-segmented-bar mb-7 border-b-[1.5px] border-[var(--color-feis-charcoal)]"
+      >
         {TABS.map((tab) => (
           <Link
             key={tab.key}
             href={`/organiser/feiseanna/${id}?tab=${tab.key}`}
-            className={`feis-segmented-tab ${
-              activeTab === tab.key ? 'feis-segmented-tab-active' : ''
+            aria-current={activeTab === tab.key ? 'page' : undefined}
+            className={`feis-segmented-tab text-sm ${
+              activeTab === tab.key
+                ? 'feis-segmented-tab-active font-bold text-foreground'
+                : 'hover:text-foreground'
             }`}
           >
             {tab.label}
           </Link>
         ))}
-      </div>
+      </nav>
 
-      {/* Tab content */}
       <div className="min-h-[300px]">
         {activeTab === 'overview' && (
-          <OverviewTab
-            listing={typedListing}
-            competitionsCount={competitionsCount}
-          />
+          <OverviewTab listing={typedListing} competitionsCount={competitionsCount} />
         )}
-        {activeTab === 'entries' && (
-          <EntriesTab listingId={id} />
-        )}
+        {activeTab === 'entries' && <EntriesTab listingId={id} />}
         {activeTab === 'syllabus' && (
           <SyllabusTab
             competitions={typedCompetitions}
@@ -460,9 +444,7 @@ export default async function FeisDashboardPage({
             timeZone={listing.timezone ?? 'America/New_York'}
           />
         )}
-        {activeTab === 'settings' && (
-          <SettingsTab listing={typedListing} />
-        )}
+        {activeTab === 'settings' && <SettingsTab listing={typedListing} />}
       </div>
     </div>
   )

@@ -16,7 +16,7 @@ const TIMEZONES = [
   { value: 'America/Toronto', label: 'Eastern (Toronto)' },
   { value: 'Europe/Dublin', label: 'Ireland (Dublin)' },
   { value: 'Europe/London', label: 'United Kingdom (London)' },
-  { value: 'Australia/Sydney', label: 'Australia (Sydney)' },
+  { value: 'Australia/Sydney', label: 'Australia (Sydney)' }
 ] as const
 
 function detectTimezone(): string {
@@ -42,8 +42,7 @@ export function FeisWizardStep1({ listing, onNext }: FeisWizardStep1Props) {
 
   const isExisting = !!listing.id
 
-  const defaultTimezone =
-    listing.timezone || detectTimezone()
+  const defaultTimezone = listing.timezone || detectTimezone()
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
@@ -69,24 +68,23 @@ export function FeisWizardStep1({ listing, onNext }: FeisWizardStep1Props) {
   }
 
   return (
-    <form onSubmit={handleSubmit}>
+    <form onSubmit={handleSubmit} className="max-w-2xl">
       {error && (
-        <div className="mb-6 rounded-md border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+        <p
+          role="alert"
+          className="mb-6 border-l-4 border-destructive bg-white px-4 py-3 text-sm text-destructive"
+        >
           {error}
-        </div>
+        </p>
       )}
 
-      <div className="space-y-6">
-        {/* Feis Name */}
-        <div className="space-y-4">
-          <h2 className="text-lg font-semibold">Basic Information</h2>
+      <div className="feis-card divide-y divide-[#E2DCCD]">
+        <section className="space-y-4 px-5 py-5 sm:px-6">
+          <h2 className="feis-display text-[22px]">The feis</h2>
 
           <div>
-            <label
-              htmlFor="name"
-              className="mb-1.5 block text-sm font-medium"
-            >
-              Feis Name <span className="text-muted-foreground">*</span>
+            <label htmlFor="name" className="feis-label">
+              Feis name <span className="text-muted-foreground">*</span>
             </label>
             <input
               id="name"
@@ -95,22 +93,32 @@ export function FeisWizardStep1({ listing, onNext }: FeisWizardStep1Props) {
               required
               defaultValue={listing.name ?? ''}
               placeholder="e.g. Emerald Isle Feis 2027"
-              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+              className="feis-input"
             />
           </div>
-        </div>
 
-        {/* Dates */}
-        <div className="space-y-4">
-          <h2 className="text-lg font-semibold">Date &amp; Location</h2>
+          <div>
+            <label htmlFor="description" className="feis-label">
+              Description
+            </label>
+            <textarea
+              id="description"
+              name="description"
+              rows={3}
+              defaultValue={listing.description ?? ''}
+              placeholder="A few lines for parents (optional)"
+              className="feis-input"
+            />
+          </div>
+        </section>
+
+        <section className="space-y-4 px-5 py-5 sm:px-6">
+          <h2 className="feis-display text-[22px]">Date and venue</h2>
 
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
-              <label
-                htmlFor="feis_date"
-                className="mb-1.5 block text-sm font-medium"
-              >
-                Feis Date <span className="text-muted-foreground">*</span>
+              <label htmlFor="feis_date" className="feis-label">
+                Feis date <span className="text-muted-foreground">*</span>
               </label>
               <input
                 id="feis_date"
@@ -118,47 +126,41 @@ export function FeisWizardStep1({ listing, onNext }: FeisWizardStep1Props) {
                 type="date"
                 required
                 defaultValue={listing.feis_date ?? ''}
-                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+                className="feis-input"
               />
             </div>
 
-            <div className="flex items-end gap-3">
-              <label className="flex items-center gap-2 py-2 text-sm">
+            <div className="flex items-end">
+              <label className="flex items-center gap-2 py-2.5 text-sm">
                 <input
                   type="checkbox"
                   checked={isMultiDay}
                   onChange={(e) => setIsMultiDay(e.target.checked)}
-                  className="h-4 w-4 rounded border-border accent-primary"
+                  className="h-4 w-4 accent-[var(--color-feis-green)]"
                 />
-                Multi-day event
+                The feis runs over more than one day
               </label>
             </div>
           </div>
 
           {isMultiDay && (
-            <div className="max-w-xs">
-              <label
-                htmlFor="end_date"
-                className="mb-1.5 block text-sm font-medium"
-              >
-                End Date
+            <div className="sm:max-w-[calc(50%-0.5rem)]">
+              <label htmlFor="end_date" className="feis-label">
+                Last day
               </label>
               <input
                 id="end_date"
                 name="end_date"
                 type="date"
                 defaultValue={listing.end_date ?? ''}
-                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+                className="feis-input"
               />
             </div>
           )}
 
           <div>
-            <label
-              htmlFor="venue_name"
-              className="mb-1.5 block text-sm font-medium"
-            >
-              Venue Name <span className="text-muted-foreground">*</span>
+            <label htmlFor="venue_name" className="feis-label">
+              Venue name <span className="text-muted-foreground">*</span>
             </label>
             <input
               id="venue_name"
@@ -167,16 +169,13 @@ export function FeisWizardStep1({ listing, onNext }: FeisWizardStep1Props) {
               required
               defaultValue={listing.venue_name ?? ''}
               placeholder="e.g. Boston Convention Center"
-              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+              className="feis-input"
             />
           </div>
 
           <div>
-            <label
-              htmlFor="venue_address"
-              className="mb-1.5 block text-sm font-medium"
-            >
-              Venue Address
+            <label htmlFor="venue_address" className="feis-label">
+              Venue address
             </label>
             <input
               id="venue_address"
@@ -184,23 +183,20 @@ export function FeisWizardStep1({ listing, onNext }: FeisWizardStep1Props) {
               type="text"
               defaultValue={listing.venue_address ?? ''}
               placeholder="Full address (optional)"
-              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+              className="feis-input"
             />
           </div>
 
-          <div className="max-w-xs">
-            <label
-              htmlFor="timezone"
-              className="mb-1.5 block text-sm font-medium"
-            >
-              Timezone <span className="text-muted-foreground">*</span>
+          <div className="sm:max-w-[calc(50%-0.5rem)]">
+            <label htmlFor="timezone" className="feis-label">
+              Time zone <span className="text-muted-foreground">*</span>
             </label>
             <select
               id="timezone"
               name="timezone"
               required
               defaultValue={defaultTimezone}
-              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+              className="feis-input"
             >
               {TIMEZONES.map((tz) => (
                 <option key={tz.value} value={tz.value}>
@@ -209,20 +205,15 @@ export function FeisWizardStep1({ listing, onNext }: FeisWizardStep1Props) {
               ))}
             </select>
           </div>
-        </div>
+        </section>
 
-        {/* Contact */}
-        <div className="space-y-4">
-          <h2 className="text-lg font-semibold">Contact Information</h2>
+        <section className="space-y-4 px-5 py-5 sm:px-6">
+          <h2 className="feis-display text-[22px]">Contact</h2>
 
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
-              <label
-                htmlFor="contact_email"
-                className="mb-1.5 block text-sm font-medium"
-              >
-                Contact Email{' '}
-                <span className="text-muted-foreground">*</span>
+              <label htmlFor="contact_email" className="feis-label">
+                Contact email <span className="text-muted-foreground">*</span>
               </label>
               <input
                 id="contact_email"
@@ -231,16 +222,13 @@ export function FeisWizardStep1({ listing, onNext }: FeisWizardStep1Props) {
                 required
                 defaultValue={listing.contact_email ?? ''}
                 placeholder="organiser@example.com"
-                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+                className="feis-input"
               />
             </div>
 
             <div>
-              <label
-                htmlFor="contact_phone"
-                className="mb-1.5 block text-sm font-medium"
-              >
-                Contact Phone
+              <label htmlFor="contact_phone" className="feis-label">
+                Contact phone
               </label>
               <input
                 id="contact_phone"
@@ -248,19 +236,14 @@ export function FeisWizardStep1({ listing, onNext }: FeisWizardStep1Props) {
                 type="tel"
                 defaultValue={listing.contact_phone ?? ''}
                 placeholder="(555) 123-4567"
-                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+                className="feis-input"
               />
             </div>
           </div>
 
-          {/* Privacy Policy URL — grouped with contact info */}
           <div>
-            <label
-              htmlFor="privacy_policy_url"
-              className="mb-1.5 block text-sm font-medium"
-            >
-              Privacy Policy URL{' '}
-              <span className="text-destructive">*</span>
+            <label htmlFor="privacy_policy_url" className="feis-label">
+              Privacy policy link
             </label>
             <input
               id="privacy_policy_url"
@@ -268,25 +251,21 @@ export function FeisWizardStep1({ listing, onNext }: FeisWizardStep1Props) {
               type="url"
               defaultValue={listing.privacy_policy_url ?? ''}
               placeholder="https://example.com/privacy"
-              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+              aria-describedby="privacy_policy_url-hint"
+              className="feis-input"
             />
-            <p className="mt-1 text-xs text-muted-foreground">
-              Required to publish. Link to your privacy policy (e.g.
-              https://example.com/privacy)
+            <p id="privacy_policy_url-hint" className="mt-1 text-xs text-muted-foreground">
+              Needed before you can publish. Parents see it when they register.
             </p>
           </div>
-        </div>
+        </section>
 
-        {/* Website & Logo */}
-        <div className="space-y-4">
-          <h2 className="text-lg font-semibold">Public Listing</h2>
+        <section className="space-y-4 px-5 py-5 sm:px-6">
+          <h2 className="feis-display text-[22px]">Public listing</h2>
 
           <div>
-            <label
-              htmlFor="website_url"
-              className="mb-1.5 block text-sm font-medium"
-            >
-              Feis Website
+            <label htmlFor="website_url" className="feis-label">
+              Feis website
             </label>
             <input
               id="website_url"
@@ -294,19 +273,17 @@ export function FeisWizardStep1({ listing, onNext }: FeisWizardStep1Props) {
               type="url"
               defaultValue={listing.website_url ?? ''}
               placeholder="https://yourfeis.com"
-              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+              aria-describedby="website_url-hint"
+              className="feis-input"
             />
-            <p className="mt-1 text-xs text-muted-foreground">
-              Shown on the public listing so parents can find more info
+            <p id="website_url-hint" className="mt-1 text-xs text-muted-foreground">
+              Shown on the public listing so parents can find more information.
             </p>
           </div>
 
           <div>
-            <label
-              htmlFor="logo_url"
-              className="mb-1.5 block text-sm font-medium"
-            >
-              Feis Logo URL
+            <label htmlFor="logo_url" className="feis-label">
+              Logo image link
             </label>
             <input
               id="logo_url"
@@ -314,45 +291,19 @@ export function FeisWizardStep1({ listing, onNext }: FeisWizardStep1Props) {
               type="url"
               defaultValue={listing.logo_url ?? ''}
               placeholder="https://yourfeis.com/logo.png"
-              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+              aria-describedby="logo_url-hint"
+              className="feis-input"
             />
-            <p className="mt-1 text-xs text-muted-foreground">
-              Displayed next to your feis on the homepage. Square image works best.
+            <p id="logo_url-hint" className="mt-1 text-xs text-muted-foreground">
+              Shown next to your feis on the home page. A square image works best.
             </p>
           </div>
-        </div>
-
-        {/* Description */}
-        <div>
-          <label
-            htmlFor="description"
-            className="mb-1.5 block text-sm font-medium"
-          >
-            Description
-          </label>
-          <textarea
-            id="description"
-            name="description"
-            rows={3}
-            defaultValue={listing.description ?? ''}
-            placeholder="Brief description shown to parents (optional)"
-            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
-          />
-        </div>
+        </section>
       </div>
 
-      {/* Submit */}
-      <div className="mt-8">
-        <button
-          type="submit"
-          disabled={isPending}
-          className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-feis-green-600 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          {isPending
-            ? 'Saving...'
-            : isExisting
-              ? 'Save & Continue'
-              : 'Create Draft & Continue'}
+      <div className="mt-6">
+        <button type="submit" disabled={isPending} className="feis-btn feis-btn-primary">
+          {isPending ? 'Saving…' : isExisting ? 'Save and continue' : 'Create draft and continue'}
         </button>
       </div>
     </form>

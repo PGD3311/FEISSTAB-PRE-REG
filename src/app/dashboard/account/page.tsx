@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import type { Household } from '@/lib/types/feis-listing'
 import { HouseholdForm } from '@/components/household-form'
+import { PageTitle } from '@/components/page-title'
 
 export const dynamic = 'force-dynamic'
 
@@ -12,14 +13,14 @@ function safeNext(next: string | undefined): string | null {
 }
 
 export default async function FamilyDetailsPage({
-  searchParams,
+  searchParams
 }: {
   searchParams: Promise<{ next?: string; welcome?: string }>
 }) {
   const { next, welcome } = await searchParams
   const supabase = await createClient()
   const {
-    data: { user },
+    data: { user }
   } = await supabase.auth.getUser()
   if (!user) redirect('/auth/login')
 
@@ -35,12 +36,14 @@ export default async function FamilyDetailsPage({
 
   return (
     <div className="max-w-2xl">
-      <h1 className="text-2xl font-bold">{welcome ? 'Welcome to RunFeis' : 'Family details'}</h1>
-      <p className="mb-6 mt-1 text-sm text-muted-foreground">
-        {welcome
-          ? 'First, tell us who you are. Next you will add your dancers.'
-          : 'Your contact details for feis registrations.'}
-      </p>
+      <PageTitle
+        title={welcome ? 'Welcome to RunFeis' : 'Family details'}
+        intro={
+          welcome
+            ? 'First, tell us who you are. Next you will add your dancers.'
+            : 'Who the feis contacts about your entries.'
+        }
+      />
       <HouseholdForm
         household={household as Household | null}
         email={user.email ?? ''}

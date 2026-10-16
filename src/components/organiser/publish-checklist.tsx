@@ -6,89 +6,76 @@ interface PublishChecklistProps {
   passed?: string[]
 }
 
+type CheckKind = 'passed' | 'block' | 'warning'
+
+const MARKS: Record<CheckKind, { glyph: string; srLabel: string; box: string; text: string }> = {
+  passed: {
+    glyph: '✓',
+    srLabel: 'Done:',
+    box: 'border-[var(--color-feis-charcoal)] text-[var(--color-feis-green)]',
+    text: 'text-foreground'
+  },
+  block: {
+    glyph: '✗',
+    srLabel: 'Needs fixing:',
+    box: 'border-destructive text-destructive',
+    text: 'font-semibold text-destructive'
+  },
+  warning: {
+    glyph: '!',
+    srLabel: 'Worth checking:',
+    box: 'border-[var(--color-feis-orange-ink)] text-[var(--color-feis-orange-ink)]',
+    text: 'text-[var(--color-feis-orange-ink)]'
+  }
+}
+
+function CheckRow({ kind, children }: { kind: CheckKind; children: string }) {
+  const mark = MARKS[kind]
+  return (
+    <li className="flex items-start gap-3 border-t border-[#E2DCCD] py-2.5 text-sm first:border-t-0">
+      <span
+        aria-hidden="true"
+        className={`mt-px grid h-[18px] w-[18px] shrink-0 place-items-center rounded-[2px] border-[1.5px] bg-white text-[13px] leading-none font-black ${mark.box}`}
+      >
+        {mark.glyph}
+      </span>
+      <span className={mark.text}>
+        <span className="sr-only">{mark.srLabel} </span>
+        {children}
+      </span>
+    </li>
+  )
+}
+
 export function PublishChecklist({ blocks, warnings, passed = [] }: PublishChecklistProps) {
   const allClear = blocks.length === 0 && warnings.length === 0
 
+  if (allClear && passed.length === 0) return null
+
   return (
-    <div className="space-y-2">
-      {/* Green passed items */}
-      {passed.map((item) => (
-        <div
-          key={item}
-          className="flex items-start gap-2 rounded-md border border-green-200 bg-green-50 px-4 py-3 text-sm"
-        >
-          <svg
-            className="mt-0.5 h-4 w-4 flex-shrink-0 text-green-600"
-            viewBox="0 0 20 20"
-            fill="currentColor"
-          >
-            <path
-              fillRule="evenodd"
-              d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z"
-              clipRule="evenodd"
-            />
-          </svg>
-          <span className="text-green-700">{item}</span>
-        </div>
-      ))}
+    <div className="space-y-3">
+      <ul className="border-y-[1.5px] border-[var(--color-feis-charcoal)]">
+        {blocks.map((block) => (
+          <CheckRow key={block} kind="block">
+            {block}
+          </CheckRow>
+        ))}
+        {warnings.map((warning) => (
+          <CheckRow key={warning} kind="warning">
+            {warning}
+          </CheckRow>
+        ))}
+        {passed.map((item) => (
+          <CheckRow key={item} kind="passed">
+            {item}
+          </CheckRow>
+        ))}
+      </ul>
 
-      {/* Red blocks */}
-      {blocks.map((block) => (
-        <div
-          key={block}
-          className="flex items-start gap-2 rounded-md border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm"
-        >
-          <svg
-            className="mt-0.5 h-4 w-4 flex-shrink-0 text-destructive"
-            viewBox="0 0 20 20"
-            fill="currentColor"
-          >
-            <path
-              fillRule="evenodd"
-              d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.28 7.22a.75.75 0 00-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 101.06 1.06L10 11.06l1.72 1.72a.75.75 0 101.06-1.06L11.06 10l1.72-1.72a.75.75 0 00-1.06-1.06L10 8.94 8.28 7.22z"
-              clipRule="evenodd"
-            />
-          </svg>
-          <span className="text-destructive">{block}</span>
-        </div>
-      ))}
-
-      {warnings.map((warning) => (
-        <div
-          key={warning}
-          className="flex items-start gap-2 rounded-md border border-feis-orange/20 bg-feis-orange/5 px-4 py-3 text-sm"
-        >
-          <svg
-            className="mt-0.5 h-4 w-4 flex-shrink-0 text-feis-orange-ink"
-            viewBox="0 0 20 20"
-            fill="currentColor"
-          >
-            <path
-              fillRule="evenodd"
-              d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.345 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 6a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 6zm0 9a1 1 0 100-2 1 1 0 000 2z"
-              clipRule="evenodd"
-            />
-          </svg>
-          <span className="text-feis-orange-ink">{warning}</span>
-        </div>
-      ))}
-
-      {/* Ready banner when no blocks/warnings */}
       {allClear && passed.length > 0 && (
-        <div className="flex items-center gap-2 rounded-md border border-green-300 bg-green-50 px-4 py-3 text-sm">
-          <svg
-            className="h-5 w-5 flex-shrink-0 text-green-600"
-            viewBox="0 0 20 20"
-            fill="currentColor"
-          >
-            <path
-              fillRule="evenodd"
-              d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z"
-              clipRule="evenodd"
-            />
-          </svg>
-          <span className="font-medium text-green-700">Ready to publish</span>
-        </div>
+        <p className="border-l-4 border-[var(--color-feis-green)] bg-[var(--color-feis-green-light)] px-4 py-2.5 text-sm font-bold text-[var(--color-feis-green-700)]">
+          Ready to publish
+        </p>
       )}
     </div>
   )

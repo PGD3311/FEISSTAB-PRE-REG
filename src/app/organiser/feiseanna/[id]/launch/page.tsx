@@ -2,47 +2,69 @@ import Link from 'next/link'
 import { notFound, redirect } from 'next/navigation'
 
 import { createClient } from '@/lib/supabase/server'
-import { formatDateTime } from '@/lib/format'
+import { formatDate, formatDateTime } from '@/lib/format'
 import type { FeisListing } from '@/lib/types/feis-listing'
 import { LaunchButton } from '@/components/organiser/launch-button'
+import { PageTitle } from '@/components/page-title'
 
 export const dynamic = 'force-dynamic'
 
-function CheckItem({
-  label,
-  passed,
-  detail,
-}: {
-  label: string
-  passed: boolean
-  detail?: string
-}) {
+function plural(count: number, one: string, many: string): string {
+  return `${count} ${count === 1 ? one : many}`
+}
+
+function CheckItem({ label, passed, detail }: { label: string; passed: boolean; detail?: string }) {
   return (
-    <li className="flex items-start gap-3 py-2">
+    <li className="flex items-start gap-3 border-t border-[#E2DCCD] py-2.5 first:border-t-0">
       <span
-        className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-xs font-bold ${
+        aria-hidden="true"
+        className={`mt-px grid h-[18px] w-[18px] shrink-0 place-items-center rounded-[2px] border-[1.5px] bg-white text-[13px] leading-none font-black ${
           passed
-            ? 'bg-primary text-primary-foreground'
-            : 'bg-muted text-muted-foreground'
+            ? 'border-[var(--color-feis-charcoal)] text-[var(--color-feis-green)]'
+            : 'border-[var(--color-feis-orange-ink)] text-[var(--color-feis-orange-ink)]'
         }`}
       >
-        {passed ? '\u2713' : '\u2717'}
+        {passed ? '✓' : '✗'}
       </span>
       <div>
-        <span className="text-sm font-medium">{label}</span>
+        <span className="text-sm font-bold">
+          <span className="sr-only">{passed ? 'Done: ' : 'Not yet: '}</span>
+          {label}
+        </span>
         {detail && (
-          <p className="text-xs text-muted-foreground">{detail}</p>
+          <p
+            className={`text-[13px] ${passed ? 'text-muted-foreground' : 'text-[var(--color-feis-orange-ink)]'}`}
+          >
+            {detail}
+          </p>
         )}
       </div>
     </li>
   )
 }
 
-export default async function LaunchPage({
-  params,
-}: {
-  params: Promise<{ id: string }>
-}) {
+function CountLine({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="flex items-baseline gap-1.5 py-0.5">
+      <span className="text-sm">{label}</span>
+      <span className="feis-leader" />
+      <span className="feis-narrow text-[30px] leading-none tabular-nums">{value}</span>
+    </div>
+  )
+}
+
+function BackLink({ id }: { id: string }) {
+  return (
+    <Link
+      href={`/organiser/feiseanna/${id}`}
+      className="mb-3 inline-block text-sm font-semibold text-muted-foreground underline underline-offset-2 hover:text-foreground"
+    >
+      Back to this feis
+    </Link>
+  )
+}
+
+export default async function LaunchPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
   const supabase = await createClient()
 
@@ -68,36 +90,22 @@ export default async function LaunchPage({
   if (typedListing.status === 'launched') {
     return (
       <div>
-        <div className="mb-2">
-          <Link
-            href={`/organiser/feiseanna/${id}`}
-            className="text-sm text-muted-foreground hover:text-foreground"
-          >
-            &larr; Back to Dashboard
-          </Link>
-        </div>
+        <BackLink id={id} />
+        <PageTitle
+          title="Feis day launched"
+          intro={typedListing.name ? `${typedListing.name} has been sent to RunFeis.` : undefined}
+        />
 
-        <div className="mb-6 flex items-center gap-3">
-          <h1 className="text-2xl">Launch Feis Day</h1>
-          <span className="inline-block rounded-full bg-primary px-2.5 py-0.5 text-xs font-medium text-primary-foreground">
-            Launched
-          </span>
-        </div>
-
-        <div className="feis-card border-primary/30 p-6">
-          <h2 className="mb-2 text-lg font-semibold">
-            This feis has been launched
-          </h2>
-          <p className="mb-4 text-sm text-muted-foreground">
-            Registration data was transferred to RunFeis on{' '}
-            {formatDateTime(typedListing.launched_at, 'Not set')}.
+        <div className="max-w-2xl border-l-4 border-[var(--color-feis-green)] bg-[var(--color-feis-green-light)] px-5 py-4">
+          <p className="text-sm">
+            The entries were sent to RunFeis for the day on{' '}
+            <strong>{formatDateTime(typedListing.launched_at, 'an unknown date')}</strong>. This
+            feis can no longer be changed here.
           </p>
           {typedListing.launched_event_id && (
-            <p className="text-sm text-muted-foreground">
-              Phase 1 Event ID:{' '}
-              <code className="font-mono text-xs">
-                {typedListing.launched_event_id}
-              </code>
+            <p className="mt-2 text-[13px] text-muted-foreground">
+              Feis-day event ID{' '}
+              <code className="font-mono text-xs">{typedListing.launched_event_id}</code>
             </p>
           )}
         </div>
@@ -110,7 +118,7 @@ export default async function LaunchPage({
     { count: paidCount },
     { count: unsettledCount },
     { count: competitionsCount },
-    { data: paidEntries },
+    { data: paidEntries }
   ] = await Promise.all([
     supabase
       .from('registrations')
@@ -129,12 +137,14 @@ export default async function LaunchPage({
       .eq('enabled', true),
     supabase
       .from('registration_entries')
-      .select(`
+      .select(
+        `
         dancer_id,
         registrations!inner(status)
-      `)
+      `
+      )
       .eq('registrations.feis_listing_id', id)
-      .eq('registrations.status', 'paid'),
+      .eq('registrations.status', 'paid')
   ])
 
   const uniqueDancerIds = new Set(
@@ -151,74 +161,67 @@ export default async function LaunchPage({
 
   return (
     <div>
-      <div className="mb-2">
-        <Link
-          href={`/organiser/feiseanna/${id}`}
-          className="text-sm text-muted-foreground hover:text-foreground"
-        >
-          &larr; Back to Dashboard
-        </Link>
-      </div>
+      <BackLink id={id} />
+      <PageTitle
+        title="Launch feis day"
+        intro="Sends the paid entries to RunFeis for the day: the competitions, the dancers and who's dancing in what. Do this once entries have closed and every payment is settled."
+      />
 
-      <h1 className="mb-6 text-2xl">Launch Feis Day</h1>
+      <div className="grid items-start gap-8 lg:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="grid gap-6">
+          <section>
+            <h2 className="feis-display mb-2 text-[22px]">Before you launch</h2>
+            <ul className="border-y-[1.5px] border-[var(--color-feis-charcoal)]">
+              <CheckItem
+                label="Entries are closed"
+                passed={true}
+                detail="No new entries can come in"
+              />
+              <CheckItem
+                label="The feis date is set"
+                passed={hasDate}
+                detail={
+                  hasDate ? formatDate(typedListing.feis_date) : 'Add the date in the feis details'
+                }
+              />
+              <CheckItem
+                label="There are paid registrations"
+                passed={hasPaidRegs}
+                detail={plural(paidCount ?? 0, 'paid registration', 'paid registrations')}
+              />
+              <CheckItem
+                label="No registrations are left unpaid"
+                passed={noUnsettled}
+                detail={
+                  noUnsettled
+                    ? 'Every registration is paid, expired or cancelled'
+                    : `${plural(unsettledCount ?? 0, 'registration is', 'registrations are')} unfinished or waiting for payment`
+                }
+              />
+              <CheckItem
+                label="There are competitions switched on"
+                passed={hasCompetitions}
+                detail={plural(competitionsCount ?? 0, 'competition', 'competitions')}
+              />
+            </ul>
+          </section>
 
-      {/* Prerequisites checklist */}
-      <div className="feis-card mb-6 p-5">
-        <h2 className="mb-3 text-lg font-semibold">Prerequisites</h2>
-        <ul className="divide-y">
-          <CheckItem
-            label="Registration is closed"
-            passed={true}
-            detail="Status is closed"
-          />
-          <CheckItem
-            label="Feis date is set"
-            passed={hasDate}
-            detail={hasDate ? typedListing.feis_date! : 'No date set'}
-          />
-          <CheckItem
-            label="Has paid registrations"
-            passed={hasPaidRegs}
-            detail={`${paidCount ?? 0} paid registration(s)`}
-          />
-          <CheckItem
-            label="No unsettled registrations"
-            passed={noUnsettled}
-            detail={
-              noUnsettled
-                ? 'All registrations are settled'
-                : `${unsettledCount} unsettled registration(s) remaining`
-            }
-          />
-          <CheckItem
-            label="Has enabled competitions"
-            passed={hasCompetitions}
-            detail={`${competitionsCount ?? 0} competition(s)`}
-          />
-        </ul>
-      </div>
-
-      {/* Summary */}
-      <div className="feis-card mb-6 p-5">
-        <h2 className="mb-3 text-lg font-semibold">What will be created</h2>
-        <div className="grid gap-4 sm:grid-cols-3">
-          <div>
-            <p className="text-sm text-muted-foreground">Dancers</p>
-            <p className="text-2xl font-semibold">{dancerCount}</p>
-          </div>
-          <div>
-            <p className="text-sm text-muted-foreground">Competitions</p>
-            <p className="text-2xl font-semibold">{competitionsCount ?? 0}</p>
-          </div>
-          <div>
-            <p className="text-sm text-muted-foreground">Entries</p>
-            <p className="text-2xl font-semibold">{entryCount}</p>
-          </div>
+          <LaunchButton listingId={id} disabled={!allGreen} />
         </div>
-      </div>
 
-      {/* Launch button */}
-      <LaunchButton listingId={id} disabled={!allGreen} />
+        <aside className="feis-receipt px-[18px] pt-5 pb-[18px]">
+          <h2 className="feis-display text-[22px]">What goes to feis day</h2>
+          <p className="mb-3 text-[13px] text-muted-foreground">Paid entries only</p>
+          <CountLine label="Dancers" value={dancerCount} />
+          <CountLine label="Competitions" value={competitionsCount ?? 0} />
+          <div className="mt-2.5 flex items-baseline justify-between border-t-[3px] border-[var(--color-feis-gold)] pt-2.5">
+            <span className="font-bold">Entries</span>
+            <strong className="feis-narrow text-[44px] leading-none tabular-nums">
+              {entryCount}
+            </strong>
+          </div>
+        </aside>
+      </div>
     </div>
   )
 }

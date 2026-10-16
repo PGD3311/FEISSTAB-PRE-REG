@@ -25,9 +25,9 @@ export function CloneFeisButton({ listingId }: CloneFeisButtonProps) {
       type="button"
       onClick={handleClone}
       disabled={isPending}
-      className="rounded-md border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
+      className="feis-btn feis-btn-outline"
     >
-      {isPending ? 'Cloning...' : 'Clone This Feis'}
+      {isPending ? 'Copying…' : 'Copy as a new feis'}
     </button>
   )
 }

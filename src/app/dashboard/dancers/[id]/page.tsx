@@ -13,7 +13,7 @@ export default async function EditDancerPage({ params }: Props) {
   const { id } = await params
   const supabase = await createClient()
   const {
-    data: { user },
+    data: { user }
   } = await supabase.auth.getUser()
 
   if (!user) redirect('/auth/login')
@@ -56,10 +56,5 @@ export default async function EditDancerPage({ params }: Props) {
     levelMap[row.dance_key] = row.level_key
   }
 
-  return (
-    <EditDancerForm
-      dancer={dancerTyped}
-      initialLevels={levelMap}
-    />
-  )
+  return <EditDancerForm dancer={dancerTyped} initialLevels={levelMap} />
 }

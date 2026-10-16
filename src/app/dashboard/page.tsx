@@ -4,20 +4,38 @@ import Link from 'next/link'
 import { formatDate, formatCents } from '@/lib/format'
 import { isHouseholdComplete } from '@/lib/household'
 import type { Registration, Dancer, RegistrationStatus } from '@/lib/types/feis-listing'
+import { PageTitle } from '@/components/page-title'
 
 export const dynamic = 'force-dynamic'
 
-const STATUS_STYLES: Record<RegistrationStatus, { bg: string; label: string }> = {
-  draft: { bg: 'bg-muted text-muted-foreground', label: 'Draft' },
-  pending_payment: { bg: 'bg-yellow-100 text-yellow-800', label: 'Pending' },
-  paid: { bg: 'bg-secondary text-primary', label: 'Paid' },
-  expired: { bg: 'bg-destructive/10 text-destructive', label: 'Expired' },
-  cancelled: { bg: 'bg-muted text-muted-foreground', label: 'Cancelled' },
+const STATUS_STYLES: Record<RegistrationStatus, { tag: string; label: string }> = {
+  draft: {
+    tag: 'bg-[var(--color-feis-orange-light)] text-[var(--color-feis-orange-ink)]',
+    label: 'Not paid yet'
+  },
+  pending_payment: {
+    tag: 'bg-[var(--color-feis-orange-light)] text-[var(--color-feis-orange-ink)]',
+    label: 'Payment processing'
+  },
+  paid: {
+    tag: 'bg-[var(--color-feis-green-light)] text-[var(--color-feis-green-700)]',
+    label: 'Paid'
+  },
+  expired: {
+    tag: 'bg-[var(--color-feis-cream-dark)] text-muted-foreground',
+    label: 'Hold ran out'
+  },
+  cancelled: {
+    tag: 'bg-[var(--color-feis-cream-dark)] text-muted-foreground',
+    label: 'Cancelled'
+  }
 }
 
 export default async function DashboardPage() {
   const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const {
+    data: { user }
+  } = await supabase.auth.getUser()
   if (!user) redirect('/auth/login')
 
   const { data: household } = await supabase
@@ -39,13 +57,15 @@ export default async function DashboardPage() {
       .order('first_name'),
     supabase
       .from('registrations')
-      .select(`
+      .select(
+        `
         *,
         feis_listings(name, feis_date, venue_name),
         registration_entries(dancer_id, feis_competitions(display_name))
-      `)
+      `
+      )
       .eq('household_id', household.id)
-      .order('created_at', { ascending: false }),
+      .order('created_at', { ascending: false })
   ])
 
   const typedRegistrations = (registrations ?? []) as (Registration & {
@@ -59,120 +79,127 @@ export default async function DashboardPage() {
 
   return (
     <div>
-      <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Dashboard</h1>
-        <Link
-          href="/feiseanna"
-          className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-[var(--color-feis-green-600)]"
-        >
-          Browse Feiseanna
-        </Link>
-      </div>
+      <PageTitle
+        title="My entries"
+        intro="Every feis your family has entered, with what you paid and your confirmation numbers."
+        action={
+          <Link href="/" className="feis-btn feis-btn-primary">
+            Find a feis to enter
+          </Link>
+        }
+      />
 
       {!detailsComplete && (
-        <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-md border border-[var(--color-feis-orange)]/30 bg-[var(--color-feis-orange)]/5 px-4 py-3 text-sm">
-          <span>Add your name, phone and address before you register for a feis.</span>
-          <Link href="/dashboard/account" className="font-medium text-primary hover:underline">
+        <div className="mb-6 flex max-w-3xl flex-wrap items-center justify-between gap-3 border-l-4 border-[var(--color-feis-orange)] bg-[var(--color-feis-orange-light)] px-4 py-2.5 text-sm text-[var(--color-feis-orange-ink)]">
+          <span>Add your name, phone and address before you enter a feis.</span>
+          <Link href="/dashboard/account" className="feis-link">
             Add family details
           </Link>
         </div>
       )}
 
-      {/* Dancer filter chips */}
       {typedDancers.length > 0 && hasRegistrations && (
-        <div className="mb-4 flex flex-wrap gap-2">
-          <span className="rounded-full bg-primary px-3 py-1 text-xs font-medium text-primary-foreground">
-            All Dancers
+        <p className="mb-4 text-sm text-muted-foreground">
+          Your dancers:{' '}
+          <span className="font-semibold text-foreground">
+            {typedDancers.map((d) => d.first_name).join(', ')}
           </span>
-          {typedDancers.map(d => (
-            <span key={d.id} className="rounded-full bg-muted px-3 py-1 text-xs font-medium text-muted-foreground">
-              {d.first_name}
-            </span>
-          ))}
-        </div>
+          .{' '}
+          <Link href="/dashboard/dancers" className="feis-link">
+            Manage dancers
+          </Link>
+        </p>
       )}
 
       {!hasRegistrations ? (
-        <div className="feis-card px-6 py-12 text-center">
-          <p className="text-muted-foreground">No registrations yet.</p>
-          <p className="mt-2 text-sm text-muted-foreground">
-            Browse open feiseanna to get started.
+        <div className="feis-sticker max-w-xl rounded px-5 py-5">
+          <p className="font-bold">No entries yet</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Pick a feis that&apos;s taking entries, choose dances for your dancers and pay once for
+            the family.
           </p>
-          <Link
-            href="/feiseanna"
-            className="mt-4 inline-block rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-[var(--color-feis-green-600)]"
-          >
-            Browse Feiseanna
+          <Link href="/" className="feis-btn feis-btn-ink mt-4">
+            Find a feis to enter
           </Link>
         </div>
       ) : (
-        <div className="space-y-4">
-          {typedRegistrations.map(reg => {
+        <ul className="border-b-[1.5px] border-[var(--color-feis-charcoal)]">
+          {typedRegistrations.map((reg) => {
             const status = STATUS_STYLES[reg.status]
-            const dancerIds = [...new Set(reg.registration_entries.map(e => e.dancer_id))]
+            const dancerIds = [...new Set(reg.registration_entries.map((e) => e.dancer_id))]
             const dancerNames = dancerIds
-              .map(id => typedDancers.find(d => d.id === id))
+              .map((id) => typedDancers.find((d) => d.id === id))
               .filter(Boolean)
-              .map(d => d!.first_name)
+              .map((d) => d!.first_name)
+            const entryCount = reg.registration_entries.length
 
             return (
-              <div key={reg.id} className="feis-card p-5">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h3 className="font-semibold">{reg.feis_listings.name}</h3>
-                      <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${status.bg}`}>
-                        {status.label}
-                      </span>
-                    </div>
-                    <p className="mt-0.5 text-sm text-muted-foreground">
-                      {formatDate(reg.feis_listings.feis_date, { month: 'short' })} &middot; {reg.feis_listings.venue_name}
-                    </p>
+              <li
+                key={reg.id}
+                className="grid gap-x-6 gap-y-3 border-t-[1.5px] border-[var(--color-feis-charcoal)] py-5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+              >
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                    <h2 className="text-[22px] leading-tight font-extrabold [font-stretch:75%]">
+                      {reg.feis_listings.name}
+                    </h2>
+                    <span className={`rounded-[2px] px-1.5 py-0.5 text-xs font-bold ${status.tag}`}>
+                      {status.label}
+                    </span>
+                  </div>
+                  <p className="mt-0.5 text-sm text-muted-foreground">
+                    {formatDate(reg.feis_listings.feis_date, { month: 'short' })}
+                    {reg.feis_listings.venue_name ? `, ${reg.feis_listings.venue_name}` : ''}
+                  </p>
+                  <p className="mt-1 text-sm">
+                    {dancerNames.length > 0 && <>{dancerNames.join(', ')}: </>}
+                    {entryCount} competition{entryCount !== 1 ? 's' : ''}
+                  </p>
+                  {reg.confirmation_number && (
                     <p className="mt-1 text-sm text-muted-foreground">
-                      {dancerNames.join(', ')} &middot; {reg.registration_entries.length} competition{reg.registration_entries.length !== 1 ? 's' : ''}
-                    </p>
-                    {reg.confirmation_number && (
-                      <p className="mt-1 font-mono text-sm font-medium text-primary">
+                      Confirmation{' '}
+                      <span className="feis-narrow text-lg text-foreground">
                         {reg.confirmation_number}
-                      </p>
-                    )}
-                  </div>
-                  <div className="text-right">
-                    {reg.status === 'paid' && (
-                      <div className="font-semibold">{formatCents(reg.total_cents)}</div>
-                    )}
-                  </div>
+                      </span>
+                    </p>
+                  )}
                 </div>
-                <div className="mt-3 flex gap-3">
+
+                <div className="flex flex-wrap items-center gap-x-5 gap-y-2 sm:justify-end">
+                  {reg.status === 'paid' && (
+                    <span className="text-[28px] leading-none font-black tabular-nums [font-stretch:65%]">
+                      {formatCents(reg.total_cents)}
+                    </span>
+                  )}
                   {reg.status === 'paid' && (
                     <Link
                       href={`/feiseanna/${reg.feis_listing_id}/register/success?session_id=${reg.stripe_checkout_session_id}`}
-                      className="text-sm font-medium text-primary hover:underline"
+                      className="feis-btn feis-btn-outline"
                     >
-                      View Details
+                      See receipt
                     </Link>
                   )}
                   {reg.status === 'draft' && (
                     <Link
                       href={`/feiseanna/${reg.feis_listing_id}/register?step=3`}
-                      className="text-sm font-medium text-primary hover:underline"
+                      className="feis-btn feis-btn-primary"
                     >
-                      Continue Registration
+                      Finish and pay
                     </Link>
                   )}
                   {reg.status === 'expired' && (
                     <Link
                       href={`/feiseanna/${reg.feis_listing_id}/register`}
-                      className="text-sm font-medium text-primary hover:underline"
+                      className="feis-btn feis-btn-ink"
                     >
-                      Register Again
+                      Enter again
                     </Link>
                   )}
                 </div>
-              </div>
+              </li>
             )
           })}
-        </div>
+        </ul>
       )}
     </div>
   )

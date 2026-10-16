@@ -31,33 +31,33 @@ export function DeleteDraftButton({ listingId }: DeleteDraftButtonProps) {
       <button
         type="button"
         onClick={() => setShowConfirm(true)}
-        className="rounded-md border border-destructive/30 bg-destructive/5 px-4 py-2 text-sm font-medium text-destructive hover:bg-destructive/10"
+        className="feis-btn feis-btn-danger"
       >
-        Delete Draft
+        Delete this draft
       </button>
     )
   }
 
   return (
-    <div className="flex items-center gap-3">
-      <p className="text-sm text-destructive">
-        Are you sure? This cannot be undone.
+    <div className="flex flex-wrap items-center gap-3">
+      <p className="text-sm font-bold text-destructive" role="alert">
+        Delete this draft for good? This can&apos;t be undone.
       </p>
       <button
         type="button"
         onClick={handleDelete}
         disabled={isPending}
-        className="rounded-md bg-destructive px-4 py-2 text-sm font-medium text-white hover:bg-destructive/90 disabled:cursor-not-allowed disabled:opacity-40"
+        className="feis-btn border-destructive bg-destructive text-white hover:bg-destructive/90"
       >
-        {isPending ? 'Deleting...' : 'Yes, Delete'}
+        {isPending ? 'Deleting…' : 'Yes, delete it'}
       </button>
       <button
         type="button"
         onClick={() => setShowConfirm(false)}
         disabled={isPending}
-        className="rounded-md bg-secondary px-4 py-2 text-sm font-medium text-secondary-foreground hover:bg-muted"
+        className="feis-btn feis-btn-outline"
       >
-        Cancel
+        Keep it
       </button>
     </div>
   )

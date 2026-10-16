@@ -82,14 +82,14 @@
   --accent-foreground: #2F7A52;
   --destructive: #B91C1C;
   --border: #DDD8CD;
-  --input: #D3CDC0;
+  --input: #A8A193;
   --ring: #2F7A52;
   --chart-1: #2F7A52;
   --chart-2: #1F5538;
   --chart-3: #D0802F;
   --chart-4: #C59D5F;
   --chart-5: #17191B;
-  --radius: 0.375rem;
+  --radius: 0.25rem;
   --sidebar: #2F7A52;
   --sidebar-foreground: #FFFFFF;
   --sidebar-primary: #E8F2EC;
@@ -129,21 +129,12 @@
 }
 
 @layer components {
-  /* Nav — clean bottom border, no decoration */
-  .feis-nav-accent {
-    position: relative;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  }
 
-  /* Flat panel — 1px border, no shadow. Software, not app. */
+  /* Paper panel: white card stock with an ink edge, like the number card */
   .feis-card {
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    transition: border-color 0.15s ease;
-  }
-  .feis-card:hover {
-    border-color: #B0B5BC;
+    background: #fff;
+    border: 1.5px solid var(--color-feis-charcoal);
+    border-radius: 4px;
   }
 
   /* Left accent border for featured panels */
@@ -156,10 +147,6 @@
     border-left: 3px solid #D0802F;
   }
 
-  /* Clean background — no texture */
-  .feis-bg-texture {
-    background-color: var(--background);
-  }
 
   /* Competitor number — monospace, tabular */
   .feis-number {
@@ -174,26 +161,24 @@
   .feis-place-2 { color: #8A8A8A; font-weight: 700; }
   .feis-place-3 { color: #A0674B; font-weight: 700; }
 
-  /* Table header — dense, functional */
+  /* Tables ruled like the entry form: ink line under the header, hairlines between rows */
   .feis-thead {
-    background-color: #2F7A52;
-    color: #FFFFFF;
+    border-bottom: 1.5px solid var(--color-feis-charcoal);
   }
   .feis-thead th {
     font-family: var(--font-body);
-    font-weight: 500;
-    font-size: 0.75rem;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    padding: 0.625rem 1rem;
-  }
-
-  /* Table rows — cool alternation */
-  .feis-tbody tr:nth-child(even) {
-    background-color: var(--muted);
+    font-weight: 700;
+    font-size: 0.8125rem;
+    color: var(--muted-foreground);
+    text-align: left;
+    padding: 0.6rem 1rem;
   }
   .feis-tbody tr {
+    border-top: 1px solid #E2DCCD;
     transition: background-color 0.1s ease;
+  }
+  .feis-tbody tr:first-child {
+    border-top: none;
   }
   .feis-tbody tr:hover {
     background-color: var(--color-feis-green-light);
@@ -255,6 +240,88 @@
     border: 1px solid var(--border);
     border-radius: var(--radius);
     padding: 12px 14px;
+  }
+
+  /* ─── Shared pieces for every page ─── */
+
+  /* Narrow, heavy display type for page titles and section headings */
+  .feis-display {
+    font-stretch: 75%;
+    font-weight: 800;
+    line-height: 1.1;
+    letter-spacing: -0.005em;
+    text-wrap: balance;
+  }
+
+  .feis-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    border-radius: 3px;
+    border: 1.5px solid transparent;
+    padding: 0.5rem 1rem;
+    font-size: 0.875rem;
+    font-weight: 700;
+    line-height: 1.25;
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+  }
+  .feis-btn:focus-visible {
+    outline: 3px solid var(--color-feis-gold);
+    outline-offset: 2px;
+  }
+  .feis-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .feis-btn-primary { background: var(--color-feis-green); color: #fff; }
+  .feis-btn-primary:hover:not(:disabled) { background: var(--color-feis-green-600); }
+  .feis-btn-ink { background: var(--color-feis-charcoal); color: #fff; }
+  .feis-btn-ink:hover:not(:disabled) { background: #000; }
+  .feis-btn-outline { border-color: var(--color-feis-charcoal); background: transparent; color: var(--color-feis-charcoal); }
+  .feis-btn-outline:hover:not(:disabled) { background: #fff; }
+  .feis-btn-gold { background: #E9C77F; color: var(--color-feis-charcoal); }
+  .feis-btn-gold:hover:not(:disabled) { background: #DDB868; }
+  .feis-btn-danger { border-color: var(--destructive); background: transparent; color: var(--destructive); }
+  .feis-btn-danger:hover:not(:disabled) { background: #FDF2F2; }
+
+  .feis-input {
+    width: 100%;
+    background: #fff;
+    border: 1.5px solid var(--input);
+    border-radius: 3px;
+    padding: 0.5rem 0.65rem;
+    font-size: 0.9375rem;
+    line-height: 1.4;
+    color: var(--foreground);
+  }
+  .feis-input:focus {
+    outline: 3px solid color-mix(in srgb, var(--color-feis-gold) 55%, transparent);
+    outline-offset: 0;
+    border-color: var(--color-feis-charcoal);
+  }
+  .feis-input:disabled,
+  .feis-input[readonly] {
+    background: var(--color-feis-cream-dark);
+    color: var(--muted-foreground);
+  }
+  .feis-input[aria-invalid='true'] {
+    border-color: var(--destructive);
+  }
+
+  .feis-label {
+    display: block;
+    margin-bottom: 0.3rem;
+    font-size: 0.8125rem;
+    font-weight: 700;
+  }
+
+  .feis-link {
+    color: var(--color-feis-green);
+    font-weight: 700;
+    text-decoration: underline;
+    text-underline-offset: 3px;
   }
 
   /* ─── Entry page: built from the paper a family handles at a feis ─── */

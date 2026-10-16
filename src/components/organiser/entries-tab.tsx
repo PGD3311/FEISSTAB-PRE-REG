@@ -38,29 +38,47 @@ interface EntrySummary {
   pendingCount: number
 }
 
-function StatusBadge({ status }: { status: string }) {
-  const styles: Record<string, string> = {
-    paid: 'bg-secondary text-primary',
-    pending_payment: 'bg-yellow-100 text-yellow-800',
-    draft: 'bg-muted text-muted-foreground',
-    expired: 'bg-destructive/10 text-destructive',
-    cancelled: 'bg-muted text-muted-foreground',
+const STATUS_TAGS: Record<string, { label: string; className: string }> = {
+  paid: {
+    label: 'Paid',
+    className: 'bg-[var(--color-feis-green-light)] text-[var(--color-feis-green)]'
+  },
+  pending_payment: {
+    label: 'Waiting for payment',
+    className: 'bg-[var(--color-feis-orange-light)] text-[var(--color-feis-orange-ink)]'
+  },
+  draft: {
+    label: 'Not finished',
+    className: 'bg-[var(--color-feis-cream-dark)] text-muted-foreground'
+  },
+  expired: {
+    label: 'Expired',
+    className: 'bg-[var(--color-feis-cream-dark)] text-muted-foreground'
+  },
+  cancelled: {
+    label: 'Cancelled',
+    className: 'bg-[var(--color-feis-cream-dark)] text-muted-foreground'
   }
+}
 
-  const labels: Record<string, string> = {
-    paid: 'Paid',
-    pending_payment: 'Pending',
-    draft: 'Draft',
-    expired: 'Expired',
-    cancelled: 'Cancelled',
-  }
-
+function StatusTag({ status }: { status: string }) {
+  const tag = STATUS_TAGS[status]
   return (
     <span
-      className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${styles[status] ?? 'bg-muted text-muted-foreground'}`}
+      className={`inline-block rounded-[2px] px-1.5 py-0.5 text-xs font-bold whitespace-nowrap ${tag?.className ?? 'bg-[var(--color-feis-cream-dark)] text-muted-foreground'}`}
     >
-      {labels[status] ?? status}
+      {tag?.label ?? status}
     </span>
+  )
+}
+
+function CountLine({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="flex items-baseline gap-1.5 py-0.5">
+      <span className="text-sm">{label}</span>
+      <span className="feis-leader" />
+      <span className="feis-narrow text-[30px] leading-none tabular-nums">{value}</span>
+    </div>
   )
 }
 
@@ -72,24 +90,22 @@ function exportToCsv(entries: EntryRow[]) {
     'Competition',
     'Fee Category',
     'Status',
-    'Confirmation #',
+    'Confirmation #'
   ]
 
-  const rows = entries.map(e => [
+  const rows = entries.map((e) => [
     e.dancers.first_name,
     e.dancers.last_name,
     e.dancers.school_name ?? '',
     e.feis_competitions.display_name,
     e.fee_category,
     e.registrations.status,
-    e.registrations.confirmation_number ?? '',
+    e.registrations.confirmation_number ?? ''
   ])
 
   const csvContent = [
     headers.join(','),
-    ...rows.map(row =>
-      row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',')
-    ),
+    ...rows.map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(','))
   ].join('\n')
 
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
@@ -126,99 +142,98 @@ export function EntriesTab({ listingId }: { listingId: string }) {
 
   if (loading) {
     return (
-      <div className="feis-card px-6 py-12 text-center text-muted-foreground">
-        Loading entries...
-      </div>
+      <p role="status" className="py-12 text-center text-sm text-muted-foreground">
+        Loading entries…
+      </p>
     )
   }
 
   if (error) {
     return (
-      <div className="feis-card px-6 py-12 text-center text-destructive">
-        {error}
-      </div>
+      <p
+        role="alert"
+        className="max-w-xl border-l-4 border-destructive bg-white px-4 py-3 text-sm text-destructive"
+      >
+        The entries couldn&apos;t be loaded. Refresh the page to try again.
+        <span className="mt-1 block text-[13px] text-muted-foreground">{error}</span>
+      </p>
     )
   }
 
   return (
-    <div className="space-y-6">
-      {/* Summary stats */}
+    <div className="grid items-start gap-8 lg:grid-cols-[minmax(0,1fr)_300px]">
       {summary && (
-        <div className="grid gap-4 sm:grid-cols-4">
-          <div className="feis-card p-5">
-            <p className="text-sm text-muted-foreground">Total Dancers</p>
-            <p className="feis-stat mt-1">{summary.totalDancers}</p>
+        <aside className="feis-receipt px-[18px] pt-5 pb-[18px] lg:sticky lg:top-6 lg:order-2">
+          <h2 className="feis-display text-[22px]">Entries so far</h2>
+          <p className="mb-3 text-[13px] text-muted-foreground">Counts every entry, paid or not</p>
+          <CountLine label="Dancers" value={summary.totalDancers} />
+          <CountLine label="Entries" value={summary.totalEntries} />
+          <CountLine label="Unpaid registrations" value={summary.pendingCount} />
+          <div className="mt-2.5 flex items-baseline justify-between border-t-[3px] border-[var(--color-feis-gold)] pt-2.5">
+            <span className="font-bold">Paid so far</span>
+            <strong className="feis-narrow text-[40px] leading-none tabular-nums">
+              {formatCents(summary.revenueCents)}
+            </strong>
           </div>
-          <div className="feis-card p-5">
-            <p className="text-sm text-muted-foreground">Total Entries</p>
-            <p className="feis-stat mt-1">{summary.totalEntries}</p>
-          </div>
-          <div className="feis-card p-5">
-            <p className="text-sm text-muted-foreground">Revenue (Paid)</p>
-            <p className="feis-stat mt-1">{formatCents(summary.revenueCents)}</p>
-          </div>
-          <div className="feis-card p-5">
-            <p className="text-sm text-muted-foreground">Pending</p>
-            <p className="feis-stat mt-1">{summary.pendingCount}</p>
-          </div>
-        </div>
+        </aside>
       )}
 
-      {/* Actions */}
-      {entries.length > 0 && (
-        <div className="flex justify-end">
-          <button
-            onClick={() => exportToCsv(entries)}
-            className="rounded-md bg-secondary px-4 py-2 text-sm font-medium text-secondary-foreground hover:bg-muted"
-          >
-            Export CSV
-          </button>
+      <section className="min-w-0 lg:order-1">
+        <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
+          <h2 className="feis-display text-[22px]">Who&apos;s entered</h2>
+          {entries.length > 0 && (
+            <button
+              type="button"
+              onClick={() => exportToCsv(entries)}
+              className="feis-btn feis-btn-outline"
+            >
+              Download as a spreadsheet (CSV)
+            </button>
+          )}
         </div>
-      )}
 
-      {/* Entries table */}
-      {entries.length === 0 ? (
-        <div className="feis-card px-6 py-12 text-center text-muted-foreground">
-          No entries yet.
-        </div>
-      ) : (
-        <div className="feis-card overflow-hidden">
-          <div className="overflow-x-auto">
+        {entries.length === 0 ? (
+          <div className="feis-sticker max-w-xl rounded px-5 py-5">
+            <p className="font-bold">No entries yet</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Entries appear here as soon as a family starts registering.
+            </p>
+          </div>
+        ) : (
+          <div className="feis-entry-form overflow-x-auto">
             <table className="w-full">
               <thead className="feis-thead">
                 <tr>
-                  <th className="text-left">Dancer Name</th>
-                  <th className="text-left">School</th>
-                  <th className="text-left">Competition</th>
-                  <th className="text-left">Status</th>
-                  <th className="text-left">Confirmation #</th>
+                  <th>Dancer</th>
+                  <th>School</th>
+                  <th>Competition</th>
+                  <th>Status</th>
+                  <th>Confirmation</th>
                 </tr>
               </thead>
               <tbody className="feis-tbody">
-                {entries.map(entry => (
+                {entries.map((entry) => (
                   <tr key={entry.id}>
-                    <td className="px-4 py-3 text-sm font-medium">
+                    <td className="px-4 py-2.5 text-sm font-bold">
                       {entry.dancers.first_name} {entry.dancers.last_name}
                     </td>
-                    <td className="px-4 py-3 text-sm text-muted-foreground">
-                      {entry.dancers.school_name ?? '-'}
+                    <td className="px-4 py-2.5 text-sm text-muted-foreground">
+                      {entry.dancers.school_name ?? '—'}
                     </td>
-                    <td className="px-4 py-3 text-sm">
-                      {entry.feis_competitions.display_name}
+                    <td className="px-4 py-2.5 text-sm">{entry.feis_competitions.display_name}</td>
+                    <td className="px-4 py-2.5 text-sm">
+                      <StatusTag status={entry.registrations.status} />
                     </td>
-                    <td className="px-4 py-3 text-sm">
-                      <StatusBadge status={entry.registrations.status} />
-                    </td>
-                    <td className="px-4 py-3 font-mono text-sm">
-                      {entry.registrations.confirmation_number ?? '-'}
+                    <td className="feis-narrow px-4 py-2.5 text-[15px]">
+                      {entry.registrations.confirmation_number ?? '—'}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-        </div>
-      )}
+        )}
+      </section>
     </div>
   )
 }

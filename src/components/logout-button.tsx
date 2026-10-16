@@ -15,10 +15,11 @@ export function LogoutButton() {
 
   return (
     <button
+      type="button"
       onClick={handleLogout}
-      className="rounded-md px-3 py-1.5 text-sm font-medium text-primary-foreground opacity-80 transition-opacity hover:opacity-100"
+      className="text-sm text-white/75 underline-offset-[6px] hover:text-white hover:underline"
     >
-      Log Out
+      Sign out
     </button>
   )
 }

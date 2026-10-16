@@ -30,11 +30,8 @@ export function StatusActions({ listingId, status }: StatusActionsProps) {
 
   if (status === 'draft') {
     return (
-      <Link
-        href={`/organiser/feiseanna/${listingId}/setup`}
-        className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-feis-green-600"
-      >
-        Continue Setup
+      <Link href={`/organiser/feiseanna/${listingId}/setup`} className="feis-btn feis-btn-primary">
+        Carry on setting up
       </Link>
     )
   }
@@ -45,9 +42,9 @@ export function StatusActions({ listingId, status }: StatusActionsProps) {
         type="button"
         onClick={() => handleTransition('closed')}
         disabled={isPending}
-        className="rounded-md bg-feis-orange-light px-4 py-2 text-sm font-medium text-feis-orange-ink hover:bg-feis-orange/10 disabled:cursor-not-allowed disabled:opacity-40"
+        className="feis-btn feis-btn-ink"
       >
-        {isPending ? 'Closing...' : 'Close Registration'}
+        {isPending ? 'Closing entries…' : 'Close entries'}
       </button>
     )
   }
@@ -58,9 +55,9 @@ export function StatusActions({ listingId, status }: StatusActionsProps) {
         type="button"
         onClick={() => handleTransition('open')}
         disabled={isPending}
-        className="rounded-md bg-secondary px-4 py-2 text-sm font-medium text-primary hover:bg-feis-green-light disabled:cursor-not-allowed disabled:opacity-40"
+        className="feis-btn feis-btn-outline"
       >
-        {isPending ? 'Reopening...' : 'Reopen Registration'}
+        {isPending ? 'Reopening entries…' : 'Reopen entries'}
       </button>
     )
   }

@@ -1,13 +1,15 @@
 import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
+import { parseLocalDate } from '@/lib/format'
 import type { Dancer } from '@/lib/types/feis-listing'
+import { PageTitle } from '@/components/page-title'
 
 export const dynamic = 'force-dynamic'
 
 function calcAge(dob: string): number {
   const today = new Date()
-  const birth = new Date(dob)
+  const birth = parseLocalDate(dob)
   let age = today.getFullYear() - birth.getFullYear()
   const m = today.getMonth() - birth.getMonth()
   if (m < 0 || (m === 0 && today.getDate() < birth.getDate())) age--
@@ -15,15 +17,15 @@ function calcAge(dob: string): number {
 }
 
 const CHAMPIONSHIP_LABELS: Record<string, string> = {
-  none: 'Solo',
-  prelim: 'Prelim Champ',
-  open: 'Open Champ',
+  none: 'Solo dancer',
+  prelim: 'Prelim Championship',
+  open: 'Open Championship'
 }
 
 export default async function DancersPage() {
   const supabase = await createClient()
   const {
-    data: { user },
+    data: { user }
   } = await supabase.auth.getUser()
 
   if (!user) redirect('/auth/login')
@@ -51,72 +53,58 @@ export default async function DancersPage() {
 
   return (
     <div>
-      <div className="mb-6 flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Dancers</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Manage your dancer profiles and competition levels.
-          </p>
-        </div>
-        <Link
-          href="/dashboard/dancers/new"
-          className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-[var(--color-feis-green-600)]"
-        >
-          Add Dancer
-        </Link>
-      </div>
+      <PageTitle
+        title="Dancers"
+        intro="Set each dancer up once with their school and levels. Every feis then shows only the competitions they can enter."
+        action={
+          <Link href="/dashboard/dancers/new" className="feis-btn feis-btn-primary">
+            Add a dancer
+          </Link>
+        }
+      />
 
       {activeDancers.length === 0 ? (
-        <div className="feis-card px-6 py-12 text-center">
-          <p className="text-muted-foreground">No dancers yet.</p>
-          <p className="mt-2 text-sm text-muted-foreground">
-            Add your first dancer to start registering for feiseanna.
+        <div className="feis-sticker max-w-xl rounded px-5 py-5">
+          <p className="font-bold">No dancers yet</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Add your first dancer to start entering feiseanna.
           </p>
-          <Link
-            href="/dashboard/dancers/new"
-            className="mt-4 inline-block rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-[var(--color-feis-green-600)]"
-          >
-            Add Dancer
+          <Link href="/dashboard/dancers/new" className="feis-btn feis-btn-ink mt-4">
+            Add a dancer
           </Link>
         </div>
       ) : (
-        <div className="space-y-2">
-          {activeDancers.map((dancer) => (
-            <Link
+        <ul className="max-w-3xl border-b-[1.5px] border-[var(--color-feis-charcoal)]">
+          {activeDancers.map((dancer, i) => (
+            <li
               key={dancer.id}
-              href={`/dashboard/dancers/${dancer.id}`}
-              className="feis-card block px-5 py-4 hover:border-[var(--color-feis-green)]"
+              className={
+                i === 0
+                  ? 'border-t-[1.5px] border-[var(--color-feis-charcoal)]'
+                  : 'border-t border-[#E2DCCD]'
+              }
             >
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="font-semibold text-foreground">
+              <Link
+                href={`/dashboard/dancers/${dancer.id}`}
+                className="group grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-6 px-1 py-4 hover:bg-white"
+              >
+                <div className="min-w-0">
+                  <p className="text-[20px] leading-tight font-extrabold [font-stretch:75%] group-hover:underline">
                     {dancer.first_name} {dancer.last_name}
                   </p>
-                  <div className="mt-0.5 flex items-center gap-3 text-sm text-muted-foreground">
-                    <span>Age {calcAge(dancer.date_of_birth)}</span>
-                    {dancer.school_name && (
-                      <>
-                        <span className="text-border">·</span>
-                        <span>{dancer.school_name}</span>
-                      </>
-                    )}
-                    <span className="text-border">·</span>
-                    <span>{CHAMPIONSHIP_LABELS[dancer.championship_status] ?? dancer.championship_status}</span>
-                  </div>
+                  <p className="mt-0.5 text-sm text-muted-foreground">
+                    Age {calcAge(dancer.date_of_birth)}
+                    {dancer.school_name ? `, ${dancer.school_name}` : ''}
+                  </p>
+                  <p className="mt-0.5 text-sm">
+                    {CHAMPIONSHIP_LABELS[dancer.championship_status] ?? dancer.championship_status}
+                  </p>
                 </div>
-                <svg
-                  className="h-4 w-4 text-muted-foreground"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                >
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                </svg>
-              </div>
-            </Link>
+                <span className="text-sm font-bold text-[var(--color-feis-green)]">Edit</span>
+              </Link>
+            </li>
           ))}
-        </div>
+        </ul>
       )}
     </div>
   )

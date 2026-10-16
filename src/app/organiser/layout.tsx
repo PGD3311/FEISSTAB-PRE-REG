@@ -1,18 +1,18 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
+import { AppBand } from '@/components/app-band'
 import { LogoutButton } from '@/components/logout-button'
-import { RunFeisLogo } from '@/components/runfeis-logo'
 
 export const dynamic = 'force-dynamic'
 
 export default async function OrganiserLayout({
-  children,
+  children
 }: Readonly<{
   children: React.ReactNode
 }>) {
   const supabase = await createClient()
   const {
-    data: { user },
+    data: { user }
   } = await supabase.auth.getUser()
 
   if (!user) {
@@ -20,17 +20,14 @@ export default async function OrganiserLayout({
   }
 
   return (
-    <>
-      <nav className="feis-nav-accent bg-primary text-primary-foreground">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
-          <RunFeisLogo variant="onGreen" size="sm" />
-          <div className="flex items-center gap-4">
-            <span className="text-sm opacity-80">{user.email}</span>
-            <LogoutButton />
-          </div>
-        </div>
-      </nav>
-      <main className="mx-auto w-full max-w-6xl px-6 py-8">{children}</main>
-    </>
+    <div className="min-h-screen bg-[var(--color-feis-cream)]">
+      <AppBand
+        links={[{ href: '/organiser/feiseanna', label: 'Your feiseanna', matchChildren: true }]}
+      >
+        <span className="hidden text-white/70 sm:inline">{user.email}</span>
+        <LogoutButton />
+      </AppBand>
+      <main className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-7">{children}</main>
+    </div>
   )
 }

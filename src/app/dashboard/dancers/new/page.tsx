@@ -3,6 +3,7 @@
 import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import { PageTitle } from '@/components/page-title'
 import { createDancer } from '../actions'
 
 const STANDARD_DANCES = [
@@ -11,14 +12,14 @@ const STANDARD_DANCES = [
   { key: 'slip_jig', label: 'Slip Jig' },
   { key: 'single_jig', label: 'Single Jig' },
   { key: 'treble_jig', label: 'Treble Jig' },
-  { key: 'hornpipe', label: 'Hornpipe' },
+  { key: 'hornpipe', label: 'Hornpipe' }
 ]
 
 const LEVELS = [
   { key: 'BG', label: 'Beginner' },
   { key: 'AB', label: 'Advanced Beginner' },
   { key: 'NOV', label: 'Novice' },
-  { key: 'PW', label: 'Prizewinner' },
+  { key: 'PW', label: 'Prizewinner' }
 ]
 
 export default function NewDancerPage() {
@@ -56,7 +57,7 @@ export default function NewDancerPage() {
     setError(null)
 
     if (!firstName.trim() || !lastName.trim() || !dateOfBirth) {
-      setError('First name, last name, and date of birth are required.')
+      setError('Fill in the first name, last name and date of birth.')
       return
     }
 
@@ -70,7 +71,7 @@ export default function NewDancerPage() {
         tcrg_name: tcrgName.trim() || null,
         championship_status: championshipStatus,
         default_level: defaultLevel,
-        level_overrides: Object.keys(levelOverrides).length > 0 ? levelOverrides : undefined,
+        level_overrides: Object.keys(levelOverrides).length > 0 ? levelOverrides : undefined
       })
 
       if ('error' in result) {
@@ -82,221 +83,224 @@ export default function NewDancerPage() {
   }
 
   return (
-    <div>
-      <div className="mb-6">
-        <Link href="/dashboard/dancers" className="text-sm text-muted-foreground hover:text-foreground">
-          ← Back to Dancers
-        </Link>
-        <h1 className="mt-2 text-2xl font-bold">Add Dancer</h1>
+    <div className="max-w-2xl">
+      <Link
+        href="/dashboard/dancers"
+        className="text-sm text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+      >
+        All dancers
+      </Link>
+      <div className="mt-2">
+        <PageTitle
+          title="Add a dancer"
+          intro="Set this up once. Every feis uses it to show the competitions this dancer can enter."
+        />
       </div>
 
-      <form onSubmit={handleSubmit} className="space-y-6">
-        {/* Basic info */}
-        <div className="feis-card p-6">
-          <h2 className="mb-4 text-base font-semibold">Dancer Information</h2>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div>
-              <label className="mb-1 block text-sm font-medium" htmlFor="firstName">
-                First Name <span className="text-destructive">*</span>
-              </label>
-              <input
-                id="firstName"
-                type="text"
-                required
-                value={firstName}
-                onChange={(e) => setFirstName(e.target.value)}
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                placeholder="Siobhán"
-              />
+      <form onSubmit={handleSubmit}>
+        <div className="feis-entry-form">
+          <section className="px-5 py-6 sm:px-7">
+            <h2 className="feis-display mb-4 text-[22px]">The dancer</h2>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label className="feis-label" htmlFor="firstName">
+                  First name
+                </label>
+                <input
+                  id="firstName"
+                  type="text"
+                  required
+                  value={firstName}
+                  onChange={(e) => setFirstName(e.target.value)}
+                  className="feis-input"
+                  placeholder="Siobhán"
+                />
+              </div>
+              <div>
+                <label className="feis-label" htmlFor="lastName">
+                  Last name
+                </label>
+                <input
+                  id="lastName"
+                  type="text"
+                  required
+                  value={lastName}
+                  onChange={(e) => setLastName(e.target.value)}
+                  className="feis-input"
+                  placeholder="O'Brien"
+                />
+              </div>
+              <div>
+                <label className="feis-label" htmlFor="dateOfBirth">
+                  Date of birth
+                </label>
+                <input
+                  id="dateOfBirth"
+                  type="date"
+                  required
+                  value={dateOfBirth}
+                  onChange={(e) => setDateOfBirth(e.target.value)}
+                  className="feis-input"
+                />
+              </div>
+              <fieldset>
+                <legend className="feis-label">Gender</legend>
+                <div className="flex gap-5 pt-2">
+                  {(['female', 'male'] as const).map((g) => (
+                    <label key={g} className="flex cursor-pointer items-center gap-2 text-[15px]">
+                      <input
+                        type="radio"
+                        name="gender"
+                        value={g}
+                        checked={gender === g}
+                        onChange={() => setGender(g)}
+                        className="h-4 w-4 accent-[var(--color-feis-green)]"
+                      />
+                      <span className="capitalize">{g}</span>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
             </div>
-            <div>
-              <label className="mb-1 block text-sm font-medium" htmlFor="lastName">
-                Last Name <span className="text-destructive">*</span>
-              </label>
-              <input
-                id="lastName"
-                type="text"
-                required
-                value={lastName}
-                onChange={(e) => setLastName(e.target.value)}
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                placeholder="O'Brien"
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-sm font-medium" htmlFor="dateOfBirth">
-                Date of Birth <span className="text-destructive">*</span>
-              </label>
-              <input
-                id="dateOfBirth"
-                type="date"
-                required
-                value={dateOfBirth}
-                onChange={(e) => setDateOfBirth(e.target.value)}
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-              />
-            </div>
-            <div>
-              <p className="mb-1 block text-sm font-medium">
-                Gender <span className="text-destructive">*</span>
-              </p>
-              <div className="flex gap-4 pt-1">
-                {(['female', 'male'] as const).map((g) => (
-                  <label key={g} className="flex cursor-pointer items-center gap-2 text-sm">
-                    <input
-                      type="radio"
-                      name="gender"
-                      value={g}
-                      checked={gender === g}
-                      onChange={() => setGender(g)}
-                      className="accent-primary"
-                    />
-                    <span className="capitalize">{g}</span>
-                  </label>
-                ))}
+          </section>
+
+          <section className="border-t-[1.5px] border-[var(--color-feis-charcoal)] px-5 py-6 sm:px-7">
+            <h2 className="feis-display mb-4 text-[22px]">School and teacher</h2>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label className="feis-label" htmlFor="schoolName">
+                  School <span className="font-normal text-muted-foreground">(optional)</span>
+                </label>
+                <input
+                  id="schoolName"
+                  type="text"
+                  value={schoolName}
+                  onChange={(e) => setSchoolName(e.target.value)}
+                  className="feis-input"
+                  placeholder="Scoil Rince na Gréine"
+                />
+              </div>
+              <div>
+                <label className="feis-label" htmlFor="tcrgName">
+                  Teacher (TCRG){' '}
+                  <span className="font-normal text-muted-foreground">(optional)</span>
+                </label>
+                <input
+                  id="tcrgName"
+                  type="text"
+                  value={tcrgName}
+                  onChange={(e) => setTcrgName(e.target.value)}
+                  className="feis-input"
+                  placeholder="Ms. Murphy TCRG"
+                />
               </div>
             </div>
-          </div>
-        </div>
+          </section>
 
-        {/* School / teacher */}
-        <div className="feis-card p-6">
-          <h2 className="mb-4 text-base font-semibold">School &amp; Teacher</h2>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div>
-              <label className="mb-1 block text-sm font-medium" htmlFor="schoolName">
-                School Name <span className="text-xs text-muted-foreground">(optional)</span>
-              </label>
-              <input
-                id="schoolName"
-                type="text"
-                value={schoolName}
-                onChange={(e) => setSchoolName(e.target.value)}
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                placeholder="Scoil Rince na Gréine"
-              />
+          <section className="border-t-[1.5px] border-[var(--color-feis-charcoal)] px-5 py-6 sm:px-7">
+            <h2 className="feis-display mb-4 text-[22px]">Levels</h2>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label className="feis-label" htmlFor="championshipStatus">
+                  Championship status
+                </label>
+                <select
+                  id="championshipStatus"
+                  value={championshipStatus}
+                  onChange={(e) =>
+                    setChampionshipStatus(e.target.value as 'none' | 'prelim' | 'open')
+                  }
+                  className="feis-input"
+                >
+                  <option value="none">Solo dancer</option>
+                  <option value="prelim">Prelim Championship</option>
+                  <option value="open">Open Championship</option>
+                </select>
+              </div>
+              <div>
+                <label className="feis-label" htmlFor="defaultLevel">
+                  Level for every dance
+                </label>
+                <select
+                  id="defaultLevel"
+                  value={defaultLevel}
+                  onChange={(e) => handleDefaultLevelChange(e.target.value)}
+                  className="feis-input"
+                >
+                  {LEVELS.map((l) => (
+                    <option key={l.key} value={l.key}>
+                      {l.label} ({l.key})
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-1 text-[13px] text-muted-foreground">
+                  If some dances are at a different level, set them below.
+                </p>
+              </div>
             </div>
-            <div>
-              <label className="mb-1 block text-sm font-medium" htmlFor="tcrgName">
-                Teacher Name (TCRG) <span className="text-xs text-muted-foreground">(optional)</span>
-              </label>
-              <input
-                id="tcrgName"
-                type="text"
-                value={tcrgName}
-                onChange={(e) => setTcrgName(e.target.value)}
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                placeholder="Ms. Murphy TCRG"
-              />
-            </div>
-          </div>
-        </div>
 
-        {/* Levels */}
-        <div className="feis-card p-6">
-          <h2 className="mb-4 text-base font-semibold">Competition Level</h2>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div>
-              <label className="mb-1 block text-sm font-medium" htmlFor="championshipStatus">
-                Championship Status
-              </label>
-              <select
-                id="championshipStatus"
-                value={championshipStatus}
-                onChange={(e) => setChampionshipStatus(e.target.value as 'none' | 'prelim' | 'open')}
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-              >
-                <option value="none">Solo dancer</option>
-                <option value="prelim">Prelim Championship</option>
-                <option value="open">Open Championship</option>
-              </select>
-            </div>
-            <div>
-              <label className="mb-1 block text-sm font-medium" htmlFor="defaultLevel">
-                Default Level
-              </label>
-              <select
-                id="defaultLevel"
-                value={defaultLevel}
-                onChange={(e) => handleDefaultLevelChange(e.target.value)}
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-              >
-                {LEVELS.map((l) => (
-                  <option key={l.key} value={l.key}>
-                    {l.key} — {l.label}
-                  </option>
-                ))}
-              </select>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Sets the same level for all dances. Adjust per-dance below if needed.
-              </p>
-            </div>
-          </div>
-
-          {/* Per-dance overrides */}
-          <div className="mt-4">
             <button
               type="button"
               onClick={() => setShowPerDance((v) => !v)}
-              className="flex items-center gap-1.5 text-sm font-medium text-primary hover:underline"
+              aria-expanded={showPerDance}
+              aria-controls="per-dance-levels"
+              className="feis-link mt-5 text-sm"
             >
-              <svg
-                className={`h-3.5 w-3.5 transition-transform ${showPerDance ? 'rotate-90' : ''}`}
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth={2.5}
-              >
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-              </svg>
-              Per-dance level adjustments
+              {showPerDance
+                ? 'Hide levels for each dance'
+                : 'Set a different level for some dances'}
             </button>
 
             {showPerDance && (
-              <div className="mt-3 rounded-md border border-border bg-muted/30 p-4">
-                <p className="mb-3 text-xs text-muted-foreground">
-                  Override the default level for individual dances. Leave as default to use the level
-                  set above.
+              <div id="per-dance-levels" className="mt-3">
+                <p className="mb-2 text-[13px] text-muted-foreground">
+                  Each dance starts at the level above. Change only the ones that differ.
                 </p>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  {STANDARD_DANCES.map((dance) => (
-                    <div key={dance.key} className="flex items-center justify-between gap-3">
-                      <span className="text-sm font-medium">{dance.label}</span>
+                <ul className="border-y-[1.5px] border-[var(--color-feis-charcoal)]">
+                  {STANDARD_DANCES.map((dance, i) => (
+                    <li
+                      key={dance.key}
+                      className={`flex items-center justify-between gap-3 py-2 ${
+                        i > 0 ? 'border-t border-[#E2DCCD]' : ''
+                      }`}
+                    >
+                      <label htmlFor={`level-${dance.key}`} className="text-[15px] font-semibold">
+                        {dance.label}
+                      </label>
                       <select
+                        id={`level-${dance.key}`}
                         value={getEffectiveLevel(dance.key)}
                         onChange={(e) => handleLevelOverride(dance.key, e.target.value)}
-                        className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                        className="feis-input w-auto py-1"
                       >
                         {LEVELS.map((l) => (
                           <option key={l.key} value={l.key}>
-                            {l.key}
+                            {l.label} ({l.key})
                           </option>
                         ))}
                       </select>
-                    </div>
+                    </li>
                   ))}
-                </div>
+                </ul>
               </div>
             )}
-          </div>
+          </section>
         </div>
 
         {error && (
-          <div className="rounded-md bg-destructive/10 px-4 py-3 text-sm text-destructive">{error}</div>
+          <p
+            role="alert"
+            className="mt-5 border-l-4 border-destructive bg-white px-4 py-3 text-sm text-destructive"
+          >
+            {error}
+          </p>
         )}
 
-        <div className="flex items-center gap-3">
-          <button
-            type="submit"
-            disabled={isPending}
-            className="rounded-md bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:bg-[var(--color-feis-green-600)] disabled:opacity-60"
-          >
-            {isPending ? 'Saving…' : 'Add Dancer'}
+        <div className="mt-6 flex flex-wrap items-center gap-3">
+          <button type="submit" disabled={isPending} className="feis-btn feis-btn-primary">
+            {isPending ? 'Saving…' : 'Save dancer'}
           </button>
-          <Link
-            href="/dashboard/dancers"
-            className="text-sm text-muted-foreground hover:text-foreground"
-          >
+          <Link href="/dashboard/dancers" className="feis-btn feis-btn-outline">
             Cancel
           </Link>
         </div>

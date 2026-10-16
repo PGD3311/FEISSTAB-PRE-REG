@@ -3,11 +3,7 @@
 import { useState, useEffect, useTransition, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 
-import type {
-  FeisListing,
-  FeeSchedule,
-  ListingTransitionContext,
-} from '@/lib/types/feis-listing'
+import type { FeisListing, FeeSchedule, ListingTransitionContext } from '@/lib/types/feis-listing'
 import { getListingTransitionBlockReasons } from '@/lib/feis-listing-states'
 import {
   formatTimezone,
@@ -39,22 +35,19 @@ export function FeisWizardStep5({
   listing,
   feeSchedule,
   competitionsCount,
-  onBack,
+  onBack
 }: FeisWizardStep5Props) {
   const router = useRouter()
   const supabase = useSupabase()
   const [isPending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
-  const [stripeSimulated, setStripeSimulated] = useState(
-    listing.stripe_charges_enabled
-  )
-  const [competitionSummary, setCompetitionSummary] =
-    useState<CompetitionSummary>({
-      total: competitionsCount,
-      solos: 0,
-      championships: 0,
-      specials: 0,
-    })
+  const [stripeSimulated, setStripeSimulated] = useState(listing.stripe_charges_enabled)
+  const [competitionSummary, setCompetitionSummary] = useState<CompetitionSummary>({
+    total: competitionsCount,
+    solos: 0,
+    championships: 0,
+    specials: 0
+  })
   const [enabledCompetitions, setEnabledCompetitions] = useState<
     ListingTransitionContext['enabledCompetitions']
   >([])
@@ -69,22 +62,16 @@ export function FeisWizardStep5({
 
       if (data) {
         setEnabledCompetitions(data)
-        const solos = data.filter(
-          (c) => c.competition_type === 'solo'
-        ).length
-        const championships = data.filter(
-          (c) => c.competition_type === 'championship'
-        ).length
+        const solos = data.filter((c) => c.competition_type === 'solo').length
+        const championships = data.filter((c) => c.competition_type === 'championship').length
         const specials = data.filter(
-          (c) =>
-            c.competition_type === 'special' ||
-            c.competition_type === 'custom'
+          (c) => c.competition_type === 'special' || c.competition_type === 'custom'
         ).length
         setCompetitionSummary({
           total: data.length,
           solos,
           championships,
-          specials,
+          specials
         })
       }
     }
@@ -95,7 +82,7 @@ export function FeisWizardStep5({
   const effectiveListing = useMemo(
     () => ({
       ...listing,
-      stripe_charges_enabled: stripeSimulated,
+      stripe_charges_enabled: stripeSimulated
     }),
     [listing, stripeSimulated]
   )
@@ -105,7 +92,7 @@ export function FeisWizardStep5({
     const context: ListingTransitionContext = {
       listing: effectiveListing,
       feeSchedule,
-      enabledCompetitions,
+      enabledCompetitions
     }
     return getListingTransitionBlockReasons('draft', 'open', context)
   }, [effectiveListing, feeSchedule, enabledCompetitions])
@@ -118,8 +105,7 @@ export function FeisWizardStep5({
     if (listing.venue_name) items.push('Venue set')
     if (competitionSummary.total > 0) items.push('Syllabus configured')
     if (feeSchedule) items.push('Fees configured')
-    if (listing.reg_opens_at && listing.reg_closes_at)
-      items.push('Deadlines set')
+    if (listing.reg_opens_at && listing.reg_closes_at) items.push('Deadlines set')
     if (stripeSimulated) items.push('Stripe connected')
     if (listing.privacy_policy_url) items.push('Privacy policy set')
     return items
@@ -158,264 +144,221 @@ export function FeisWizardStep5({
     })
   }
 
+  const timeZone = listing.timezone ?? 'America/New_York'
+  const sectionHeading = 'text-base font-extrabold [font-stretch:80%]'
+  const section = 'border-t-[1.5px] border-[var(--color-feis-charcoal)] px-5 py-4 sm:px-6'
+  const first = 'px-5 py-4 sm:px-6'
+
   return (
-    <div>
+    <div className="max-w-3xl">
       {error && (
-        <div className="mb-6 rounded-md border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+        <p
+          role="alert"
+          className="mb-6 border-l-4 border-destructive bg-white px-4 py-3 text-sm text-destructive"
+        >
           {error}
-        </div>
+        </p>
       )}
 
-      <div className="space-y-6">
-        <div>
-          <h2 className="text-lg font-semibold">Review &amp; Publish</h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Review your feis setup before publishing. Once published,
-            registration will be open to parents.
-          </p>
-        </div>
+      <div className="mb-4">
+        <h2 className="feis-display text-[22px]">Review and publish</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Check your feis before you publish it. Once it is published, parents can register.
+        </p>
+      </div>
 
-        {/* Feis Details Summary */}
-        <div className="feis-card px-5 py-4">
-          <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            Feis Details
-          </h3>
-          <dl className="grid gap-2 text-sm sm:grid-cols-2">
+      <div className="feis-entry-form">
+        {/* Feis details */}
+        <section className={first}>
+          <h3 className={sectionHeading}>The feis</h3>
+          <dl className="mt-2 grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
             <div>
               <dt className="text-muted-foreground">Name</dt>
-              <dd className="font-medium">{listing.name || 'Not set'}</dd>
+              <dd className="font-semibold">{listing.name || 'Not set'}</dd>
             </div>
             <div>
               <dt className="text-muted-foreground">Date</dt>
-              <dd className="font-medium">
-                {formatDate(listing.feis_date, { weekday: 'short', month: 'short', fallback: 'Not set' })}
-                {listing.end_date && ` \u2013 ${formatDate(listing.end_date, { weekday: 'short', month: 'short', fallback: 'Not set' })}`}
+              <dd className="font-semibold">
+                {formatDate(listing.feis_date, {
+                  weekday: 'short',
+                  month: 'short',
+                  fallback: 'Not set'
+                })}
+                {listing.end_date &&
+                  ` \u2013 ${formatDate(listing.end_date, { weekday: 'short', month: 'short', fallback: 'Not set' })}`}
               </dd>
             </div>
             <div>
               <dt className="text-muted-foreground">Venue</dt>
-              <dd className="font-medium">
-                {listing.venue_name || 'Not set'}
-              </dd>
+              <dd className="font-semibold">{listing.venue_name || 'Not set'}</dd>
             </div>
             <div>
-              <dt className="text-muted-foreground">Timezone</dt>
-              <dd className="font-medium">
+              <dt className="text-muted-foreground">Time zone</dt>
+              <dd className="font-semibold">
                 {listing.timezone ? formatTimezone(listing.timezone) : 'Not set'}
               </dd>
             </div>
             <div>
-              <dt className="text-muted-foreground">Contact</dt>
-              <dd className="font-medium">
-                {listing.contact_email || 'Not set'}
-              </dd>
+              <dt className="text-muted-foreground">Contact email</dt>
+              <dd className="font-semibold break-words">{listing.contact_email || 'Not set'}</dd>
             </div>
             {listing.contact_phone && (
               <div>
                 <dt className="text-muted-foreground">Phone</dt>
-                <dd className="font-medium">{listing.contact_phone}</dd>
+                <dd className="font-semibold">{listing.contact_phone}</dd>
               </div>
             )}
           </dl>
-        </div>
+        </section>
 
-        {/* Syllabus Summary */}
-        <div className="feis-card px-5 py-4">
-          <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            Syllabus
-          </h3>
-          <p className="text-sm">
-            <span className="font-medium">{competitionSummary.total}</span>{' '}
+        {/* Syllabus */}
+        <section className={section}>
+          <h3 className={sectionHeading}>Syllabus</h3>
+          <p className="mt-2 text-sm">
+            <span className="feis-narrow text-[22px] leading-none">{competitionSummary.total}</span>{' '}
             competitions
             {competitionSummary.total > 0 && (
-              <>
-                {' '}
-                ({competitionSummary.solos} solos,{' '}
-                {competitionSummary.championships} championships,{' '}
-                {competitionSummary.specials} specials)
-              </>
+              <span className="text-muted-foreground">
+                : {competitionSummary.solos} solos, {competitionSummary.championships}{' '}
+                championships, {competitionSummary.specials} specials
+              </span>
             )}
           </p>
-        </div>
+        </section>
 
-        {/* Fees Summary */}
-        <div className="feis-card px-5 py-4">
-          <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            Fees
-          </h3>
+        {/* Fees */}
+        <section className={section}>
+          <h3 className={sectionHeading}>Fees</h3>
           {feeSchedule ? (
-            <dl className="grid gap-2 text-sm sm:grid-cols-2">
-              <div className="flex justify-between sm:block">
-                <dt className="text-muted-foreground">Event Fee</dt>
-                <dd className="font-medium font-mono">
-                  {formatCentsOrNull(feeSchedule.event_fee_cents)}
-                </dd>
-              </div>
-              <div className="flex justify-between sm:block">
-                <dt className="text-muted-foreground">Solo Fee</dt>
-                <dd className="font-medium font-mono">
-                  {formatCentsOrNull(feeSchedule.solo_fee_cents)}
-                </dd>
-              </div>
-              <div className="flex justify-between sm:block">
-                <dt className="text-muted-foreground">Prelim Champ Fee</dt>
-                <dd className="font-medium font-mono">
-                  {formatCentsOrNull(feeSchedule.prelim_champ_fee_cents)}
-                </dd>
-              </div>
-              <div className="flex justify-between sm:block">
-                <dt className="text-muted-foreground">Open Champ Fee</dt>
-                <dd className="font-medium font-mono">
-                  {formatCentsOrNull(feeSchedule.open_champ_fee_cents)}
-                </dd>
-              </div>
-              <div className="flex justify-between sm:block">
-                <dt className="text-muted-foreground">Entry Max (per family)</dt>
-                <dd className="font-medium font-mono">
-                  {formatCentsOrNull(feeSchedule.family_cap_cents, 'No cap')}
-                </dd>
-              </div>
-              <div className="flex justify-between sm:block">
-                <dt className="text-muted-foreground">Late Fees</dt>
-                <dd className="font-medium font-mono">
+            <dl className="mt-2 text-sm sm:max-w-md">
+              {[
+                { label: 'Event fee', value: formatCentsOrNull(feeSchedule.event_fee_cents) },
+                { label: 'Solo fee', value: formatCentsOrNull(feeSchedule.solo_fee_cents) },
+                {
+                  label: 'Prelim championship fee',
+                  value: formatCentsOrNull(feeSchedule.prelim_champ_fee_cents)
+                },
+                {
+                  label: 'Open championship fee',
+                  value: formatCentsOrNull(feeSchedule.open_champ_fee_cents)
+                },
+                {
+                  label: 'Entry max per family',
+                  value: formatCentsOrNull(feeSchedule.family_cap_cents, 'No cap')
+                },
+                {
+                  label: 'Day-of surcharge',
+                  value: formatCentsOrNull(feeSchedule.day_of_surcharge_cents)
+                }
+              ].map((row) => (
+                <div key={row.label} className="flex items-baseline gap-1.5 py-1">
+                  <dt>{row.label}</dt>
+                  <span className="feis-leader" aria-hidden="true" />
+                  <dd className="font-semibold tabular-nums">{row.value}</dd>
+                </div>
+              ))}
+              <div className="py-1">
+                <dt>Late fees</dt>
+                <dd className="mt-0.5 text-muted-foreground tabular-nums">
                   {feeSchedule.late_fee_tiers.length === 0
                     ? 'None'
                     : sortLateTiers(feeSchedule.late_fee_tiers).map((tier) => (
                         <span key={tier.starts_at} className="block">
-                          {formatLateTier(tier, listing.timezone ?? 'America/New_York')}
+                          {formatLateTier(tier, timeZone)}
                         </span>
                       ))}
                 </dd>
               </div>
-              <div className="flex justify-between sm:block">
-                <dt className="text-muted-foreground">Day-of Surcharge</dt>
-                <dd className="font-medium font-mono">
-                  {formatCentsOrNull(feeSchedule.day_of_surcharge_cents)}
-                </dd>
-              </div>
             </dl>
           ) : (
-            <p className="text-sm text-muted-foreground">
-              No fee schedule set.
-            </p>
+            <p className="mt-2 text-sm text-muted-foreground">No fees set yet.</p>
           )}
-        </div>
+        </section>
 
-        {/* Deadlines Summary */}
-        <div className="feis-card px-5 py-4">
-          <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            Deadlines
-          </h3>
-          <dl className="grid gap-2 text-sm sm:grid-cols-2">
+        {/* Deadlines */}
+        <section className={section}>
+          <h3 className={sectionHeading}>Deadlines</h3>
+          <dl className="mt-2 grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
             <div>
-              <dt className="text-muted-foreground">Registration Opens</dt>
-              <dd className="font-medium">
-                {formatDateTime(listing.reg_opens_at, 'Not set')}
-              </dd>
+              <dt className="text-muted-foreground">Registration opens</dt>
+              <dd className="font-semibold">{formatDateTime(listing.reg_opens_at, 'Not set')}</dd>
             </div>
             <div>
-              <dt className="text-muted-foreground">Registration Closes</dt>
-              <dd className="font-medium">
-                {formatDateTime(listing.reg_closes_at, 'Not set')}
-              </dd>
+              <dt className="text-muted-foreground">Registration closes</dt>
+              <dd className="font-semibold">{formatDateTime(listing.reg_closes_at, 'Not set')}</dd>
             </div>
             {listing.late_reg_closes_at && (
               <div>
-                <dt className="text-muted-foreground">
-                  Late Registration Closes
-                </dt>
-                <dd className="font-medium">
+                <dt className="text-muted-foreground">Late registration closes</dt>
+                <dd className="font-semibold">
                   {formatDateTime(listing.late_reg_closes_at, 'Not set')}
                 </dd>
               </div>
             )}
             <div>
-              <dt className="text-muted-foreground">Dancer Cap</dt>
-              <dd className="font-medium">
-                {listing.dancer_cap ?? 'Unlimited'}
-              </dd>
+              <dt className="text-muted-foreground">Dancer cap</dt>
+              <dd className="font-semibold">{listing.dancer_cap ?? 'No limit'}</dd>
             </div>
           </dl>
-        </div>
+        </section>
 
         {/* Stripe Connect */}
-        <div className="feis-card px-5 py-4">
-          <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            Payment Processing
-          </h3>
-          <div className="flex items-center gap-3">
+        <section className={section}>
+          <h3 className={sectionHeading}>Payments</h3>
+          <div className="mt-2 flex flex-wrap items-center gap-3">
             <span
-              className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium ${
+              className={`rounded-[2px] px-1.5 py-0.5 text-xs font-bold ${
                 stripeSimulated
-                  ? 'bg-green-100 text-green-800'
-                  : 'bg-red-100 text-red-800'
+                  ? 'bg-[var(--color-feis-green-light)] text-[var(--color-feis-green)]'
+                  : 'bg-[var(--color-feis-orange-light)] text-[var(--color-feis-orange-ink)]'
               }`}
             >
-              <span
-                className={`h-1.5 w-1.5 rounded-full ${
-                  stripeSimulated ? 'bg-green-500' : 'bg-red-500'
-                }`}
-              />
-              {stripeSimulated ? 'Connected' : 'Not connected'}
+              {stripeSimulated ? 'Stripe connected' : 'Stripe not connected'}
             </span>
             {!stripeSimulated && (
               <button
                 type="button"
                 onClick={handleSimulateStripe}
-                className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-feis-green-600"
+                className="feis-btn feis-btn-ink px-3 py-1.5"
               >
-                Connect Stripe Account
+                Connect Stripe account
               </button>
             )}
           </div>
           {!stripeSimulated && (
             <p className="mt-2 text-xs text-muted-foreground">
-              Stripe integration is simulated for now. Click to mark as
-              connected.
+              Stripe is simulated for now. This button marks the account as connected so you can try
+              publishing.
             </p>
           )}
-        </div>
-
-        {/* Publish Checklist */}
-        <div>
-          <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            Publish Checklist
-          </h3>
-          <PublishChecklist blocks={blocks} warnings={warnings} passed={passed} />
-        </div>
+        </section>
       </div>
 
+      {/* Publish Checklist */}
+      <section className="mt-6">
+        <h3 className={`${sectionHeading} mb-3`}>Before you publish</h3>
+        <PublishChecklist blocks={blocks} warnings={warnings} passed={passed} />
+      </section>
+
       {/* Navigation */}
-      <div className="mt-8 flex items-center gap-3">
-        <button
-          type="button"
-          onClick={onBack}
-          className="rounded-md bg-secondary px-4 py-2 text-sm font-medium text-secondary-foreground hover:bg-muted"
-        >
+      <div className="mt-8 flex flex-wrap items-start gap-3">
+        <button type="button" onClick={onBack} className="feis-btn feis-btn-outline">
           Back
         </button>
-        <div className="flex flex-col items-start gap-1">
-          {blocks.length > 0 && (
-            <p className="text-sm font-medium text-destructive">
-              Fix the items above before publishing.
-            </p>
-          )}
+        <div className="flex flex-col items-start gap-1.5">
           <button
             type="button"
             onClick={handlePublish}
             disabled={isPending || blocks.length > 0}
-            className={`rounded-md px-4 py-2 text-sm font-medium ${
-              blocks.length > 0
-                ? 'cursor-not-allowed bg-muted text-muted-foreground opacity-50'
-                : 'bg-primary text-primary-foreground hover:bg-feis-green-600 disabled:cursor-not-allowed disabled:opacity-40'
-            }`}
+            className="feis-btn feis-btn-primary"
           >
-            {isPending
-              ? 'Publishing...'
-              : blocks.length > 0
-                ? 'Cannot Publish'
-                : 'Publish Feis'}
+            {isPending ? 'Publishing…' : blocks.length > 0 ? "Can't publish yet" : 'Publish feis'}
           </button>
+          {blocks.length > 0 && (
+            <p className="text-sm font-semibold text-destructive">
+              Fix the items above before publishing.
+            </p>
+          )}
         </div>
       </div>
     </div>

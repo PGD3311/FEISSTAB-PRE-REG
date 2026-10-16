@@ -1,9 +1,9 @@
 import Link from 'next/link'
-import { Plus, Copy } from 'lucide-react'
 
 import { createClient } from '@/lib/supabase/server'
 import { createEmptyDraftAndRedirect } from '@/app/organiser/feiseanna/actions'
 import { ClonePicker } from '@/components/organiser/clone-picker'
+import { PageTitle } from '@/components/page-title'
 
 export const dynamic = 'force-dynamic'
 
@@ -18,54 +18,40 @@ export default async function NewFeisPage() {
 
   return (
     <div>
-      <div className="mb-8">
-        <Link
-          href="/organiser/feiseanna"
-          className="text-sm text-muted-foreground hover:text-foreground"
-        >
-          &larr; Back to Feiseanna
-        </Link>
-        <h1 className="mt-3 text-2xl">Create New Feis</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Start fresh or clone a previous feis to get a head start.
-        </p>
-      </div>
-
-      <div
-        className={`grid gap-6 ${hasExisting ? 'md:grid-cols-2' : 'max-w-md'}`}
+      <Link
+        href="/organiser/feiseanna"
+        className="mb-3 inline-block text-sm font-semibold text-muted-foreground underline underline-offset-2 hover:text-foreground"
       >
-        {/* Start Fresh Card */}
-        <form action={createEmptyDraftAndRedirect}>
-          <button
-            type="submit"
-            className="feis-card flex w-full cursor-pointer flex-col items-center justify-center px-6 py-12 text-center"
-          >
-            <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-md bg-secondary">
-              <Plus className="h-6 w-6 text-primary" />
-            </div>
-            <h2 className="text-lg font-semibold">Start Fresh</h2>
-            <p className="mt-2 text-sm text-muted-foreground">
-              Create a new feis from scratch. Fill in details, syllabus,
-              and fees step by step.
-            </p>
-          </button>
-        </form>
+        Back to your feiseanna
+      </Link>
+      <PageTitle
+        title="Set up a new feis"
+        intro="Start with a blank feis, or copy one you've run before to reuse its syllabus and fees."
+      />
 
-        {/* Clone Previous Card */}
+      <div className={`grid items-start gap-6 ${hasExisting ? 'md:grid-cols-2' : 'max-w-xl'}`}>
+        <section className="feis-card px-5 pt-5 pb-6">
+          <h2 className="feis-display text-[22px]">Start a blank feis</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Fill in the details, syllabus and fees step by step. You can save and come back at any
+            point.
+          </p>
+          <form action={createEmptyDraftAndRedirect} className="mt-5">
+            <button type="submit" className="feis-btn feis-btn-primary">
+              Start a blank feis
+            </button>
+          </form>
+        </section>
+
         {hasExisting && (
-          <div className="feis-card flex flex-col px-6 py-8">
-            <div className="mb-6 flex flex-col items-center text-center">
-              <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-md bg-secondary">
-                <Copy className="h-6 w-6 text-primary" />
-              </div>
-              <h2 className="text-lg font-semibold">Clone Previous Feis</h2>
-              <p className="mt-2 text-sm text-muted-foreground">
-                Copy structure, fees, and competitions from an existing feis.
-                Dates will be cleared.
-              </p>
-            </div>
+          <section className="feis-card px-5 pt-5 pb-5">
+            <h2 className="feis-display text-[22px]">Copy a feis you&apos;ve run</h2>
+            <p className="mt-1 mb-4 text-sm text-muted-foreground">
+              Copies its set-up, competitions and fees into a new draft. The dates are left blank
+              for you to set.
+            </p>
             <ClonePicker listings={listings} />
-          </div>
+          </section>
         )}
       </div>
     </div>

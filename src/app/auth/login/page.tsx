@@ -4,7 +4,7 @@ import { Suspense, useState, type FormEvent } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { useSupabase } from '@/hooks/use-supabase'
-import { RunFeisLogo } from '@/components/runfeis-logo'
+import { CoverBand } from '@/components/feis-cover'
 
 function LoginForm() {
   const supabase = useSupabase()
@@ -24,12 +24,12 @@ function LoginForm() {
     try {
       const { error: authError } = await supabase.auth.signInWithPassword({
         email,
-        password,
+        password
       })
 
       if (authError) {
         if (authError.status === 429 || authError.message.toLowerCase().includes('rate limit')) {
-          setError('Too many login attempts. Please try again in a few minutes.')
+          setError('Too many sign-in attempts. Wait a few minutes and try again.')
         } else {
           setError(authError.message)
         }
@@ -39,86 +39,92 @@ function LoginForm() {
       router.push(redirectTo || '/auth/onboarding')
       router.refresh()
     } catch {
-      setError('An unexpected error occurred')
+      setError('Something went wrong signing you in. Check your connection and try again.')
     } finally {
       setLoading(false)
     }
   }
 
+  const signupHref = redirectTo
+    ? `/auth/signup?redirect=${encodeURIComponent(redirectTo)}`
+    : '/auth/signup'
+
   return (
-    <div className="mx-auto mt-20 max-w-md px-6">
-      <div className="feis-card p-8">
-        <div className="mb-8 text-center">
-          <h1 className="flex justify-center">
-            <RunFeisLogo size="md" full />
-          </h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Pre-Registration
+    <div className="flex min-h-screen flex-col bg-[var(--color-feis-cream)]">
+      <CoverBand
+        links={[
+          { href: '/', label: 'Feiseanna' },
+          { href: signupHref, label: 'Create an account' }
+        ]}
+      >
+        <div className="min-w-0 pt-3">
+          <h1 className="feis-cover-title text-[clamp(34px,6vw,56px)]">Sign in</h1>
+          <p className="mt-1.5 max-w-[52ch] opacity-85">
+            Families and organisers use the same RunFeis account.
           </p>
         </div>
+      </CoverBand>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          {error && (
-            <div className="rounded-md border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
-              {error}
+      <main className="mx-auto w-full max-w-md flex-1 px-4 py-10">
+        <div className="feis-card p-6 sm:p-8">
+          <form onSubmit={handleSubmit} className="space-y-4">
+            {error && (
+              <p
+                role="alert"
+                className="border-l-4 border-destructive bg-white px-4 py-3 text-sm text-destructive"
+              >
+                {error}
+              </p>
+            )}
+
+            <div>
+              <label htmlFor="email" className="feis-label">
+                Email
+              </label>
+              <input
+                id="email"
+                type="email"
+                required
+                autoComplete="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="feis-input"
+                placeholder="you@example.com"
+              />
             </div>
-          )}
 
-          <div>
-            <label
-              htmlFor="email"
-              className="mb-1.5 block text-sm font-medium"
+            <div>
+              <label htmlFor="password" className="feis-label">
+                Password
+              </label>
+              <input
+                id="password"
+                type="password"
+                required
+                autoComplete="current-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="feis-input"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="feis-btn feis-btn-primary w-full py-2.5"
             >
-              Email
-            </label>
-            <input
-              id="email"
-              type="email"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
-              placeholder="you@example.com"
-            />
-          </div>
+              {loading ? 'Signing in…' : 'Sign in'}
+            </button>
+          </form>
 
-          <div>
-            <label
-              htmlFor="password"
-              className="mb-1.5 block text-sm font-medium"
-            >
-              Password
-            </label>
-            <input
-              id="password"
-              type="password"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
-              placeholder="Your password"
-            />
-          </div>
-
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-[var(--color-feis-green-600)] disabled:opacity-50"
-          >
-            {loading ? 'Logging in...' : 'Log In'}
-          </button>
-        </form>
-
-        <p className="mt-6 text-center text-sm text-muted-foreground">
-          Don&apos;t have an account?{' '}
-          <Link
-            href={redirectTo ? `/auth/signup?redirect=${encodeURIComponent(redirectTo)}` : '/auth/signup'}
-            className="font-medium text-primary hover:underline"
-          >
-            Sign up
-          </Link>
-        </p>
-      </div>
+          <p className="mt-6 border-t border-[#E2DCCD] pt-4 text-sm text-muted-foreground">
+            New to RunFeis?{' '}
+            <Link href={signupHref} className="feis-link">
+              Create an account
+            </Link>
+          </p>
+        </div>
+      </main>
     </div>
   )
 }

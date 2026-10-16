@@ -3,10 +3,7 @@
 import { useState, useEffect, useTransition, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 
-import type {
-  TemplateData,
-  SyllabusSelection,
-} from '@/lib/types/feis-listing'
+import type { TemplateData, SyllabusSelection } from '@/lib/types/feis-listing'
 import { useSupabase } from '@/hooks/use-supabase'
 import { expandAndSaveSyllabus } from '@/app/organiser/feiseanna/actions'
 import { SyllabusToggle } from '@/components/organiser/syllabus-toggle'
@@ -43,7 +40,7 @@ function buildDefaultSelection(td: TemplateData): SyllabusSelection {
       ? td.age_groups.map((a) => a.key)
       : [],
     enable_specials: td.specials.map((s) => s.key),
-    level_dances: td.default_level_dances,
+    level_dances: td.default_level_dances
   }
 }
 
@@ -64,7 +61,7 @@ export function FeisWizardStep2({
   existingSnapshot,
   existingCompetitionsCount,
   onNext,
-  onBack: _onBack,
+  onBack: _onBack
 }: FeisWizardStep2Props) {
   const router = useRouter()
   const supabase = useSupabase()
@@ -159,40 +156,50 @@ export function FeisWizardStep2({
     })
   }
 
+  const errorPanel = error && (
+    <p
+      role="alert"
+      className="mb-6 border-l-4 border-destructive bg-white px-4 py-3 text-sm text-destructive"
+    >
+      {error}
+    </p>
+  )
+
   // Loading state
   if (loadingTemplates) {
     return (
-      <div className="feis-card flex items-center justify-center px-6 py-16 text-center text-muted-foreground">
-        Loading syllabus templates...
-      </div>
+      <p
+        role="status"
+        className="feis-entry-form px-6 py-16 text-center text-sm text-muted-foreground"
+      >
+        Loading syllabus templates…
+      </p>
     )
   }
 
   // Show summary view when competitions already exist and user hasn't clicked "Reconfigure"
   if (existingCompetitionsCount > 0 && !showReconfigure) {
     return (
-      <div>
-        <div className="feis-card px-6 py-8 text-center">
-          <h2 className="text-lg font-semibold">Syllabus Configured</h2>
-          <p className="mt-2 text-sm text-muted-foreground">
-            You have {existingCompetitionsCount} competitions configured.
-          </p>
-          <div className="mt-6 flex flex-col items-center gap-3 sm:flex-row sm:justify-center">
-            <button
-              type="button"
-              onClick={onNext}
-              className="rounded-md bg-primary px-6 py-2.5 text-sm font-medium text-primary-foreground hover:bg-feis-green-600"
-            >
-              Keep &amp; Continue
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowReconfigure(true)}
-              className="rounded-md bg-secondary px-4 py-2 text-sm font-medium text-secondary-foreground hover:bg-muted"
-            >
-              Reconfigure Syllabus
-            </button>
-          </div>
+      <div className="feis-card max-w-xl px-5 py-5 sm:px-6">
+        <h2 className="feis-display text-[22px]">Syllabus is set up</h2>
+        <p className="mt-2 text-[15px]">
+          This feis has <span className="feis-narrow text-[19px]">{existingCompetitionsCount}</span>{' '}
+          competitions.
+        </p>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Choosing a new syllabus replaces all of them.
+        </p>
+        <div className="mt-5 flex flex-wrap gap-3">
+          <button type="button" onClick={onNext} className="feis-btn feis-btn-primary">
+            Keep and continue
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowReconfigure(true)}
+            className="feis-btn feis-btn-outline"
+          >
+            Choose a new syllabus
+          </button>
         </div>
       </div>
     )
@@ -201,45 +208,50 @@ export function FeisWizardStep2({
   // Show template picker if no template selected yet
   if (!selectedTemplateId || !templateData || !selection) {
     return (
-      <div>
-        {error && (
-          <div className="mb-6 rounded-md border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
-            {error}
-          </div>
-        )}
+      <div className="max-w-3xl">
+        {errorPanel}
 
-        <div className="mb-6">
-          <h2 className="text-lg font-semibold">Choose a Syllabus Template</h2>
+        <div className="mb-4">
+          <h2 className="feis-display text-[22px]">Choose a syllabus template</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            Start from a template, then customise which competitions to offer.
+            Start from a template, then choose which competitions to offer.
           </p>
         </div>
 
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {templates.map((template) => (
-            <button
-              key={template.id}
-              type="button"
-              onClick={() => handleSelectTemplate(template)}
-              className="feis-card cursor-pointer px-5 py-4 text-left transition-colors hover:border-primary"
-            >
-              <h3 className="font-semibold">{template.name}</h3>
-              {template.description && (
-                <p className="mt-1 text-sm text-muted-foreground">
-                  {template.description}
-                </p>
-              )}
-              <div className="mt-3 text-xs text-muted-foreground">
-                ~{estimateCount(template.template_data)} competitions
-              </div>
-            </button>
-          ))}
-        </div>
+        {templates.length > 0 && (
+          <ul className="feis-entry-form">
+            {templates.map((template, i) => (
+              <li key={template.id} className={i > 0 ? 'border-t border-[#E2DCCD]' : ''}>
+                <button
+                  type="button"
+                  onClick={() => handleSelectTemplate(template)}
+                  className="grid w-full cursor-pointer grid-cols-[minmax(0,1fr)_auto] items-center gap-4 px-4 py-3.5 text-left hover:bg-[var(--color-feis-green-light)] focus-visible:outline-3 focus-visible:-outline-offset-3 focus-visible:outline-[var(--color-feis-gold)]"
+                >
+                  <span className="min-w-0">
+                    <span className="block font-bold">{template.name}</span>
+                    {template.description && (
+                      <span className="mt-0.5 block text-sm text-muted-foreground">
+                        {template.description}
+                      </span>
+                    )}
+                  </span>
+                  <span className="text-right text-sm text-muted-foreground">
+                    About{' '}
+                    <span className="feis-narrow text-[19px] text-foreground">
+                      {estimateCount(template.template_data)}
+                    </span>
+                    <span className="block text-xs">competitions</span>
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
 
         {templates.length === 0 && (
-          <div className="feis-card flex items-center justify-center px-6 py-16 text-center text-muted-foreground">
-            No syllabus templates available.
-          </div>
+          <p className="feis-sticker rounded-[3px] px-4 py-3 text-sm">
+            No syllabus templates are available yet.
+          </p>
         )}
       </div>
     )
@@ -250,27 +262,17 @@ export function FeisWizardStep2({
 
   return (
     <div>
-      {error && (
-        <div className="mb-6 rounded-md border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
-          {error}
-        </div>
-      )}
+      {errorPanel}
 
       {/* Template header */}
-      <div className="mb-6 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+      <div className="mb-5 flex flex-wrap items-end justify-between gap-x-6 gap-y-2">
         <div>
-          <h2 className="text-lg font-semibold">
-            {selectedTemplate?.name ?? 'Syllabus Editor'}
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            Toggle competitions on or off. Changes preview instantly.
+          <h2 className="feis-display text-[22px]">{selectedTemplate?.name ?? 'Your syllabus'}</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Tick the competitions you want to offer. The count updates as you go.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={handleChangeTemplate}
-          className="self-start text-sm text-primary hover:underline"
-        >
+        <button type="button" onClick={handleChangeTemplate} className="feis-link text-sm">
           Change template
         </button>
       </div>
@@ -283,31 +285,27 @@ export function FeisWizardStep2({
       />
 
       {/* Save button */}
-      <div className="mt-8 flex items-center gap-3">
+      <div className="mt-8 flex flex-wrap items-center gap-3">
         <button
           type="button"
           onClick={handleSave}
           disabled={isPending}
-          className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-feis-green-600 disabled:cursor-not-allowed disabled:opacity-40"
+          className="feis-btn feis-btn-primary"
         >
-          {isPending ? 'Saving...' : 'Save & Continue'}
+          {isPending ? 'Saving…' : 'Save and continue'}
         </button>
 
         {existingCompetitionsCount > 0 && (
-          <button
-            type="button"
-            onClick={onNext}
-            className="rounded-md bg-secondary px-4 py-2 text-sm font-medium text-secondary-foreground hover:bg-muted"
-          >
-            Keep Existing & Continue
+          <button type="button" onClick={onNext} className="feis-btn feis-btn-outline">
+            Keep current competitions
           </button>
         )}
       </div>
       {existingCompetitionsCount > 0 && (
-        <p className="mt-2 text-xs text-muted-foreground">
-          You have {existingCompetitionsCount} existing competitions.
-          &quot;Save &amp; Continue&quot; will replace them.
-          &quot;Keep Existing &amp; Continue&quot; will preserve them as-is.
+        <p className="mt-2 max-w-[62ch] text-xs text-muted-foreground">
+          This feis already has {existingCompetitionsCount} competitions. &ldquo;Save and
+          continue&rdquo; replaces them with the ones ticked above. &ldquo;Keep current
+          competitions&rdquo; leaves them as they are.
         </p>
       )}
     </div>

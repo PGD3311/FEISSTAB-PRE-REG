@@ -4,6 +4,7 @@ import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import type { Dancer } from '@/lib/types/feis-listing'
+import { PageTitle } from '@/components/page-title'
 import { updateDancer, archiveDancer } from '../actions'
 
 const STANDARD_DANCES = [
@@ -12,14 +13,14 @@ const STANDARD_DANCES = [
   { key: 'slip_jig', label: 'Slip Jig' },
   { key: 'single_jig', label: 'Single Jig' },
   { key: 'treble_jig', label: 'Treble Jig' },
-  { key: 'hornpipe', label: 'Hornpipe' },
+  { key: 'hornpipe', label: 'Hornpipe' }
 ]
 
 const LEVELS = [
   { key: 'BG', label: 'Beginner' },
   { key: 'AB', label: 'Advanced Beginner' },
   { key: 'NOV', label: 'Novice' },
-  { key: 'PW', label: 'Prizewinner' },
+  { key: 'PW', label: 'Prizewinner' }
 ]
 
 interface Props {
@@ -69,7 +70,7 @@ export function EditDancerForm({ dancer, initialLevels }: Props) {
     setError(null)
 
     if (!firstName.trim() || !lastName.trim() || !dateOfBirth) {
-      setError('First name, last name, and date of birth are required.')
+      setError('Fill in the first name, last name and date of birth.')
       return
     }
 
@@ -82,7 +83,7 @@ export function EditDancerForm({ dancer, initialLevels }: Props) {
         school_name: schoolName.trim() || null,
         tcrg_name: tcrgName.trim() || null,
         championship_status: championshipStatus,
-        levels,
+        levels
       })
 
       if ('error' in result) {
@@ -106,216 +107,230 @@ export function EditDancerForm({ dancer, initialLevels }: Props) {
   }
 
   return (
-    <div>
-      <div className="mb-6">
-        <Link href="/dashboard/dancers" className="text-sm text-muted-foreground hover:text-foreground">
-          ← Back to Dancers
-        </Link>
-        <h1 className="mt-2 text-2xl font-bold">
-          {dancer.first_name} {dancer.last_name}
-        </h1>
+    <div className="max-w-2xl">
+      <Link
+        href="/dashboard/dancers"
+        className="text-sm text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+      >
+        All dancers
+      </Link>
+      <div className="mt-2">
+        <PageTitle
+          title={`${dancer.first_name} ${dancer.last_name}`}
+          intro="Keep levels up to date so each feis shows the right competitions for this dancer."
+        />
       </div>
 
-      <form onSubmit={handleSubmit} className="space-y-6">
-        {/* Basic info */}
-        <div className="feis-card p-6">
-          <h2 className="mb-4 text-base font-semibold">Dancer Information</h2>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div>
-              <label className="mb-1 block text-sm font-medium" htmlFor="firstName">
-                First Name <span className="text-destructive">*</span>
-              </label>
-              <input
-                id="firstName"
-                type="text"
-                required
-                value={firstName}
-                onChange={(e) => setFirstName(e.target.value)}
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-              />
+      <form onSubmit={handleSubmit}>
+        <div className="feis-entry-form">
+          <section className="px-5 py-6 sm:px-7">
+            <h2 className="feis-display mb-4 text-[22px]">The dancer</h2>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label className="feis-label" htmlFor="firstName">
+                  First name
+                </label>
+                <input
+                  id="firstName"
+                  type="text"
+                  required
+                  value={firstName}
+                  onChange={(e) => setFirstName(e.target.value)}
+                  className="feis-input"
+                />
+              </div>
+              <div>
+                <label className="feis-label" htmlFor="lastName">
+                  Last name
+                </label>
+                <input
+                  id="lastName"
+                  type="text"
+                  required
+                  value={lastName}
+                  onChange={(e) => setLastName(e.target.value)}
+                  className="feis-input"
+                />
+              </div>
+              <div>
+                <label className="feis-label" htmlFor="dateOfBirth">
+                  Date of birth
+                </label>
+                <input
+                  id="dateOfBirth"
+                  type="date"
+                  required
+                  value={dateOfBirth}
+                  onChange={(e) => setDateOfBirth(e.target.value)}
+                  className="feis-input"
+                />
+              </div>
+              <fieldset>
+                <legend className="feis-label">Gender</legend>
+                <div className="flex gap-5 pt-2">
+                  {(['female', 'male'] as const).map((g) => (
+                    <label key={g} className="flex cursor-pointer items-center gap-2 text-[15px]">
+                      <input
+                        type="radio"
+                        name="gender"
+                        value={g}
+                        checked={gender === g}
+                        onChange={() => setGender(g)}
+                        className="h-4 w-4 accent-[var(--color-feis-green)]"
+                      />
+                      <span className="capitalize">{g}</span>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
             </div>
-            <div>
-              <label className="mb-1 block text-sm font-medium" htmlFor="lastName">
-                Last Name <span className="text-destructive">*</span>
-              </label>
-              <input
-                id="lastName"
-                type="text"
-                required
-                value={lastName}
-                onChange={(e) => setLastName(e.target.value)}
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-              />
+          </section>
+
+          <section className="border-t-[1.5px] border-[var(--color-feis-charcoal)] px-5 py-6 sm:px-7">
+            <h2 className="feis-display mb-4 text-[22px]">School and teacher</h2>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label className="feis-label" htmlFor="schoolName">
+                  School <span className="font-normal text-muted-foreground">(optional)</span>
+                </label>
+                <input
+                  id="schoolName"
+                  type="text"
+                  value={schoolName}
+                  onChange={(e) => setSchoolName(e.target.value)}
+                  className="feis-input"
+                />
+              </div>
+              <div>
+                <label className="feis-label" htmlFor="tcrgName">
+                  Teacher (TCRG){' '}
+                  <span className="font-normal text-muted-foreground">(optional)</span>
+                </label>
+                <input
+                  id="tcrgName"
+                  type="text"
+                  value={tcrgName}
+                  onChange={(e) => setTcrgName(e.target.value)}
+                  className="feis-input"
+                />
+              </div>
             </div>
-            <div>
-              <label className="mb-1 block text-sm font-medium" htmlFor="dateOfBirth">
-                Date of Birth <span className="text-destructive">*</span>
+          </section>
+
+          <section className="border-t-[1.5px] border-[var(--color-feis-charcoal)] px-5 py-6 sm:px-7">
+            <h2 className="feis-display mb-4 text-[22px]">Levels</h2>
+            <div className="max-w-xs">
+              <label className="feis-label" htmlFor="championshipStatus">
+                Championship status
               </label>
-              <input
-                id="dateOfBirth"
-                type="date"
-                required
-                value={dateOfBirth}
-                onChange={(e) => setDateOfBirth(e.target.value)}
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-              />
+              <select
+                id="championshipStatus"
+                value={championshipStatus}
+                onChange={(e) =>
+                  setChampionshipStatus(e.target.value as 'none' | 'prelim' | 'open')
+                }
+                className="feis-input"
+              >
+                <option value="none">Solo dancer</option>
+                <option value="prelim">Prelim Championship</option>
+                <option value="open">Open Championship</option>
+              </select>
             </div>
-            <div>
-              <p className="mb-1 block text-sm font-medium">
-                Gender <span className="text-destructive">*</span>
-              </p>
-              <div className="flex gap-4 pt-1">
-                {(['female', 'male'] as const).map((g) => (
-                  <label key={g} className="flex cursor-pointer items-center gap-2 text-sm">
-                    <input
-                      type="radio"
-                      name="gender"
-                      value={g}
-                      checked={gender === g}
-                      onChange={() => setGender(g)}
-                      className="accent-primary"
-                    />
-                    <span className="capitalize">{g}</span>
-                  </label>
+
+            <div className="mt-6 mb-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+              <h3 className="text-[15px] font-bold">Level for each dance</h3>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="mr-1 text-[13px] text-muted-foreground">Set all to</span>
+                {LEVELS.map((l) => (
+                  <button
+                    key={l.key}
+                    type="button"
+                    onClick={() => handleBulkUpdate(l.key)}
+                    aria-label={`Set all dances to ${l.label}`}
+                    title={l.label}
+                    className="feis-btn feis-btn-outline feis-narrow px-2 py-0.5 text-[15px]"
+                  >
+                    {l.key}
+                  </button>
                 ))}
               </div>
             </div>
-          </div>
-        </div>
-
-        {/* School / teacher */}
-        <div className="feis-card p-6">
-          <h2 className="mb-4 text-base font-semibold">School &amp; Teacher</h2>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div>
-              <label className="mb-1 block text-sm font-medium" htmlFor="schoolName">
-                School Name <span className="text-xs text-muted-foreground">(optional)</span>
-              </label>
-              <input
-                id="schoolName"
-                type="text"
-                value={schoolName}
-                onChange={(e) => setSchoolName(e.target.value)}
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-sm font-medium" htmlFor="tcrgName">
-                Teacher Name (TCRG) <span className="text-xs text-muted-foreground">(optional)</span>
-              </label>
-              <input
-                id="tcrgName"
-                type="text"
-                value={tcrgName}
-                onChange={(e) => setTcrgName(e.target.value)}
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-              />
-            </div>
-          </div>
-        </div>
-
-        {/* Championship status */}
-        <div className="feis-card p-6">
-          <h2 className="mb-4 text-base font-semibold">Championship Status</h2>
-          <div className="max-w-xs">
-            <label className="mb-1 block text-sm font-medium" htmlFor="championshipStatus">
-              Status
-            </label>
-            <select
-              id="championshipStatus"
-              value={championshipStatus}
-              onChange={(e) =>
-                setChampionshipStatus(e.target.value as 'none' | 'prelim' | 'open')
-              }
-              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-            >
-              <option value="none">Solo dancer</option>
-              <option value="prelim">Prelim Championship</option>
-              <option value="open">Open Championship</option>
-            </select>
-          </div>
-        </div>
-
-        {/* Dance levels */}
-        <div className="feis-card p-6">
-          <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-base font-semibold">Dance Levels</h2>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-muted-foreground">Update all to:</span>
-              {LEVELS.map((l) => (
-                <button
-                  key={l.key}
-                  type="button"
-                  onClick={() => handleBulkUpdate(l.key)}
-                  className="rounded border border-border px-2 py-1 text-xs font-medium hover:border-primary hover:text-primary"
+            <ul className="border-y-[1.5px] border-[var(--color-feis-charcoal)]">
+              {STANDARD_DANCES.map((dance, i) => (
+                <li
+                  key={dance.key}
+                  className={`flex items-center justify-between gap-3 py-2 ${
+                    i > 0 ? 'border-t border-[#E2DCCD]' : ''
+                  }`}
                 >
-                  {l.key}
-                </button>
+                  <label htmlFor={`level-${dance.key}`} className="text-[15px] font-semibold">
+                    {dance.label}
+                  </label>
+                  <select
+                    id={`level-${dance.key}`}
+                    value={levels[dance.key] ?? 'NOV'}
+                    onChange={(e) => handleLevelChange(dance.key, e.target.value)}
+                    className="feis-input w-auto py-1"
+                  >
+                    {LEVELS.map((l) => (
+                      <option key={l.key} value={l.key}>
+                        {l.label} ({l.key})
+                      </option>
+                    ))}
+                  </select>
+                </li>
               ))}
-            </div>
-          </div>
-          <div className="grid gap-3 sm:grid-cols-2">
-            {STANDARD_DANCES.map((dance) => (
-              <div key={dance.key} className="flex items-center justify-between gap-3">
-                <span className="text-sm font-medium">{dance.label}</span>
-                <select
-                  value={levels[dance.key] ?? 'NOV'}
-                  onChange={(e) => handleLevelChange(dance.key, e.target.value)}
-                  className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                >
-                  {LEVELS.map((l) => (
-                    <option key={l.key} value={l.key}>
-                      {l.key} — {l.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            ))}
-          </div>
+            </ul>
+          </section>
         </div>
 
         {error && (
-          <div className="rounded-md bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          <p
+            role="alert"
+            className="mt-5 border-l-4 border-destructive bg-white px-4 py-3 text-sm text-destructive"
+          >
             {error}
-          </div>
+          </p>
         )}
 
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
+        <div className="mt-6 flex flex-wrap items-center justify-between gap-4">
+          <div className="flex flex-wrap items-center gap-3">
             <button
               type="submit"
               disabled={isPending || isArchiving}
-              className="rounded-md bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:bg-[var(--color-feis-green-600)] disabled:opacity-60"
+              className="feis-btn feis-btn-primary"
             >
-              {isPending ? 'Saving…' : 'Save Changes'}
+              {isPending ? 'Saving…' : 'Save changes'}
             </button>
-            <Link
-              href="/dashboard/dancers"
-              className="text-sm text-muted-foreground hover:text-foreground"
-            >
+            <Link href="/dashboard/dancers" className="feis-btn feis-btn-outline">
               Cancel
             </Link>
           </div>
 
-          {/* Archive */}
           <div>
             {showArchiveConfirm ? (
-              <div className="flex items-center gap-2">
-                <span className="text-sm text-muted-foreground">Archive this dancer?</span>
+              <div
+                role="group"
+                aria-label="Confirm archive"
+                className="flex flex-wrap items-center gap-2"
+              >
+                <span className="text-sm">
+                  Archive {dancer.first_name}? They won&apos;t show when you enter a feis.
+                </span>
                 <button
                   type="button"
                   onClick={handleArchive}
                   disabled={isArchiving}
-                  className="rounded-md bg-destructive px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-60"
+                  className="feis-btn feis-btn-danger"
                 >
                   {isArchiving ? 'Archiving…' : 'Yes, archive'}
                 </button>
                 <button
                   type="button"
                   onClick={() => setShowArchiveConfirm(false)}
-                  className="text-xs text-muted-foreground hover:text-foreground"
+                  className="feis-btn feis-btn-outline"
                 >
-                  Cancel
+                  Keep
                 </button>
               </div>
             ) : (
@@ -323,7 +338,7 @@ export function EditDancerForm({ dancer, initialLevels }: Props) {
                 type="button"
                 onClick={() => setShowArchiveConfirm(true)}
                 disabled={isPending || isArchiving}
-                className="text-sm text-muted-foreground hover:text-destructive"
+                className="text-sm font-semibold text-muted-foreground underline underline-offset-2 hover:text-destructive disabled:opacity-50"
               >
                 Archive dancer
               </button>

@@ -4,7 +4,7 @@ import { Suspense, useState, type FormEvent } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { useSupabase } from '@/hooks/use-supabase'
-import { RunFeisLogo } from '@/components/runfeis-logo'
+import { CoverBand } from '@/components/feis-cover'
 
 function SignupForm() {
   const supabase = useSupabase()
@@ -22,12 +22,12 @@ function SignupForm() {
     setError(null)
 
     if (password.length < 6) {
-      setError('Password must be at least 6 characters')
+      setError('Use a password of at least 6 characters.')
       return
     }
 
     if (password !== confirmPassword) {
-      setError('Passwords do not match')
+      setError('The two passwords don’t match. Type them again.')
       return
     }
 
@@ -36,15 +36,15 @@ function SignupForm() {
     try {
       const { error: authError } = await supabase.auth.signUp({
         email,
-        password,
+        password
       })
 
       if (authError) {
         // Supabase returns misleading messages on rate limits
         if (authError.status === 429 || authError.message.toLowerCase().includes('rate limit')) {
-          setError('Too many signup attempts. Please try again in a few minutes.')
+          setError('Too many sign-up attempts. Wait a few minutes and try again.')
         } else if (authError.message.toLowerCase().includes('already registered')) {
-          setError('An account with this email already exists. Try logging in instead.')
+          setError('There is already an account with this email. Sign in instead.')
         } else {
           setError(authError.message)
         }
@@ -56,127 +56,146 @@ function SignupForm() {
       // (Auth → Settings → Email Auth) to skip verification.
       setSuccess(true)
     } catch {
-      setError('An unexpected error occurred')
+      setError('Something went wrong creating your account. Check your connection and try again.')
     } finally {
       setLoading(false)
     }
   }
 
+  const loginHref = redirectTo
+    ? `/auth/login?redirect=${encodeURIComponent(redirectTo)}`
+    : '/auth/login'
+
   if (success) {
     return (
-      <div className="mx-auto mt-20 max-w-md px-6">
-        <div className="feis-card p-8 text-center">
-          <div className="mb-4 text-2xl">Check your email</div>
-          <p className="text-sm text-muted-foreground">
-            We sent a confirmation link to{' '}
-            <span className="font-medium text-foreground">{email}</span>. Click
-            the link to activate your account.
-          </p>
-          <Link
-            href={redirectTo ? `/auth/login?redirect=${encodeURIComponent(redirectTo)}` : '/auth/login'}
-            className="mt-6 inline-block text-sm font-medium text-primary hover:underline"
-          >
-            Back to login
-          </Link>
-        </div>
-      </div>
+      <AuthShell
+        title="Check your email"
+        intro="One more step and your account is ready."
+        loginHref={loginHref}
+      >
+        <p className="text-[15px]">
+          We sent a confirmation link to <span className="font-bold break-all">{email}</span>. Open
+          it to activate your account, then sign in.
+        </p>
+        <Link href={loginHref} className="feis-btn feis-btn-outline mt-6">
+          Back to sign in
+        </Link>
+      </AuthShell>
     )
   }
 
   return (
-    <div className="mx-auto mt-20 max-w-md px-6">
-      <div className="feis-card p-8">
-        <div className="mb-8 text-center">
-          <h1 className="flex justify-center">
-            <RunFeisLogo size="md" full />
-          </h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Create your account
+    <AuthShell
+      title="Create an account"
+      intro="One account for your whole family. Organisers sign up here too."
+      loginHref={loginHref}
+    >
+      <form onSubmit={handleSubmit} className="space-y-4">
+        {error && (
+          <p
+            role="alert"
+            className="border-l-4 border-destructive bg-white px-4 py-3 text-sm text-destructive"
+          >
+            {error}
           </p>
+        )}
+
+        <div>
+          <label htmlFor="email" className="feis-label">
+            Email
+          </label>
+          <input
+            id="email"
+            type="email"
+            required
+            autoComplete="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className="feis-input"
+            placeholder="you@example.com"
+          />
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          {error && (
-            <div className="rounded-md border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
-              {error}
-            </div>
-          )}
+        <div>
+          <label htmlFor="password" className="feis-label">
+            Password
+          </label>
+          <input
+            id="password"
+            type="password"
+            required
+            minLength={6}
+            autoComplete="new-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="feis-input"
+            placeholder="At least 6 characters"
+          />
+        </div>
 
-          <div>
-            <label
-              htmlFor="email"
-              className="mb-1.5 block text-sm font-medium"
-            >
-              Email
-            </label>
-            <input
-              id="email"
-              type="email"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
-              placeholder="you@example.com"
-            />
-          </div>
+        <div>
+          <label htmlFor="confirmPassword" className="feis-label">
+            Type the password again
+          </label>
+          <input
+            id="confirmPassword"
+            type="password"
+            required
+            minLength={6}
+            autoComplete="new-password"
+            value={confirmPassword}
+            onChange={(e) => setConfirmPassword(e.target.value)}
+            className="feis-input"
+          />
+        </div>
 
-          <div>
-            <label
-              htmlFor="password"
-              className="mb-1.5 block text-sm font-medium"
-            >
-              Password
-            </label>
-            <input
-              id="password"
-              type="password"
-              required
-              minLength={6}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
-              placeholder="At least 6 characters"
-            />
-          </div>
+        <button
+          type="submit"
+          disabled={loading}
+          className="feis-btn feis-btn-primary w-full py-2.5"
+        >
+          {loading ? 'Creating your account…' : 'Create account'}
+        </button>
+      </form>
 
-          <div>
-            <label
-              htmlFor="confirmPassword"
-              className="mb-1.5 block text-sm font-medium"
-            >
-              Confirm password
-            </label>
-            <input
-              id="confirmPassword"
-              type="password"
-              required
-              minLength={6}
-              value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
-              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
-              placeholder="Repeat your password"
-            />
-          </div>
+      <p className="mt-6 border-t border-[#E2DCCD] pt-4 text-sm text-muted-foreground">
+        Already have an account?{' '}
+        <Link href={loginHref} className="feis-link">
+          Sign in
+        </Link>
+      </p>
+    </AuthShell>
+  )
+}
 
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-[var(--color-feis-green-600)] disabled:opacity-50"
-          >
-            {loading ? 'Creating account...' : 'Create Account'}
-          </button>
-        </form>
+function AuthShell({
+  title,
+  intro,
+  loginHref,
+  children
+}: {
+  title: string
+  intro: string
+  loginHref: string
+  children: React.ReactNode
+}) {
+  return (
+    <div className="flex min-h-screen flex-col bg-[var(--color-feis-cream)]">
+      <CoverBand
+        links={[
+          { href: '/', label: 'Feiseanna' },
+          { href: loginHref, label: 'Sign in' }
+        ]}
+      >
+        <div className="min-w-0 pt-3">
+          <h1 className="feis-cover-title text-[clamp(34px,6vw,56px)]">{title}</h1>
+          <p className="mt-1.5 max-w-[52ch] opacity-85">{intro}</p>
+        </div>
+      </CoverBand>
 
-        <p className="mt-6 text-center text-sm text-muted-foreground">
-          Already have an account?{' '}
-          <Link
-            href={redirectTo ? `/auth/login?redirect=${encodeURIComponent(redirectTo)}` : '/auth/login'}
-            className="font-medium text-primary hover:underline"
-          >
-            Log in
-          </Link>
-        </p>
-      </div>
+      <main className="mx-auto w-full max-w-md flex-1 px-4 py-10">
+        <div className="feis-card p-6 sm:p-8">{children}</div>
+      </main>
     </div>
   )
 }

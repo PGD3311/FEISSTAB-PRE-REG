@@ -5,6 +5,7 @@ import { useState, useTransition } from 'react'
 import { cloneFeisAndRedirect } from '@/app/organiser/feiseanna/actions'
 import { formatDate } from '@/lib/format'
 import type { ListingStatus } from '@/lib/types/feis-listing'
+import { ListingStatusTag } from '@/components/organiser/listing-status-tag'
 
 interface ClonePickerListing {
   id: string
@@ -15,13 +16,6 @@ interface ClonePickerListing {
 
 interface ClonePickerProps {
   listings: ClonePickerListing[]
-}
-
-const statusStyles: Record<ListingStatus, string> = {
-  draft: 'bg-muted text-muted-foreground',
-  open: 'bg-secondary text-primary',
-  closed: 'bg-feis-orange-light text-feis-orange-ink',
-  launched: 'bg-primary text-primary-foreground',
 }
 
 export function ClonePicker({ listings }: ClonePickerProps) {
@@ -44,43 +38,42 @@ export function ClonePicker({ listings }: ClonePickerProps) {
   return (
     <div>
       {error && (
-        <div className="mb-4 rounded-md border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+        <p
+          role="alert"
+          className="mb-4 border-l-4 border-destructive bg-white px-4 py-3 text-sm text-destructive"
+        >
           {error}
-        </div>
+        </p>
       )}
 
-      <div className="space-y-2">
-        {listings.map((listing) => (
-          <button
-            key={listing.id}
-            type="button"
-            onClick={() => handleClone(listing.id)}
-            disabled={isPending}
-            className="feis-card flex w-full items-center justify-between px-4 py-3 text-left transition-colors hover:border-primary/40 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-medium text-foreground">
-                {listing.name}
-              </p>
-              <p className="mt-0.5 text-xs text-muted-foreground">
-                {formatDate(listing.feis_date, { month: 'short' })}
-              </p>
-            </div>
-            <div className="ml-3 flex items-center gap-2">
-              <span
-                className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium capitalize ${statusStyles[listing.status as ListingStatus]}`}
+      <ul className="border-y-[1.5px] border-[var(--color-feis-charcoal)]">
+        {listings.map((listing, i) => {
+          const copying = cloningId === listing.id && isPending
+          return (
+            <li key={listing.id} className={i > 0 ? 'border-t border-[#E2DCCD]' : ''}>
+              <button
+                type="button"
+                onClick={() => handleClone(listing.id)}
+                disabled={isPending}
+                className="flex w-full items-center justify-between gap-3 px-1 py-2.5 text-left hover:bg-[var(--color-feis-green-light)] focus-visible:outline-3 focus-visible:outline-offset-0 focus-visible:outline-[var(--color-feis-gold)] disabled:cursor-default disabled:opacity-50"
               >
-                {listing.status}
-              </span>
-              {cloningId === listing.id && isPending && (
-                <span className="text-xs text-muted-foreground">
-                  Cloning...
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate font-bold">
+                    {listing.name || 'Untitled feis'}
+                  </span>
+                  <span className="mt-0.5 flex items-center gap-2 text-[13px] text-muted-foreground">
+                    {formatDate(listing.feis_date, { month: 'short', fallback: 'No date' })}
+                    <ListingStatusTag listing={{ status: listing.status as ListingStatus }} />
+                  </span>
                 </span>
-              )}
-            </div>
-          </button>
-        ))}
-      </div>
+                <span className="shrink-0 text-sm font-bold text-[var(--color-feis-green)] underline underline-offset-[3px]">
+                  {copying ? 'Copying…' : 'Copy'}
+                </span>
+              </button>
+            </li>
+          )
+        })}
+      </ul>
     </div>
   )
 }
