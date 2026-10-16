@@ -422,12 +422,12 @@ This needs Stripe test keys and a connected test account, so it runs together wi
 
 ---
 
-## Decisions for Daniel
+## Decisions (Daniel, 2026-10-16)
 
-1. **Who gets payment alerts?** You, Steve, or both. This sets `PAYMENTS_ALERT_EMAIL`.
-2. **Test database.** Recommended: a local Postgres through Homebrew, which is free, needs no account, and runs in seconds. The alternative is a separate free Supabase project, which is closer to live and could also be the staging site for the December run.
-3. **Cards only?** Cards, Apple Pay and Google Pay, but no bank debits.
-4. **Retry schedule.** Recommended: pg_cron with pg_net every 5 minutes, which works on any plan. The alternative is Vercel Cron, if the Vercel plan allows it.
+1. **Payment alerts** go to both Daniel and Steve to start. `PAYMENTS_ALERT_EMAIL` takes a comma-separated list.
+2. **Test database:** a local Postgres through Homebrew (`postgresql@17`). Each test run starts its own temporary database and removes it afterwards, so nothing is left running.
+3. **Cards only:** cards, Apple Pay and Google Pay. No bank debits for now.
+4. **Retry schedule:** pg_cron with pg_net, every 5 minutes.
 
 ## Dependencies
 
