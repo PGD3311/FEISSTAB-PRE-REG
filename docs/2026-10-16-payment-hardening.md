@@ -117,6 +117,7 @@ These five inputs aren't covered by the spec's own tests, but they're the ones m
 - `017_payments_admin.sql`: the `payments_admin` schema, `admin_actions`, `confirm_late_payment` and `close_exception`.
 - `supabase/checks/payment-hardening-live-check.sql`: read-only queries for the live database.
 - `supabase/tests/payment_hardening_live_tests.sql`: the live permission tests, which always roll back.
+- `supabase/checks/rehearse-on-live-copy.sh`: rehearses 012–017 on a copy of the live data before the real rollout.
 
 **Pure code:**
 - `src/lib/registration-states.ts` (modify): the transition table, exported.
@@ -129,6 +130,8 @@ These five inputs aren't covered by the spec's own tests, but they're the ones m
 - `src/lib/engine/email-errors.ts`: whether a Resend error means refused or uncertain.
 - `src/lib/payment-review-messages.ts`: parent messages A, B and C.
 - `src/lib/email/templates.ts`: the confirmation and alert emails, with escaped HTML.
+- `src/lib/email/email-config.ts`: whether email is set up, so pages only promise an email when one can be sent.
+- `src/lib/fetch-all-rows.ts`: loads every row of a query page by page, because PostgREST returns at most 1000 rows.
 
 **App code:**
 - `src/app/_payments/rpc.ts`: `RpcCaller` and its Supabase adapter.
@@ -142,6 +145,7 @@ These five inputs aren't covered by the spec's own tests, but they're the ones m
 - `src/app/api/notifications/process/route.ts` (new).
 - `src/app/feiseanna/[id]/register/actions.ts`, `page.tsx` and `success/page.tsx` (modify).
 - `src/app/dashboard/page.tsx` (modify).
+- `src/components/registration/entry-page.tsx` and `family-receipt.tsx` (modify): the redesigned entry page uses the engine's rules, then Pay, resume and Cancel.
 - `src/lib/email/send-confirmation.ts` (delete; the queue replaces it).
 
 **Tests:**
@@ -154,6 +158,7 @@ These five inputs aren't covered by the spec's own tests, but they're the ones m
 
 **Docs:**
 - `docs/runbooks/payment-exceptions.md` (new)
+- `docs/known-issues.md`: entries the payment work fixes are removed
 - `CLAUDE.md`
 - the spec: migration numbers, and the result of the live verification
 
@@ -2910,6 +2915,8 @@ git commit -m "feat: create orders in one transaction, checked against their fro
 
 **Files:**
 - Create: `src/lib/fetch-all-rows.ts`
+- Modify: `src/lib/engine/order-validation.ts` and `src/lib/engine/purchase-snapshot.ts` (the snapshot freezes each dancer's `relationship` and `school_id`, from migration 018)
+- Modify: `tests/engine/checkout-config.test.ts` (Task 5's typed snapshot literal gains those two fields)
 - Modify: `src/lib/types/feis-listing.ts` (the new `Registration` fields)
 - Modify: `src/app/feiseanna/[id]/register/actions.ts`: Submit (`createDraftRegistration`) and the resume lookup (`getExistingRegistration`). `cancelRegistration` moves below Submit unchanged, and `createCheckoutSession` stays as it is; Task 12 replaces both.
 - Modify: `src/app/feiseanna/[id]/register/page.tsx` (competitions read in pages)
@@ -2930,16 +2937,19 @@ git commit -m "feat: create orders in one transaction, checked against their fro
   - `getExistingRegistration(feisListingId)`, now read-only. It resolves to `{ registration }`, `{ registration: null, expired?: true }` or `{ error }`.
   - `currentHousehold(): Promise<HouseholdContext>`, private to `actions.ts`. Task 12's Pay and Cancel use it.
   - `fetchAllRows<Row>(fetchPage, pageSize?): Promise<Row[]>`, `RowPage<Row>` and `ROWS_PER_PAGE` (`src/lib/fetch-all-rows.ts`)
+  - `OrderDancer` gains `school_id` and `relationship`, optional as they are on `Dancer`. `SnapshotDancer` gains `school_id: string | null` and `relationship: 'household' | 'guest'`, always set. Any later typed `PurchaseSnapshot` literal needs both.
   - `Registration` gains `purchase_snapshot`, `checkout_claim_id`, `checkout_expires_at` and `paid_at`.
   - On the entry page, `requestedEntries` and the `orderBreakdown` state (with `setOrderBreakdown`), which Task 12's handlers use. `FamilyReceipt`'s `onPay` becomes `(consentAccepted: boolean) => void`.
 
-The entry page and Submit must apply one rule. The page imports `ageCutoffDateFor`, `toDancerProfile` and `feeEntriesFor` from the engine and deletes its own copies (`ageCutoffOf`, `profileOf` and its fee-entry builder). So a dance the page offers, and the total it shows, are the ones Submit accepts and charges. The page now sends only `consentAccepted`: its made-up `consentAcceptedAt` and `consentIp: '0.0.0.0'` go. The old consent literals in `actions.ts` go too, since `buildCreateOrderPayload` records `CONSENT_VERSION` and `PLATFORM_TERMS_VERSION`.
+The entry page and Submit must apply one rule. The page imports `ageCutoffDateFor`, `toDancerProfile` and `feeEntriesFor` from the engine and deletes its own copies (`ageCutoffOf`, `profileOf` and its fee-entry builder). So a dance the page offers, and the total it shows, are the ones Submit accepts and charges. The page now sends only `consentAccepted`: its made-up `consentAcceptedAt` and `consentIp: '0.0.0.0'` go. The old consent literals in `actions.ts` go too. The consent and terms versions now come only from `buildCreateOrderPayload` (`CONSENT_VERSION` and `PLATFORM_TERMS_VERSION`), and `create_order` stamps the consent time itself; Task 6's tests pin both versions to those constants.
+
+Migration 018 (on `main`) lets an account holder enter a guest, someone else's child, and links each dancer to a shared schools list. A guest is still a row under the account holder's household, so the household check doesn't change. But an order keeps what it was placed with, so the snapshot now freezes each dancer's `relationship` and `school_id` too (Steps 2–3).
 
 PostgREST returns at most 1000 rows per request: `max_rows` in `supabase/config.toml`, and Supabase's default. A large syllabus can pass that, and a short list would change which age group counts as a dancer's own. So Submit and the page read competitions through `fetchAllRows`. The helper never touches Supabase: the caller passes the query, so queries stay in the page and the action.
 
 `handlePay` keeps its one click: it submits the order, then calls the old `createCheckoutSession`, which Task 12 replaces. Components need no tests (project rule §5). The paging helper is tested, and the two engine functions the page now shares get direct tests.
 
-No browser run in this task. `.env.local` points at the live project, which gets migrations 012–017 only in Task 16 Step 6, so `create_order` doesn't exist there yet. Task 16 Step 10 runs the whole flow.
+No browser run in this task. `.env.local` points at the live project, which gets migrations 012–017 only in Task 16 Step 7, so `create_order` doesn't exist there yet. Task 16 Step 11 runs the whole flow.
 
 - [ ] **Step 1: Give the server its database key and fee percentage locally**
 
@@ -2952,7 +2962,135 @@ grep -cE '^(SUPABASE_SERVICE_ROLE_KEY|STRIPE_APPLICATION_FEE_PERCENT)=' .env.loc
 ```
 Expected: `2`. Don't print the values.
 
-- [ ] **Step 2: Write the failing paging tests**
+- [ ] **Step 2: Write the failing tests for guests and school links (migration 018)**
+
+In `tests/engine/purchase-snapshot.test.ts`:
+
+(a) The first `priceOrder` test checks the frozen dancer exactly, so it gains the two fields, in that literal's own style. Replace:
+```ts
+      dance_levels: { reel: 'NOV', slip_jig: 'NOV' }, competition_age: 8,
+    }])
+```
+with:
+```ts
+      dance_levels: { reel: 'NOV', slip_jig: 'NOV' }, competition_age: 8, school_id: null,
+      relationship: 'household',
+    }])
+```
+
+(b) Append to `tests/engine/purchase-snapshot.test.ts`:
+```ts
+// Migration 018: the order keeps whether each dancer was a guest (someone else's child the
+// account holder entered) and their school's id, as they were when it was placed
+describe('guests and school links', () => {
+  it('freezes whether each dancer is a guest, and their school id', () => {
+    const niamh: OrderDancer = {
+      ...aoife,
+      id: 'd2',
+      first_name: 'Niamh',
+      relationship: 'guest',
+      school_id: 'b7a1c2d3-0000-4000-8000-000000000018'
+    }
+    const { snapshot } = priceOrder(
+      input({
+        dancers: [aoife, niamh],
+        entries: [
+          { dancerId: 'd1', competitionId: 'c1' },
+          { dancerId: 'd2', competitionId: 'c2' }
+        ]
+      })
+    )
+    // Aoife has neither field set, so she freezes as a household dancer with no school link
+    expect(snapshot.dancers.map((d) => [d.id, d.relationship, d.school_id])).toEqual([
+      ['d1', 'household', null],
+      ['d2', 'guest', 'b7a1c2d3-0000-4000-8000-000000000018']
+    ])
+  })
+})
+```
+
+(c) Append to `tests/engine/order-validation.test.ts`:
+```ts
+// Migration 018: a guest is someone else's child the account holder enters. The row still belongs
+// to the account holder's household, so the household check treats a guest like any dancer.
+describe('guest dancers', () => {
+  it("accepts a guest under the account holder's household, and refuses one under another", () => {
+    const guest = dancer({ relationship: 'guest' })
+    expect(validateOrderRequest(request({ dancers: [guest] })).ok).toBe(true)
+    expect(validateOrderRequest(request({ dancers: [{ ...guest, household_id: 'h2' }] }))).toEqual({
+      ok: false,
+      error: 'One or more dancers do not belong to your family.'
+    })
+  })
+})
+```
+
+Run: `npx vitest run tests/engine/purchase-snapshot.test.ts tests/engine/order-validation.test.ts`
+Expected: FAIL in the two snapshot tests, because the frozen dancer has no `school_id` or `relationship` yet. The guest test already passes: guests need no new rule.
+
+- [ ] **Step 3: Freeze each dancer's guest status and school link, and commit**
+
+(a) In `src/lib/engine/order-validation.ts`, replace:
+```ts
+  | 'school_name' | 'tcrg_name' | 'championship_status' | 'is_active'
+```
+with:
+```ts
+  | 'school_name' | 'school_id' | 'relationship' | 'tcrg_name' | 'championship_status' | 'is_active'
+```
+
+(b) In `src/lib/engine/purchase-snapshot.ts`, replace (in `interface SnapshotDancer`):
+```ts
+  school_name: string | null
+  tcrg_name: string | null
+```
+with:
+```ts
+  school_name: string | null
+  /** The shared schools list's row for school_name (migration 018), or null */
+  school_id: string | null
+  /** 'guest': someone else's child the account holder entered (migration 018) */
+  relationship: 'household' | 'guest'
+  tcrg_name: string | null
+```
+
+(c) In `src/lib/engine/purchase-snapshot.ts`, replace (in `priceOrder`):
+```ts
+        school_name: dancer.school_name,
+        tcrg_name: dancer.tcrg_name,
+```
+with:
+```ts
+        school_name: dancer.school_name,
+        // Optional on Dancer; without them, a household dancer with no school link
+        school_id: dancer.school_id ?? null,
+        relationship: dancer.relationship ?? 'household',
+        tcrg_name: dancer.tcrg_name,
+```
+
+(d) In `tests/engine/checkout-config.test.ts` (Task 5), whose typed `PurchaseSnapshot` now needs both fields, replace:
+```ts
+    dancers: [{ id: 'd1', first_name: 'Aoife', last_name: 'Walsh', school_name: null, tcrg_name: null,
+      date_of_birth: '2018-05-01', gender: 'female', championship_status: 'none', dance_levels: {}, competition_age: 8 }],
+```
+with:
+```ts
+    dancers: [{ id: 'd1', first_name: 'Aoife', last_name: 'Walsh', school_name: null,
+      school_id: null, relationship: 'household', tcrg_name: null, date_of_birth: '2018-05-01',
+      gender: 'female', championship_status: 'none', dance_levels: {}, competition_age: 8 }],
+```
+
+The household check is unchanged: a guest is a row under the account holder's household, so `validateOrderRequest` and `create_order` already accept them. Submit (Step 8) and the register page read dancers with `*`, so both columns reach the snapshot. Task 13's test purchase is cast `as unknown as PurchaseSnapshot`, so it compiles without them.
+
+Run: `npx vitest run tests/engine/ && npx tsc --noEmit`
+Expected: PASS, and no type errors.
+
+```bash
+git add src/lib/engine/order-validation.ts src/lib/engine/purchase-snapshot.ts tests/engine/order-validation.test.ts tests/engine/purchase-snapshot.test.ts tests/engine/checkout-config.test.ts
+git commit -m "feat: the purchase snapshot freezes whether each dancer is a guest, and their school link"
+```
+
+- [ ] **Step 4: Write the failing paging tests**
 
 Create `tests/fetch-all-rows.test.ts`:
 ```ts
@@ -3033,7 +3171,7 @@ describe('fetchAllRows', () => {
 Run: `npx vitest run tests/fetch-all-rows.test.ts`
 Expected: FAIL, because `@/lib/fetch-all-rows` doesn't exist yet.
 
-- [ ] **Step 3: Write the paging helper**
+- [ ] **Step 5: Write the paging helper**
 
 Create `src/lib/fetch-all-rows.ts`:
 ```ts
@@ -3076,7 +3214,7 @@ export async function fetchAllRows<Row>(
 Run: `npx vitest run tests/fetch-all-rows.test.ts`
 Expected: PASS (7 tests).
 
-- [ ] **Step 4: Pin the engine functions the entry page will share**
+- [ ] **Step 6: Pin the engine functions the entry page will share**
 
 In `tests/engine/order-validation.test.ts`:
 
@@ -3178,7 +3316,7 @@ describe('feeEntriesFor', () => {
 Run: `npx vitest run tests/engine/order-validation.test.ts tests/engine/purchase-snapshot.test.ts`
 Expected: PASS. Both functions already exist (Task 4). These tests pin them now that the entry page depends on them as well as Submit.
 
-- [ ] **Step 5: Add the new order fields to the shared type**
+- [ ] **Step 7: Add the new order fields to the shared type**
 
 In `src/lib/types/feis-listing.ts`:
 
@@ -3213,7 +3351,7 @@ with:
 
 The type-only import cycle with `purchase-snapshot.ts` is fine; both sides import types only.
 
-- [ ] **Step 6: Rewrite Submit and the resume lookup**
+- [ ] **Step 8: Rewrite Submit and the resume lookup**
 
 In `src/app/feiseanna/[id]/register/actions.ts`, replace everything above `export async function createCheckoutSession` with the code below. That is the imports, `getExistingRegistration`, `cancelRegistration`, `CreateDraftInput` and `createDraftRegistration`. The code below includes `cancelRegistration` unchanged, moved below Submit, so Task 12 can replace it and `createCheckoutSession` in one piece. Leave `createCheckoutSession` exactly as it is. Until Task 12, those two still write `registrations` directly, which 012 refuses. Nothing deploys before Task 16, and Task 12 replaces them well before that.
 ```ts
@@ -3484,7 +3622,7 @@ What changed, and why:
 - `currentHousehold()` has an explicit return type. Without it, TypeScript adds `error?: undefined` to the success shape, and `'error' in ctx` no longer narrows.
 - The refusal messages are keyed by `CreateOrderResult`'s reasons, so a reason added to `create_order` won't compile until it has a message. `create_order` counts a paid order as active too, so its message covers both cases.
 
-- [ ] **Step 7: Read every competition on the register page**
+- [ ] **Step 9: Read every competition on the register page**
 
 In `src/app/feiseanna/[id]/register/page.tsx`:
 
@@ -3552,7 +3690,7 @@ with:
 
 `fetchAllRows` throws on a query error, and the page's existing `catch` turns that into its "could not load" message. Loading only the enabled competitions here is fine: `getEligibleCompetitions` judges only enabled ones, so the page and Submit, which passes the full list, reach the same answer.
 
-- [ ] **Step 8: The entry page uses the engine's rules and sends only the agreement**
+- [ ] **Step 10: The entry page uses the engine's rules and sends only the agreement**
 
 In `src/components/registration/entry-page.tsx`:
 
@@ -3806,9 +3944,9 @@ with:
       setOrderBreakdown(null)
 ```
 
-`<FamilyReceipt onPay={handlePay} … />` stays as it is: Step 9 changes the prop's type to match. The rest of `handlePay` (the old `createCheckoutSession` call) stays until Task 12. `requestedEntries` is both what the page prices and what Pay submits. So a competition the cart remembers but this feis no longer offers is left out of both. Before, it was left out of the price but still submitted.
+`<FamilyReceipt onPay={handlePay} … />` stays as it is: Step 11 changes the prop's type to match. The rest of `handlePay` (the old `createCheckoutSession` call, and `parentPaymentMessage`, which reads that call's errors) stays until Task 12. `requestedEntries` is both what the page prices and what Pay submits. So a competition the cart remembers but this feis no longer offers is left out of both. Before, it was left out of the price but still submitted.
 
-- [ ] **Step 9: Pay reports the agreement box**
+- [ ] **Step 11: Pay reports the agreement box**
 
 In `src/components/registration/family-receipt.tsx`:
 
@@ -3858,17 +3996,17 @@ with:
 
 `CONSENT_VERSION`'s comment already says the checkbox wording here must change with it. The attribute makes the link visible where the wording lives, and in the page itself.
 
-- [ ] **Step 10: Type-check, lint and build**
+- [ ] **Step 12: Type-check, lint and build**
 
 Run: `npx tsc --noEmit && npm run lint && npm run build`
 Expected: all three succeed. `npm run lint` reports no errors; the one warning, in `feis-wizard-step2.tsx`, was there before.
 
-- [ ] **Step 11: Run all tests**
+- [ ] **Step 13: Run all tests**
 
 Run: `npm test && npm run test:db`
 Expected: PASS.
 
-- [ ] **Step 12: Commit**
+- [ ] **Step 14: Commit**
 
 ```bash
 git add src/lib/fetch-all-rows.ts tests/fetch-all-rows.test.ts tests/engine/order-validation.test.ts tests/engine/purchase-snapshot.test.ts src/lib/types/feis-listing.ts 'src/app/feiseanna/[id]/register/actions.ts' 'src/app/feiseanna/[id]/register/page.tsx' src/components/registration/entry-page.tsx src/components/registration/family-receipt.tsx
@@ -6868,7 +7006,7 @@ git commit -m "feat: the webhook confirms, records failures and expires checkout
 - Create: `src/lib/email/email-config.ts`
 - Modify: `src/lib/payment-review-messages.ts` (add `PaymentReview` and `openReviewsByOrder`)
 - Modify: `src/app/feiseanna/[id]/register/actions.ts` (Pay and Cancel through the workflow)
-- Modify: `src/components/registration/entry-page.tsx` (handle the new result kinds)
+- Modify: `src/components/registration/entry-page.tsx` (handle the new result kinds; delete `parentPaymentMessage`)
 - Modify: `src/components/registration/family-receipt.tsx` (resume a started payment; the agreement box only before an order exists)
 - Modify: `src/app/feiseanna/[id]/register/success/page.tsx` (rewrite)
 - Modify: `src/app/dashboard/page.tsx`
@@ -6901,7 +7039,7 @@ The entry page keeps its one click: `handlePay` submits the order if there isn't
 
 The success page doesn't wait for the webhook: it confirms from Stripe (spec §9) through the sync, which finds the order's own session by its claim and never uses the URL's `session_id` (Review Focus 2). It shows message A or B for an open case, and message C while confirmation is unfinished, all worded by `reviewMessage` (spec §10). It mentions the confirmation email only when email is set up. Today it says an email was sent even when none can be.
 
-No component tests (UI, project rule §5). The two new pure helpers are tested, and Tasks 9–11 cover the logic underneath. There's no browser walk-through here: `.env.local` points at the live project, which gets 012–017 only in Task 16 Step 6, so Submit, Pay and the case views can't run against it before then. Task 16 Step 10 walks through them end to end.
+No component tests (UI, project rule §5). The two new pure helpers are tested, and Tasks 9–11 cover the logic underneath. There's no browser walk-through here: `.env.local` points at the live project, which gets 012–017 only in Task 16 Step 7, so Submit, Pay and the case views can't run against it before then. Task 16 Step 11 walks through them end to end.
 
 - [ ] **Step 1: Write the failing helper tests**
 
@@ -7240,6 +7378,26 @@ How each answer is handled:
 - **`try_again`** stays on the entry page. Its message is either "Payment is taking a moment to start" or message C.
 - **The old `holdOver` workaround is gone.** Cancel answers `cancelled` for an order that has already expired.
 
+Then delete `parentPaymentMessage`. It turned the old Pay's error strings into parent wording, and nothing calls it now: every Pay answer carries its own message. Its "Stripe not connected" case is the workflow's `stripe_not_connected` block (Task 5), and its "expired" case is `start_again`. Replace:
+```tsx
+/** The checkout's error, said the way a parent needs to hear it. */
+function parentPaymentMessage(error: string | undefined): string {
+  if (error?.toLowerCase().includes('not connected stripe')) {
+    return 'This feis isn’t taking card payments yet. Your places are held for 30 minutes, so try again later, or contact the organiser.'
+  }
+  if (error?.toLowerCase().includes('expired')) {
+    return 'The hold on these places ran out. Choose Change entries to start again.'
+  }
+  return 'The payment page could not be opened. Try again in a moment.'
+}
+
+export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: string }) {
+```
+with:
+```tsx
+export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: string }) {
+```
+
 - [ ] **Step 6: The receipt resumes a started payment**
 
 In `src/components/registration/family-receipt.tsx`:
@@ -7524,7 +7682,7 @@ export default async function SuccessPage({ params, searchParams }: SuccessPageP
               )}
               {emailOn && (
                 <p className="mt-4 text-[13px] text-muted-foreground">
-                  A copy of this confirmation is emailed to the address you sign in with.
+                  We&apos;ll also email this confirmation to the address you sign in with.
                 </p>
               )}
             </div>
@@ -7631,7 +7789,7 @@ export default async function SuccessPage({ params, searchParams }: SuccessPageP
 }
 ```
 What the page shows, most important first:
-- **Paid**, from the order or from the sync: the redesigned receipt. The email line appears only when `emailIsConfigured` holds. Until then confirmations wait unsent, so the page makes no claim about email (this fixes a known issue).
+- **Paid**, from the order or from the sync: the redesigned receipt. It never says an email was sent. Sending is queued (Task 13), and parents can't read the queue, so at render time the page can't know whether the email has gone. When `emailIsConfigured` holds, it says one will follow. Until then confirmations wait unsent, so it says nothing about email. This fixes a known issue.
 - **An open case on this order:** message A, with its reference and a link to My entries; or message B, with "Try again". A case outranks the order's status: an expired order with a late payment shows A, not "Your hold ran out".
 - **Message C:** Stripe says the checkout is complete but confirmation isn't finished. The page checks again every 5 seconds. A case only the payments contacts see also shows C, but without the refresh, since nothing will change by itself.
 - **Otherwise the order's own status:** the redesigned panels, with the same wording as before. `pending_payment` checks again every 5 seconds (it was 3; each check now also asks Stripe). Each refresh re-runs the sync, so the page catches up even if the webhook is slow.
@@ -7689,6 +7847,9 @@ const REVIEW_STYLES: Record<PaymentReview['message_code'], { tag: string; label:
     label: 'Payment didn’t go through'
   }
 }
+
+// The orders My entries lists, besides any with an open payment case
+const LISTED_STATUSES: RegistrationStatus[] = ['paid', 'pending_payment', 'draft']
 ```
 
 (d) Replace:
@@ -7717,11 +7878,18 @@ with:
   const [{ data: dancers }, { data: registrations }, reviews] = await Promise.all([
 ```
 
-(f) Replace:
+(f) `main` filters the query to paid, pending and draft orders. That would hide an expired or cancelled order that has an open case, such as a late payment's message A. So the filter moves after the reviews load, and keeps those orders too. Replace:
 ```tsx
       .eq('household_id', household.id)
+      // Released and expired holds never became entries
+      .in('status', ['paid', 'pending_payment', 'draft'])
       .order('created_at', { ascending: false })
   ])
+
+  const typedRegistrations = (registrations ?? []) as (Registration & {
+    feis_listings: { name: string; feis_date: string; venue_name: string }
+    registration_entries: { dancer_id: string; feis_competitions: { display_name: string } }[]
+  })[]
 ```
 with:
 ```tsx
@@ -7731,6 +7899,15 @@ with:
   ])
   if (reviews.error) console.error('Payment reviews failed to load:', reviews.error)
   const openReviews = openReviewsByOrder((reviews.data ?? []) as PaymentReview[])
+
+  // Released and expired holds never became entries, so they stay off the list, unless the order
+  // has an open payment case: then it shows, so its message A or B reaches the family
+  const typedRegistrations = (
+    (registrations ?? []) as (Registration & {
+      feis_listings: { name: string; feis_date: string; venue_name: string }
+      registration_entries: { dancer_id: string; feis_competitions: { display_name: string } }[]
+    })[]
+  ).filter((reg) => LISTED_STATUSES.includes(reg.status) || openReviews.has(reg.id))
 ```
 
 (g) Replace:
@@ -7841,6 +8018,7 @@ with:
 ```
 
 What this does:
+- My entries keeps `main`'s rule, listing only paid, pending and draft orders, plus any order with an open payment case. An expired order whose late payment is being checked still shows its message A.
 - Each order shows its open case's message, A or B, and its tag says "Being checked" or "Payment didn’t go through" instead of the order's status.
 - A family who backed out of Stripe (`pending_payment`) gets "Finish and pay". It leads to the entry page, where "Return to payment" resumes the same checkout.
 - The old wizard's `?step=3` is dropped; the entry page has no steps.
