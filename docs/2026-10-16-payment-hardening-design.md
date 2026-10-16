@@ -172,7 +172,7 @@ TypeScript makes the Stripe and Resend calls between these functions, and calls 
 - It then creates exactly two policies on each:
   - parent `SELECT` on their own household's rows (`auth_household_id()`)
   - organiser `SELECT` for their own feiseanna
-- Every privilege is revoked from `PUBLIC`, `anon` and `authenticated`, and `authenticated` gets `SELECT` back. On Postgres 17 a list of named privileges would leave `MAINTAIN`, which can lock the table.
+- Every privilege is revoked from `PUBLIC`, `anon` and `authenticated`. `authenticated` then gets `SELECT` back: table-level on entries and snapshots, and column by column on `registrations` (below). On Postgres 17 a list of named privileges would leave `MAINTAIN`, which can lock the table.
 - 012 turns row-level security on for the three tables itself, instead of trusting earlier migrations, because the live database was migrated by hand.
 - `TRUNCATE` is revoked from the service role and refused by a trigger for every role, so it can't get around the delete rules.
 - `authenticated` reads `registrations` column by column. `consent_ip` and `checkout_config` are left out (Decision 7), so neither organisers nor parents can read a parent's IP address or the checkout details. The service role and the payment functions still can. App code reads orders through one shared column list, never `*`, and a test keeps that list equal to the grant.
