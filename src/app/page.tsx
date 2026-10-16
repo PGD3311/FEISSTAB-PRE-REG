@@ -1,5 +1,5 @@
 import Link from 'next/link'
-import { createClient } from '@/lib/supabase/server'
+import { createClient, getSignedInUser } from '@/lib/supabase/server'
 import { parseLocalDate } from '@/lib/format'
 import { entryDeadline, formatDeadline } from '@/lib/entry-display'
 import { CoverBand, type CoverLink } from '@/components/feis-cover'
@@ -25,7 +25,21 @@ function siteName(url: string): string {
   }
 }
 
-function FeisRow({ feis, now }: { feis: FeisListing; now: Date }) {
+type FeisRowListing = Pick<
+  FeisListing,
+  | 'id'
+  | 'name'
+  | 'feis_date'
+  | 'venue_name'
+  | 'venue_address'
+  | 'timezone'
+  | 'reg_closes_at'
+  | 'late_reg_closes_at'
+  | 'logo_url'
+  | 'website_url'
+>
+
+function FeisRow({ feis, now }: { feis: FeisRowListing; now: Date }) {
   const deadline = entryDeadline(feis, now)
   const timeZone = feis.timezone ?? 'America/New_York'
   const date = feis.feis_date ? parseLocalDate(feis.feis_date) : null
@@ -121,16 +135,13 @@ function FeisRow({ feis, now }: { feis: FeisListing; now: Date }) {
 export default async function HomePage() {
   const supabase = await createClient()
 
-  const [
-    {
-      data: { user }
-    },
-    { data: listings, error }
-  ] = await Promise.all([
-    supabase.auth.getUser(),
+  const [user, { data: listings, error }] = await Promise.all([
+    getSignedInUser(supabase),
     supabase
       .from('feis_listings')
-      .select('*')
+      .select(
+        'id, name, feis_date, venue_name, venue_address, timezone, reg_closes_at, late_reg_closes_at, logo_url, website_url'
+      )
       .eq('status', 'open')
       .order('feis_date', { ascending: true })
   ])
@@ -140,7 +151,7 @@ export default async function HomePage() {
   }
 
   const now = new Date()
-  const feiseanna = (listings ?? []) as FeisListing[]
+  const feiseanna = (listings ?? []) as FeisRowListing[]
   const open = feiseanna.filter((f) => !entryDeadline(f, now).closed)
   const closed = feiseanna.filter((f) => entryDeadline(f, now).closed)
 

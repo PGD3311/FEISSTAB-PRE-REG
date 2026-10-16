@@ -1,6 +1,6 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
-import { createClient } from '@/lib/supabase/server'
+import { createClient, getSignedInUser } from '@/lib/supabase/server'
 import { competitionFeeCents, getActiveLateTier } from '@/lib/engine/fee-calculator'
 import { formatCents, sortLateTiers } from '@/lib/format'
 import { entryDeadline, groupForEntryForm } from '@/lib/entry-display'
@@ -47,13 +47,8 @@ export default async function FeisDetailPage({ params }: PageParams) {
   const { id } = await params
   const supabase = await createClient()
 
-  const [
-    {
-      data: { user }
-    },
-    { data: listingData, error: listingError }
-  ] = await Promise.all([
-    supabase.auth.getUser(),
+  const [user, { data: listingData, error: listingError }] = await Promise.all([
+    getSignedInUser(supabase),
     supabase.from('feis_listings').select('*').eq('id', id).eq('status', 'open').single()
   ])
 
@@ -94,7 +89,14 @@ export default async function FeisDetailPage({ params }: PageParams) {
   return (
     <div className="min-h-screen bg-[var(--color-feis-cream)]">
       <FeisCover
-        listing={listing}
+        listing={{
+          name: listing.name,
+          feis_date: listing.feis_date,
+          venue_name: listing.venue_name,
+          timezone: listing.timezone,
+          reg_closes_at: listing.reg_closes_at,
+          late_reg_closes_at: listing.late_reg_closes_at
+        }}
         lateFeeCents={deadline.closed ? null : (activeTier?.fee_cents ?? null)}
         links={[{ href: '/', label: 'All feiseanna' }]}
       />

@@ -22,8 +22,21 @@ export async function createClient() {
             // Called from a Server Component, where cookies are read-only.
             // The middleware refreshes the session cookie on the next request.
           }
-        },
-      },
+        }
+      }
     }
   )
+}
+
+type ServerClient = Awaited<ReturnType<typeof createClient>>
+
+/**
+ * The signed-in user, or null for a visitor. Use this in server components instead of
+ * awaiting `auth.getUser()` directly: for a visitor that call resolves to an "Auth session
+ * missing" error object, and React's dev tools record awaited values, which broke
+ * signed-out pages in development (see docs/known-issues.md).
+ */
+export async function getSignedInUser(supabase: ServerClient) {
+  const { data } = await supabase.auth.getUser()
+  return data.user
 }

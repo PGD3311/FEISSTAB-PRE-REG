@@ -22,3 +22,6 @@ Found during the October 2026 restyle and left for later. RunFeis is for Northea
 
 ## Already tracked elsewhere
 Payment and Stripe webhook problems, and changing entries after paying, are being handled on the `payment-hardening` branch.
+
+## Fixed: signed-out pages crashed in development ("frame.join is not a function")
+React 19.2's dev mode records the value of every `await` in a server component. For a signed-out visitor, `supabase.auth.getUser()` resolves to an "Auth session missing" error object. When a page also passed whole feis listings (including the full syllabus) to small components, React's dev data budget ran out, the error's stack was replaced with an "omitted" note, and Next 16.2.0's dev tools crashed reading it. Fixed by reading the user through `getSignedInUser()` in `src/lib/supabase/server.ts` and passing components only the fields they show. Keep both habits on public pages.
