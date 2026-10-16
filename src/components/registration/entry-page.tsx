@@ -57,6 +57,17 @@ function cartFrom(registration: RegistrationWithEntries | null): Cart {
   return cart
 }
 
+/** The checkout's error, said the way a parent needs to hear it. */
+function parentPaymentMessage(error: string | undefined): string {
+  if (error?.toLowerCase().includes('not connected stripe')) {
+    return 'This feis isn’t taking card payments yet. Your places are held for 30 minutes, so try again later, or contact the organiser.'
+  }
+  if (error?.toLowerCase().includes('expired')) {
+    return 'The hold on these places ran out. Choose Change entries to start again.'
+  }
+  return 'The payment page could not be opened. Try again in a moment.'
+}
+
 function profileOf(dancer: DancerWithLevels): DancerProfile {
   const danceLevels: Record<string, string> = {}
   for (const dl of dancer.dance_levels) danceLevels[dl.dance_key] = dl.level_key
@@ -214,7 +225,7 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
 
       const checkout = await createCheckoutSession(regId)
       if ('error' in checkout) {
-        setError(checkout.error ?? 'The payment page could not be opened. Try again.')
+        setError(parentPaymentMessage(checkout.error))
         return
       }
       if (checkout.url) window.location.href = checkout.url

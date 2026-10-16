@@ -167,7 +167,7 @@ export default async function FeisDetailPage({ params }: PageParams) {
           </section>
         </div>
 
-        <aside className="grid gap-7 lg:sticky lg:top-6">
+        <aside className="order-first grid gap-7 lg:sticky lg:top-6 lg:order-none">
           <div className="feis-receipt px-[18px] pt-5 pb-[18px]">
             {deadline.closed ? (
               <>

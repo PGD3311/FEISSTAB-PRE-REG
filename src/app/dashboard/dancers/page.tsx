@@ -2,7 +2,8 @@ import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { parseLocalDate } from '@/lib/format'
-import type { Dancer } from '@/lib/types/feis-listing'
+import { dancerLevelSummary } from '@/lib/entry-display'
+import type { Dancer, Level } from '@/lib/types/feis-listing'
 import { PageTitle } from '@/components/page-title'
 import { NumberTags } from '@/components/registration/entered-feiseanna'
 import { loadEnteredFeiseanna } from './entered-feiseanna'
@@ -18,11 +19,13 @@ function calcAge(dob: string): number {
   return age
 }
 
-const CHAMPIONSHIP_LABELS: Record<string, string> = {
-  none: 'Solo dancer',
-  prelim: 'Prelim Championship',
-  open: 'Open Championship'
-}
+// The standard grade levels; a feis's own syllabus can name others, which show by key
+const LEVELS: Level[] = [
+  { key: 'BG', label: 'Beginner', rank: 1 },
+  { key: 'AB', label: 'Advanced Beginner', rank: 2 },
+  { key: 'NOV', label: 'Novice', rank: 3 },
+  { key: 'PW', label: 'Prizewinner', rank: 4 }
+]
 
 export default async function DancersPage() {
   const supabase = await createClient()
@@ -42,7 +45,7 @@ export default async function DancersPage() {
 
   const { data: dancers, error } = await supabase
     .from('dancers')
-    .select('*')
+    .select('*, dance_levels:dancer_dance_levels(level_key)')
     .eq('household_id', household.id)
     .eq('is_active', true)
     .order('first_name', { ascending: true })
@@ -51,7 +54,7 @@ export default async function DancersPage() {
     console.error('Failed to load dancers:', error)
   }
 
-  const activeDancers = (dancers ?? []) as Dancer[]
+  const activeDancers = (dancers ?? []) as (Dancer & { dance_levels: { level_key: string }[] })[]
   const entered = await loadEnteredFeiseanna(
     supabase,
     activeDancers.map((d) => d.id)
@@ -110,7 +113,7 @@ export default async function DancersPage() {
                     {dancer.school_name ? `, ${dancer.school_name}` : ''}
                   </p>
                   <p className="mt-0.5 text-sm">
-                    {CHAMPIONSHIP_LABELS[dancer.championship_status] ?? dancer.championship_status}
+                    {dancerLevelSummary(dancer.dance_levels, LEVELS, dancer.championship_status)}
                   </p>
                   <NumberTags entries={entered[dancer.id] ?? []} />
                 </div>

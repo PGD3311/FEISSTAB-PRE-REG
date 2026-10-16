@@ -65,6 +65,8 @@ export default async function DashboardPage() {
       `
       )
       .eq('household_id', household.id)
+      // Released and expired holds never became entries
+      .in('status', ['paid', 'pending_payment', 'draft'])
       .order('created_at', { ascending: false })
   ])
 
