@@ -4,7 +4,7 @@ import { Suspense, useState, type FormEvent } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { useSupabase } from '@/hooks/use-supabase'
-import { CoverBand } from '@/components/feis-cover'
+import { AuthLayout, AUTH_BUTTON, AUTH_INPUT } from '@/components/auth/auth-layout'
 
 function SignupForm() {
   const supabase = useSupabase()
@@ -68,11 +68,7 @@ function SignupForm() {
 
   if (success) {
     return (
-      <AuthShell
-        title="Check your email"
-        intro="One more step and your account is ready."
-        loginHref={loginHref}
-      >
+      <AuthShell title="Check your email" loginHref={loginHref}>
         <p className="text-[15px]">
           We sent a confirmation link to <span className="font-bold break-all">{email}</span>. Open
           it to activate your account, then sign in.
@@ -90,7 +86,7 @@ function SignupForm() {
       intro="One account for your whole family. Organisers sign up here too."
       loginHref={loginHref}
     >
-      <form onSubmit={handleSubmit} className="space-y-4">
+      <form onSubmit={handleSubmit} className="grid gap-5">
         {error && (
           <p
             role="alert"
@@ -111,8 +107,7 @@ function SignupForm() {
             autoComplete="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            className="feis-input"
-            placeholder="you@example.com"
+            className={AUTH_INPUT}
           />
         </div>
 
@@ -128,9 +123,12 @@ function SignupForm() {
             autoComplete="new-password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            className="feis-input"
-            placeholder="At least 6 characters"
+            className={AUTH_INPUT}
+            aria-describedby="password-hint"
           />
+          <p id="password-hint" className="mt-1.5 text-[13px] text-muted-foreground">
+            At least 6 characters.
+          </p>
         </div>
 
         <div>
@@ -145,25 +143,14 @@ function SignupForm() {
             autoComplete="new-password"
             value={confirmPassword}
             onChange={(e) => setConfirmPassword(e.target.value)}
-            className="feis-input"
+            className={AUTH_INPUT}
           />
         </div>
 
-        <button
-          type="submit"
-          disabled={loading}
-          className="feis-btn feis-btn-primary w-full py-2.5"
-        >
+        <button type="submit" disabled={loading} className={`${AUTH_BUTTON} mt-1`}>
           {loading ? 'Creating your account…' : 'Create account'}
         </button>
       </form>
-
-      <p className="mt-6 border-t border-[#E2DCCD] pt-4 text-sm text-muted-foreground">
-        Already have an account?{' '}
-        <Link href={loginHref} className="feis-link">
-          Sign in
-        </Link>
-      </p>
     </AuthShell>
   )
 }
@@ -175,34 +162,25 @@ function AuthShell({
   children
 }: {
   title: string
-  intro: string
+  intro?: string
   loginHref: string
   children: React.ReactNode
 }) {
   return (
-    <div className="flex min-h-screen flex-col bg-[var(--color-feis-cream)]">
-      <CoverBand
-        links={[
-          { href: '/', label: 'Feiseanna' },
-          { href: loginHref, label: 'Sign in' }
-        ]}
-      >
-        <div className="min-w-0 pt-3">
-          <h1 className="feis-cover-title text-[clamp(34px,6vw,56px)]">{title}</h1>
-          <p className="mt-1.5 max-w-[52ch] opacity-85">{intro}</p>
-        </div>
-      </CoverBand>
-
-      <main className="mx-auto w-full max-w-md flex-1 px-4 py-10">
-        <div className="feis-card p-6 sm:p-8">{children}</div>
-      </main>
-    </div>
+    <AuthLayout
+      headline="One family account for every feis."
+      title={title}
+      intro={intro}
+      switchLink={{ href: loginHref, label: 'Sign in', prompt: 'Already have an account?' }}
+    >
+      {children}
+    </AuthLayout>
   )
 }
 
 export default function SignupPage() {
   return (
-    <Suspense>
+    <Suspense fallback={<div className="min-h-screen bg-[var(--color-feis-cream)]" />}>
       <SignupForm />
     </Suspense>
   )

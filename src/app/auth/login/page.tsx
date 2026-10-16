@@ -2,9 +2,8 @@
 
 import { Suspense, useState, type FormEvent } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import Link from 'next/link'
 import { useSupabase } from '@/hooks/use-supabase'
-import { CoverBand } from '@/components/feis-cover'
+import { AuthLayout, AUTH_BUTTON, AUTH_INPUT } from '@/components/auth/auth-layout'
 
 function LoginForm() {
   const supabase = useSupabase()
@@ -50,88 +49,63 @@ function LoginForm() {
     : '/auth/signup'
 
   return (
-    <div className="flex min-h-screen flex-col bg-[var(--color-feis-cream)]">
-      <CoverBand
-        links={[
-          { href: '/', label: 'Feiseanna' },
-          { href: signupHref, label: 'Create an account' }
-        ]}
-      >
-        <div className="min-w-0 pt-3">
-          <h1 className="feis-cover-title text-[clamp(34px,6vw,56px)]">Sign in</h1>
-          <p className="mt-1.5 max-w-[52ch] opacity-85">
-            Families and organisers use the same RunFeis account.
+    <AuthLayout
+      headline="Enter your dancers once. Pay once. Done."
+      title="Sign in"
+      intro="Families and organisers use the same RunFeis account."
+      switchLink={{ href: signupHref, label: 'Create an account', prompt: 'New to RunFeis?' }}
+    >
+      <form onSubmit={handleSubmit} className="grid gap-5">
+        {error && (
+          <p
+            role="alert"
+            className="border-l-4 border-destructive bg-white px-4 py-3 text-sm text-destructive"
+          >
+            {error}
           </p>
+        )}
+
+        <div>
+          <label htmlFor="email" className="feis-label">
+            Email
+          </label>
+          <input
+            id="email"
+            type="email"
+            required
+            autoComplete="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className={AUTH_INPUT}
+          />
         </div>
-      </CoverBand>
 
-      <main className="mx-auto w-full max-w-md flex-1 px-4 py-10">
-        <div className="feis-card p-6 sm:p-8">
-          <form onSubmit={handleSubmit} className="space-y-4">
-            {error && (
-              <p
-                role="alert"
-                className="border-l-4 border-destructive bg-white px-4 py-3 text-sm text-destructive"
-              >
-                {error}
-              </p>
-            )}
-
-            <div>
-              <label htmlFor="email" className="feis-label">
-                Email
-              </label>
-              <input
-                id="email"
-                type="email"
-                required
-                autoComplete="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="feis-input"
-                placeholder="you@example.com"
-              />
-            </div>
-
-            <div>
-              <label htmlFor="password" className="feis-label">
-                Password
-              </label>
-              <input
-                id="password"
-                type="password"
-                required
-                autoComplete="current-password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="feis-input"
-              />
-            </div>
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="feis-btn feis-btn-primary w-full py-2.5"
-            >
-              {loading ? 'Signing in…' : 'Sign in'}
-            </button>
-          </form>
-
-          <p className="mt-6 border-t border-[#E2DCCD] pt-4 text-sm text-muted-foreground">
-            New to RunFeis?{' '}
-            <Link href={signupHref} className="feis-link">
-              Create an account
-            </Link>
-          </p>
+        <div>
+          <label htmlFor="password" className="feis-label">
+            Password
+          </label>
+          <input
+            id="password"
+            type="password"
+            required
+            autoComplete="current-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className={AUTH_INPUT}
+          />
         </div>
-      </main>
-    </div>
+
+        <button type="submit" disabled={loading} className={`${AUTH_BUTTON} mt-1`}>
+          {loading ? 'Signing in…' : 'Sign in'}
+        </button>
+      </form>
+    </AuthLayout>
   )
 }
 
 export default function LoginPage() {
   return (
-    <Suspense>
+    <Suspense fallback={<div className="min-h-screen bg-[var(--color-feis-cream)]" />}>
       <LoginForm />
     </Suspense>
   )
