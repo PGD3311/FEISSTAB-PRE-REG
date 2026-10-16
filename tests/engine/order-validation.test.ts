@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { validateOrderRequest, type OrderDancer, type OrderRequest } from '@/lib/engine/order-validation'
+import {
+  ageCutoffDateFor,
+  validateOrderRequest,
+  type OrderDancer,
+  type OrderRequest
+} from '@/lib/engine/order-validation'
 import type { FeisCompetition, Level } from '@/lib/types/feis-listing'
 
 const NOW = new Date('2026-11-01T12:00:00Z')
@@ -122,5 +127,26 @@ describe('validateOrderRequest', () => {
 
     expect(validateOrderRequest(request({ ...listing, entries: [{ dancerId: 'd1', competitionId: 'c12' }] })).ok)
       .toBe(true)
+  })
+})
+
+// Feis age is a dancer's age on January 1 of the feis year. The entry page counts it the same way.
+describe('ageCutoffDateFor', () => {
+  // `now` is in 2031, away from both the feis dates below and the real clock
+  const in2031 = new Date('2031-06-15T12:00:00Z')
+
+  it('uses the listing cutoff date when it has one', () => {
+    const cutoff = ageCutoffDateFor({ age_cutoff_date: '2026-12-01', feis_date: '2027-03-14' }, NOW)
+    expect(cutoff).toEqual(new Date(2026, 11, 1))
+  })
+
+  it('falls back to January 1 of the feis year', () => {
+    const cutoff = ageCutoffDateFor({ age_cutoff_date: null, feis_date: '2026-11-15' }, in2031)
+    expect(cutoff).toEqual(new Date(2026, 0, 1))
+  })
+
+  it('falls back to January 1 of the current year when there is no feis date either', () => {
+    const cutoff = ageCutoffDateFor({ age_cutoff_date: null, feis_date: null }, in2031)
+    expect(cutoff).toEqual(new Date(2031, 0, 1))
   })
 })

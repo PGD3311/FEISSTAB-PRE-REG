@@ -37,11 +37,17 @@ export interface OrderRequest {
 
 export type OrderValidation = { ok: true; ageCutoffDate: Date } | { ok: false; error: string }
 
-/** The date ages are counted on, with the same fallbacks as the register page. */
+/**
+ * The date ages are counted on: the listing's cutoff date if it has one, otherwise January 1 of
+ * the feis year (feis age is a dancer's age on January 1), or of `now`'s year if the feis has no
+ * date either. The entry page counts ages the same way.
+ */
 export function ageCutoffDateFor(listing: Pick<FeisListing, 'age_cutoff_date' | 'feis_date'>, now: Date): Date {
   if (listing.age_cutoff_date) return parseLocalDate(listing.age_cutoff_date)
-  if (listing.feis_date) return parseLocalDate(listing.feis_date)
-  return now
+  const year = listing.feis_date
+    ? parseLocalDate(listing.feis_date).getFullYear()
+    : now.getFullYear()
+  return new Date(year, 0, 1)
 }
 
 /** When registration closes: the late deadline if there is one, otherwise the normal one. */
