@@ -55,16 +55,27 @@ interface FeisCoverProps {
   lateFeeCents: number | null
   links: CoverLink[]
   signOut?: boolean
+  /** A clear way back, shown above the feis name */
+  back?: CoverLink
 }
 
 /** One feis's cover: its name, date and venue, and when entries close. */
-export function FeisCover({ listing, lateFeeCents, links, signOut = false }: FeisCoverProps) {
+export function FeisCover({ listing, lateFeeCents, links, signOut = false, back }: FeisCoverProps) {
   const deadline = entryDeadline(listing)
   const timeZone = listing.timezone ?? 'America/New_York'
 
   return (
     <CoverBand links={links} signOut={signOut}>
       <div className="min-w-0 pt-3">
+        {back && (
+          <Link
+            href={back.href}
+            className="mb-2 inline-flex items-center gap-1.5 text-sm text-white/80 underline-offset-4 hover:text-white hover:underline"
+          >
+            <span aria-hidden="true">‹</span>
+            {back.label}
+          </Link>
+        )}
         <h1 className="feis-cover-title text-[clamp(34px,6vw,56px)]">{listing.name}</h1>
         <p className="mt-1.5 opacity-85">
           {formatDate(listing.feis_date, {

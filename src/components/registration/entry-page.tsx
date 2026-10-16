@@ -283,11 +283,9 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
       <FeisCover
         listing={listing}
         lateFeeCents={activeLateTier?.fee_cents ?? null}
-        links={[
-          { href: `/feiseanna/${feisId}`, label: 'Feis details and fees' },
-          { href: '/dashboard', label: 'My entries' }
-        ]}
+        links={[{ href: '/dashboard', label: 'My entries' }]}
         signOut
+        back={{ href: `/feiseanna/${feisId}`, label: 'Back to feis details and fees' }}
       />
 
       <main className="mx-auto grid max-w-6xl items-start gap-7 px-4 py-7 sm:px-7 lg:grid-cols-[minmax(0,1fr)_300px]">

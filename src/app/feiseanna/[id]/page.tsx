@@ -98,11 +98,13 @@ export default async function FeisDetailPage({ params }: PageParams) {
           late_reg_closes_at: listing.late_reg_closes_at
         }}
         lateFeeCents={deadline.closed ? null : (activeTier?.fee_cents ?? null)}
-        links={[
-          { href: '/', label: 'All feiseanna' },
-          ...(user ? [{ href: '/dashboard', label: 'My entries' }] : [])
-        ]}
+        links={
+          user
+            ? [{ href: '/dashboard', label: 'My entries' }]
+            : [{ href: `/auth/login?redirect=${encodeURIComponent(enterHref)}`, label: 'Sign in' }]
+        }
         signOut={!!user}
+        back={{ href: '/', label: 'Back to all feiseanna' }}
       />
 
       <main className="mx-auto grid max-w-6xl items-start gap-7 px-4 py-7 sm:px-7 lg:grid-cols-[minmax(0,1fr)_300px]">
