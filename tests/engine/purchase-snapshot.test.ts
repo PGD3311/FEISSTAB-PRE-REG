@@ -37,6 +37,7 @@ function input(overrides: Partial<PriceOrderInput> = {}): PriceOrderInput {
     now: new Date('2026-11-01T12:00:00Z'),
     ageCutoffDate: parseLocalDate('2027-01-01'),
     levels: [{ key: 'NOV', label: 'Novice', rank: 3 }],
+    feisTermsUrl: null,
     dancers: [aoife],
     competitions: [comp('c1', '210R', 'reel'), comp('c2', '210SJ', 'slip_jig')],
     entries: [{ dancerId: 'd1', competitionId: 'c1' }, { dancerId: 'd1', competitionId: 'c2' }],
@@ -92,6 +93,20 @@ describe('priceOrder', () => {
     expect(snapshot.competitions[0]).toMatchObject(asSold)
   })
 
+  it('records the RunFeis terms each order was placed under', () => {
+    const { snapshot } = priceOrder(input())
+    expect(snapshot.rules).toMatchObject({
+      consent_version: 'consent-2026-10-16',
+      platform_terms_version: 'runfeis-terms-2026-10-16/privacy-2026-10-16',
+    })
+  })
+
+  it("records the feis's own terms link, or null when it has none", () => {
+    const withTerms = priceOrder(input({ feisTermsUrl: 'https://newportfeis.example/terms' }))
+    expect(withTerms.snapshot.rules.feis_terms_url).toBe('https://newportfeis.example/terms')
+    expect(priceOrder(input()).snapshot.rules.feis_terms_url).toBeNull()
+  })
+
   it('counts a birthday on the cutoff date as the older age, the same as the cart', () => {
     const born = { ...aoife, date_of_birth: '2017-01-01' }
     const { snapshot } = priceOrder(input({ dancers: [born] }))
@@ -116,6 +131,12 @@ describe('buildCreateOrderPayload', () => {
     expect(payload.consent_ip).toBe('203.0.113.7')
     expect(payload.entries.map((e) => e.feis_competition_id)).toEqual(['c1', 'c2'])
     expect(payload.purchase_snapshot.entries).toHaveLength(2)
+  })
+
+  it('carries the current RunFeis consent and terms versions', () => {
+    const payload = buildCreateOrderPayload(priceOrder(input()), { applicationFeePercent: 5, consentIp: null })
+    expect(payload.consent_version).toBe('consent-2026-10-16')
+    expect(payload.platform_terms_version).toBe('runfeis-terms-2026-10-16/privacy-2026-10-16')
   })
 
   /** The application fee on an order whose total is exactly `totalCents` (one entry, no event fee) */

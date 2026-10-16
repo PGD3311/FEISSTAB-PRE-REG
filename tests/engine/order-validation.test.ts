@@ -41,7 +41,8 @@ function request(overrides: Partial<OrderRequest> = {}): OrderRequest {
     householdId: 'h1',
     listing: {
       status: 'open', reg_opens_at: '2026-10-01T00:00:00Z', reg_closes_at: '2026-12-01T00:00:00Z',
-      late_reg_closes_at: null, age_cutoff_date: '2027-01-01', feis_date: '2027-03-14', levels: LEVELS,
+      late_reg_closes_at: null, age_cutoff_date: '2027-01-01', feis_date: '2027-03-14', terms_url: null,
+      levels: LEVELS,
     },
     dancers: [dancer()],
     competitions: [competition()],

@@ -11,7 +11,8 @@ import type {
 
 export type OrderListing = Pick<
   FeisListing,
-  'status' | 'reg_opens_at' | 'reg_closes_at' | 'late_reg_closes_at' | 'age_cutoff_date' | 'feis_date'
+  | 'status' | 'reg_opens_at' | 'reg_closes_at' | 'late_reg_closes_at' | 'age_cutoff_date'
+  | 'feis_date' | 'terms_url'
 > & { levels: Level[] }
 
 export type OrderDancer = Pick<

@@ -1,6 +1,11 @@
 import { calculateAgeOnDate } from '@/lib/engine/eligibility'
 import { calculateFees } from '@/lib/engine/fee-calculator'
-import { toDancerProfile, type OrderDancer, type RequestedEntry } from '@/lib/engine/order-validation'
+import {
+  toDancerProfile,
+  type OrderDancer,
+  type OrderListing,
+  type RequestedEntry
+} from '@/lib/engine/order-validation'
 import type {
   ChampionshipStatus,
   FeeBreakdown,
@@ -13,8 +18,10 @@ import type {
 
 export const PRICING_VERSION = 'pricing-2026-10-16'
 export const ELIGIBILITY_VERSION = 'eligibility-2026-10-16'
-export const CONSENT_VERSION = 'tos-v1-2026-03-01'
-export const PLATFORM_TERMS_VERSION = 'platform-v1-2026-03-01'
+/** The consent checkbox wording in family-receipt.tsx; must change in the same commit as it */
+export const CONSENT_VERSION = 'consent-2026-10-16'
+/** The RunFeis /terms and /privacy pages; must change in the same commit as either page */
+export const PLATFORM_TERMS_VERSION = 'runfeis-terms-2026-10-16/privacy-2026-10-16'
 
 export interface SnapshotDancer {
   id: string
@@ -71,6 +78,8 @@ export interface PurchaseSnapshot {
     levels: Level[]
     consent_version: string
     platform_terms_version: string
+    /** The feis's own terms link the family agreed to, if it has one */
+    feis_terms_url: string | null
     pricing_version: string
     eligibility_version: string
   }
@@ -80,6 +89,7 @@ export interface PriceOrderInput {
   now: Date
   ageCutoffDate: Date
   levels: Level[]
+  feisTermsUrl: OrderListing['terms_url']
   dancers: OrderDancer[]
   competitions: FeisCompetition[]
   entries: RequestedEntry[]
@@ -223,6 +233,7 @@ export function priceOrder(input: PriceOrderInput): PricedOrder {
       levels: input.levels,
       consent_version: CONSENT_VERSION,
       platform_terms_version: PLATFORM_TERMS_VERSION,
+      feis_terms_url: input.feisTermsUrl,
       pricing_version: PRICING_VERSION,
       eligibility_version: ELIGIBILITY_VERSION
     }
