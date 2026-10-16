@@ -317,6 +317,22 @@
     font-weight: 700;
   }
 
+  /* Long reading pages (terms, privacy): narrow headings, comfortable lists */
+  .feis-prose h2 {
+    font-stretch: 75%;
+    font-weight: 800;
+    font-size: 22px;
+    line-height: 1.15;
+    margin-bottom: 0.5rem;
+  }
+  .feis-prose ul {
+    list-style: disc;
+    padding-left: 1.25rem;
+  }
+  .feis-prose li + li {
+    margin-top: 0.35rem;
+  }
+
   .feis-link {
     color: var(--color-feis-green);
     font-weight: 700;
