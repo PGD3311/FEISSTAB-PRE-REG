@@ -1,3 +1,5 @@
+import type { PurchaseSnapshot } from '@/lib/engine/purchase-snapshot'
+
 // Listing status
 export type ListingStatus = 'draft' | 'open' | 'closed' | 'launched'
 
@@ -270,6 +272,11 @@ export interface Registration {
   consent_version: string | null
   platform_terms_version: string | null
   hold_expires_at: string | null
+  /** What the order was checked and priced on, frozen at Submit; null on orders from before that */
+  purchase_snapshot: PurchaseSnapshot | null
+  checkout_claim_id: string | null
+  checkout_expires_at: string | null
+  paid_at: string | null
   created_at: string
   updated_at: string
 }

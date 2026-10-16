@@ -3,6 +3,7 @@ import { calculateFees } from '@/lib/engine/fee-calculator'
 import {
   buildCreateOrderPayload,
   CONSENT_VERSION,
+  feeEntriesFor,
   pairLineItems,
   PRICING_VERSION,
   priceOrder,
@@ -214,6 +215,44 @@ describe('guests and school links', () => {
     expect(snapshot.dancers.map((d) => [d.id, d.relationship, d.school_id])).toEqual([
       ['d1', 'household', null],
       ['d2', 'guest', 'b7a1c2d3-0000-4000-8000-000000000018']
+    ])
+  })
+})
+
+// The entry page prices its cart with this too, so the total it shows is the one Submit charges
+describe('feeEntriesFor', () => {
+  it("copies each competition's category, own fee and family-max flag, in entry order", () => {
+    const champ: FeisCompetition = {
+      ...comp('c3', 'PC1', 'reel'),
+      competition_type: 'championship',
+      fee_category: 'prelim_champ'
+    }
+    const special: FeisCompetition = {
+      ...comp('c4', 'SP1', 'reel'),
+      competition_type: 'special',
+      fee_cents: 2000,
+      exclude_from_family_cap: true
+    }
+    const competitions = new Map([champ, special].map((c) => [c.id, c]))
+    const entries = [
+      { dancerId: 'd2', competitionId: 'c4' },
+      { dancerId: 'd1', competitionId: 'c3' }
+    ]
+    expect(feeEntriesFor(entries, competitions)).toEqual([
+      {
+        dancer_id: 'd2',
+        fee_category: 'solo',
+        fee_cents_override: 2000,
+        exclude_from_family_cap: true,
+        is_day_of: false
+      },
+      {
+        dancer_id: 'd1',
+        fee_category: 'prelim_champ',
+        fee_cents_override: null,
+        exclude_from_family_cap: false,
+        is_day_of: false
+      }
     ])
   })
 })

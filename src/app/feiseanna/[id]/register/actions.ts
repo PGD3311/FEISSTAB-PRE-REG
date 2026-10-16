@@ -1,52 +1,221 @@
 'use server'
 
-import { createClient } from '@/lib/supabase/server'
-import { REGISTRATION_COLUMNS } from '@/lib/registration-columns'
+import { headers } from 'next/headers'
+import { createClient, getSignedInUser } from '@/lib/supabase/server'
+import { createServiceClient, type ServiceClient } from '@/lib/supabase/service'
 import { canTransitionRegistration } from '@/lib/registration-states'
-import { calculateFees } from '@/lib/engine/fee-calculator'
-import { isHouseholdComplete } from '@/lib/household'
+import { clientIpFrom } from '@/lib/engine/consent'
+import {
+  validateOrderRequest,
+  type OrderDancer,
+  type RequestedEntry
+} from '@/lib/engine/order-validation'
+import {
+  buildCreateOrderPayload,
+  priceOrder,
+  type CreateOrderPayload
+} from '@/lib/engine/purchase-snapshot'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
+import { isHouseholdComplete, REQUIRED_HOUSEHOLD_FIELDS } from '@/lib/household'
+import { REGISTRATION_COLUMNS } from '@/lib/registration-columns'
+import { createOrderStore, type CreateOrderResult } from '@/app/_payments/order-store'
+import { supabaseRpc } from '@/app/_payments/rpc'
 import type {
-  RegistrationStatus,
+  FeeBreakdown,
   FeeSchedule,
-  FeeEntry,
-  FeeCategoryType
+  FeisCompetition,
+  FeisListing,
+  Household,
+  Registration,
+  RegistrationEntry,
+  RegistrationStatus
 } from '@/lib/types/feis-listing'
 
-export async function getExistingRegistration(feisListingId: string) {
+type RefusalReason = Extract<CreateOrderResult, { status: 'refused' }>['reason']
+
+/** What a family is told when create_order refuses after the checks here have passed */
+const REFUSAL_MESSAGES: Record<RefusalReason, string> = {
+  listing_closed: 'Registration for this feis is not open.',
+  outside_window: 'Registration for this feis has closed.',
+  active_order_exists: 'You already have entries for this feis. Reload this page to see them.'
+}
+
+type HouseholdContext =
+  | { error: string }
+  | {
+      supabase: Awaited<ReturnType<typeof createClient>>
+      household: Pick<Household, 'id' | (typeof REQUIRED_HOUSEHOLD_FIELDS)[number]>
+    }
+
+/**
+ * The signed-in parent's household, read with their own client: this is what proves an order
+ * is theirs (spec §4, §6, §7).
+ */
+async function currentHousehold(): Promise<HouseholdContext> {
   const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) return { error: 'Not authenticated' }
+  const user = await getSignedInUser(supabase)
+  if (!user) return { error: 'Please sign in again to continue.' }
 
-  const { data: household } = await supabase
+  const { data: household, error } = await supabase
     .from('households')
-    .select('id')
+    .select('id, first_name, last_name, phone, address_line1, city, state_region, postal_code')
     .eq('user_id', user.id)
-    .single()
+    .maybeSingle()
+  if (error) return { error: 'Your family details could not be loaded. Please try again.' }
+  if (!household) return { error: 'Please finish setting up your family account first.' }
+  return { supabase, household }
+}
 
-  if (!household) return { error: 'No household' }
+/**
+ * The family's unpaid order for this feis while it still holds its places. Read-only: a hold
+ * that has passed already counts as expired here, and the expiry job makes the change (spec §13).
+ */
+export async function getExistingRegistration(feisListingId: string): Promise<
+  | { error: string }
+  | {
+      registration: (Registration & { registration_entries: RegistrationEntry[] }) | null
+      expired?: true
+    }
+> {
+  const ctx = await currentHousehold()
+  if ('error' in ctx) return { error: ctx.error }
 
-  const { data: registration } = await supabase
+  const { data: registration, error } = await ctx.supabase
     .from('registrations')
     .select(`${REGISTRATION_COLUMNS}, registration_entries(*)`)
     .eq('feis_listing_id', feisListingId)
-    .eq('household_id', household.id)
+    .eq('household_id', ctx.household.id)
     .in('status', ['draft', 'pending_payment'])
-    .single()
-
+    .maybeSingle()
+  if (error) return { error: 'Your entries could not be loaded. Please try again.' }
   if (!registration) return { registration: null }
 
-  // Check if hold is expired
-  if (registration.hold_expires_at && new Date(registration.hold_expires_at) < new Date()) {
-    await supabase
-      .from('registrations')
-      .update({ status: 'expired' })
-      .eq('id', registration.id)
+  if (registration.hold_expires_at && new Date(registration.hold_expires_at) <= new Date()) {
     return { registration: null, expired: true }
   }
+  return {
+    registration: registration as Registration & { registration_entries: RegistrationEntry[] }
+  }
+}
 
-  return { registration }
+/** What Submit checks and prices an order against, read fresh with the service role */
+async function loadOrderInputs(service: ServiceClient, feisListingId: string, householdId: string) {
+  const [listing, feeSchedule, dancers, competitions] = await Promise.all([
+    service.from('feis_listings').select('*').eq('id', feisListingId).maybeSingle(),
+    service.from('fee_schedules').select('*').eq('feis_listing_id', feisListingId).maybeSingle(),
+    service
+      .from('dancers')
+      .select('*, dance_levels:dancer_dance_levels(dance_key, level_key)')
+      .eq('household_id', householdId),
+    // Every competition of this feis, enabled or not, since eligibility is judged against the
+    // whole list. Read in pages: PostgREST returns at most 1000 rows per request.
+    fetchAllRows<FeisCompetition>((from, to) =>
+      service
+        .from('feis_competitions')
+        .select('*', { count: 'exact' })
+        .eq('feis_listing_id', feisListingId)
+        .order('id', { ascending: true })
+        .range(from, to)
+    )
+  ])
+  const failed = listing.error ?? feeSchedule.error ?? dancers.error
+  if (failed) throw new Error(failed.message)
+  return {
+    listing: listing.data as FeisListing | null,
+    feeSchedule: feeSchedule.data as FeeSchedule | null,
+    dancers: (dancers.data ?? []) as OrderDancer[],
+    competitions
+  }
+}
+
+interface CreateDraftInput {
+  feisListingId: string
+  entries: RequestedEntry[]
+  /** The family ticked the agreement. The server records when, and from which address. */
+  consentAccepted: boolean
+}
+
+/** Submit (spec §4): check, price and create the order on the server, in one database step */
+export async function createDraftRegistration(
+  input: CreateDraftInput
+): Promise<
+  | { error: string }
+  | { registrationId: string; totalCents: number; holdExpiresAt: string; breakdown: FeeBreakdown }
+> {
+  if (input.consentAccepted !== true) return { error: 'Please accept the terms to continue.' }
+
+  const ctx = await currentHousehold()
+  if ('error' in ctx) return { error: ctx.error }
+  if (!isHouseholdComplete(ctx.household)) {
+    return { error: 'Please add your family details (name, phone and address) before registering.' }
+  }
+
+  const service = createServiceClient()
+  const loaded = await loadOrderInputs(service, input.feisListingId, ctx.household.id).catch(
+    (err: unknown) => {
+      console.error('Submit could not load the feis:', err)
+      return null
+    }
+  )
+  if (!loaded) return { error: 'The feis details could not be loaded. Please try again.' }
+  const { listing, feeSchedule, dancers, competitions } = loaded
+  if (!listing) return { error: 'This feis could not be found.' }
+  if (!feeSchedule) return { error: "This feis hasn't set its fees yet, so entries can't be paid." }
+
+  const now = new Date()
+  const levels = listing.syllabus_snapshot?.levels ?? []
+  const validation = validateOrderRequest({
+    now,
+    householdId: ctx.household.id,
+    listing: { ...listing, levels },
+    dancers,
+    competitions,
+    entries: input.entries
+  })
+  if (!validation.ok) return { error: validation.error }
+
+  let payload: CreateOrderPayload
+  let breakdown: FeeBreakdown
+  try {
+    const priced = priceOrder({
+      now,
+      ageCutoffDate: validation.ageCutoffDate,
+      levels,
+      feisTermsUrl: listing.terms_url,
+      dancers,
+      competitions,
+      entries: input.entries,
+      feeSchedule
+    })
+    payload = buildCreateOrderPayload(priced, {
+      // parseFloat keeps a fractional percent. Missing, it parses as NaN, which the engine refuses
+      // like any value outside 0 to 100, so Submit stops instead of pricing wrongly (spec §4)
+      applicationFeePercent: Number.parseFloat(process.env.STRIPE_APPLICATION_FEE_PERCENT ?? ''),
+      consentIp: clientIpFrom(await headers())
+    })
+    breakdown = priced.breakdown
+  } catch (err) {
+    console.error('Submit could not price the order:', err)
+    return { error: 'Your entries could not be priced. Please try again later.' }
+  }
+
+  try {
+    const result = await createOrderStore(supabaseRpc(service)).createOrder(
+      ctx.household.id,
+      input.feisListingId,
+      payload
+    )
+    if (result.status === 'refused') return { error: REFUSAL_MESSAGES[result.reason] }
+    return {
+      registrationId: result.registration_id,
+      totalCents: payload.total_cents,
+      holdExpiresAt: result.hold_expires_at,
+      breakdown
+    }
+  } catch (err) {
+    console.error('create_order failed:', err)
+    return { error: 'Your entries could not be saved. Please try again.' }
+  }
 }
 
 export async function cancelRegistration(registrationId: string) {
@@ -86,153 +255,6 @@ export async function cancelRegistration(registrationId: string) {
   }
 
   return { success: true as const }
-}
-
-interface CreateDraftInput {
-  feisListingId: string
-  entries: { dancerId: string; competitionId: string }[]
-  consentAcceptedAt: string
-  consentIp: string
-}
-
-export async function createDraftRegistration(input: CreateDraftInput) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { error: 'Not authenticated' }
-
-  const { data: household } = await supabase
-    .from('households')
-    .select('id, first_name, last_name, phone, address_line1, city, state_region, postal_code')
-    .eq('user_id', user.id)
-    .single()
-
-  if (!household) return { error: 'Household not found' }
-  if (!isHouseholdComplete(household)) {
-    return { error: 'Please add your family details (name, phone and address) before registering.' }
-  }
-
-  // Fetch fee schedule and listing in parallel (both use feisListingId)
-  const [{ data: feeSchedule, error: feeError }, { data: listing }] = await Promise.all([
-    supabase.from('fee_schedules').select('*').eq('feis_listing_id', input.feisListingId).single(),
-    supabase
-      .from('feis_listings')
-      .select('reg_closes_at, late_reg_closes_at, stripe_account_id')
-      .eq('id', input.feisListingId)
-      .single(),
-  ])
-
-  if (feeError || !feeSchedule) return { error: 'Fee schedule not found' }
-  if (!listing) return { error: 'Feis listing not found' }
-
-  // Validate registration window is open
-  const now = new Date()
-  if (listing.reg_closes_at) {
-    const regCloses = new Date(listing.reg_closes_at)
-    if (listing.late_reg_closes_at) {
-      const lateCloses = new Date(listing.late_reg_closes_at)
-      if (now > lateCloses) {
-        return { error: 'Registration for this feis has closed.' }
-      }
-    } else if (now > regCloses) {
-      return { error: 'Registration for this feis has closed.' }
-    }
-  }
-
-  // Validate dancers and competitions in parallel
-  const dancerIds = [...new Set(input.entries.map(e => e.dancerId))]
-  const compIds = [...new Set(input.entries.map(e => e.competitionId))]
-
-  const [{ data: validDancers }, { data: competitions }] = await Promise.all([
-    supabase.from('dancers').select('id').eq('household_id', household.id).in('id', dancerIds),
-    supabase
-      .from('feis_competitions')
-      .select('id, fee_category, fee_cents, exclude_from_family_cap')
-      .eq('feis_listing_id', input.feisListingId)
-      .eq('enabled', true)
-      .in('id', compIds),
-  ])
-
-  if (!validDancers || validDancers.length !== dancerIds.length) {
-    return { error: 'One or more dancers do not belong to your family.' }
-  }
-
-  if (!competitions || competitions.length !== compIds.length) {
-    return { error: 'One or more competitions are not available.' }
-  }
-
-  const compMap = new Map(competitions.map(c => [c.id, c]))
-
-  const feeEntries: FeeEntry[] = input.entries.map(e => {
-    const comp = compMap.get(e.competitionId)
-    return {
-      dancer_id: e.dancerId,
-      fee_category: (comp?.fee_category ?? 'solo') as FeeCategoryType,
-      fee_cents_override: comp?.fee_cents ?? null,
-      exclude_from_family_cap: comp?.exclude_from_family_cap ?? false,
-      is_day_of: false
-    }
-  })
-
-  const breakdown = calculateFees(feeSchedule as FeeSchedule, feeEntries, now)
-  const isLate = breakdown.active_late_tier !== null
-
-  const holdExpiresAt = new Date(now.getTime() + 30 * 60 * 1000).toISOString()
-
-  const { data: reg, error: regError } = await supabase
-    .from('registrations')
-    .insert({
-      feis_listing_id: input.feisListingId,
-      household_id: household.id,
-      status: 'draft',
-      total_cents: breakdown.grand_total_cents,
-      application_fee_cents: Math.round(
-        breakdown.grand_total_cents * (parseInt(process.env.STRIPE_APPLICATION_FEE_PERCENT ?? '5', 10) / 100)
-      ),
-      event_fee_cents: breakdown.event_fee_cents,
-      is_late: isLate,
-      consent_accepted_at: input.consentAcceptedAt,
-      consent_version: 'tos-v1-2026-03-01',
-      platform_terms_version: 'platform-v1-2026-03-01',
-      consent_ip: input.consentIp,
-      hold_expires_at: holdExpiresAt
-    })
-    .select('id')
-    .single()
-
-  if (regError || !reg) {
-    console.error('Failed to create registration:', regError)
-    return { error: 'Failed to create registration. You may already have an active registration for this feis.' }
-  }
-
-  // Line items come back in the same order as input.entries
-  const entryRows = input.entries.map((e, i) => {
-    const item = breakdown.line_items[i]
-    return {
-      registration_id: reg.id,
-      dancer_id: e.dancerId,
-      feis_competition_id: e.competitionId,
-      fee_category: feeEntries[i].fee_category,
-      base_fee_cents: item.base_fee_cents,
-      late_fee_cents: item.late_fee_cents,
-      day_of_surcharge_cents: item.day_of_surcharge_cents
-    }
-  })
-
-  const { error: entriesError } = await supabase
-    .from('registration_entries')
-    .insert(entryRows)
-
-  if (entriesError) {
-    console.error('Failed to create entries:', entriesError)
-    await supabase.from('registrations').delete().eq('id', reg.id)
-    return { error: 'Failed to create registration entries' }
-  }
-
-  return {
-    registrationId: reg.id,
-    totalCents: breakdown.grand_total_cents,
-    holdExpiresAt
-  }
 }
 
 export async function createCheckoutSession(registrationId: string) {

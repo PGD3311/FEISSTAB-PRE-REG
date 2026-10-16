@@ -5,6 +5,7 @@ import { useParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useSupabase } from '@/hooks/use-supabase'
 import { REGISTRATION_COLUMNS } from '@/lib/registration-columns'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { isHouseholdComplete } from '@/lib/household'
 import { getExistingRegistration } from './actions'
 import {
@@ -70,7 +71,7 @@ export default function RegisterPage() {
           return
         }
 
-        const [listingResult, feesResult, compsResult, dancersResult, heldResult, paidResult] =
+        const [listingResult, feesResult, competitions, dancersResult, heldResult, paidResult] =
           await Promise.all([
             supabase
               .from('feis_listings')
@@ -79,12 +80,18 @@ export default function RegisterPage() {
               .eq('status', 'open')
               .single(),
             supabase.from('fee_schedules').select('*').eq('feis_listing_id', feisId).single(),
-            supabase
-              .from('feis_competitions')
-              .select('*')
-              .eq('feis_listing_id', feisId)
-              .eq('enabled', true)
-              .order('sort_order', { ascending: true }),
+            // Every enabled competition, read in pages: PostgREST returns at most 1000 rows per
+            // request, and Submit judges eligibility against the feis's whole list
+            fetchAllRows<FeisCompetition>((from, to) =>
+              supabase
+                .from('feis_competitions')
+                .select('*', { count: 'exact' })
+                .eq('feis_listing_id', feisId)
+                .eq('enabled', true)
+                .order('sort_order', { ascending: true })
+                .order('id', { ascending: true })
+                .range(from, to)
+            ),
             supabase
               .from('dancers')
               .select('*, dance_levels:dancer_dance_levels(*)')
@@ -108,7 +115,7 @@ export default function RegisterPage() {
           })
           return
         }
-        for (const result of [compsResult, dancersResult, paidResult]) {
+        for (const result of [dancersResult, paidResult]) {
           if (result.error) throw result.error
         }
         if ('error' in heldResult) throw new Error(heldResult.error)
@@ -136,7 +143,7 @@ export default function RegisterPage() {
               : (household.first_name ?? 'Your family'),
             listing: listingResult.data as FeisListing,
             feeSchedule: (feesResult.data as FeeSchedule | null) ?? null,
-            competitions: (compsResult.data ?? []) as FeisCompetition[],
+            competitions,
             dancers,
             heldRegistration: (heldResult.registration as RegistrationWithEntries | null) ?? null,
             paidRegistration: (paidResult.data as RegistrationWithEntries | null) ?? null,

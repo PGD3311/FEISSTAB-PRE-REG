@@ -5,6 +5,12 @@ import Link from 'next/link'
 import { formatCents, parseLocalDate } from '@/lib/format'
 import { calculateFees, getActiveLateTier } from '@/lib/engine/fee-calculator'
 import { calculateAgeOnDate, getEligibleCompetitions } from '@/lib/engine/eligibility'
+import {
+  ageCutoffDateFor,
+  toDancerProfile,
+  type RequestedEntry
+} from '@/lib/engine/order-validation'
+import { feeEntriesFor } from '@/lib/engine/purchase-snapshot'
 import { dancerLevelSummary, entryDeadline, entryFeesPerDancer } from '@/lib/entry-display'
 import {
   createDraftRegistration,
@@ -21,9 +27,8 @@ import {
 import type {
   Dancer,
   DancerDanceLevel,
-  DancerProfile,
   EligibleCompetition,
-  FeeEntry,
+  FeeBreakdown,
   FeeSchedule,
   FeisCompetition,
   FeisListing,
@@ -68,30 +73,11 @@ function parentPaymentMessage(error: string | undefined): string {
   return 'The payment page could not be opened. Try again in a moment.'
 }
 
-function profileOf(dancer: DancerWithLevels): DancerProfile {
-  const danceLevels: Record<string, string> = {}
-  for (const dl of dancer.dance_levels) danceLevels[dl.dance_key] = dl.level_key
-  return {
-    dob: parseLocalDate(dancer.date_of_birth),
-    gender: dancer.gender,
-    championshipStatus: dancer.championship_status,
-    danceLevels
-  }
-}
-
-/** Feis age is the dancer's age on January 1 of the feis year. */
-function ageCutoffOf(listing: FeisListing): Date {
-  if (listing.age_cutoff_date) return parseLocalDate(listing.age_cutoff_date)
-  const year = listing.feis_date
-    ? parseLocalDate(listing.feis_date).getFullYear()
-    : new Date().getFullYear()
-  return new Date(year, 0, 1)
-}
-
 export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: string }) {
   const { listing, feeSchedule, competitions, dancers, paidRegistration, numbers } = data
   const levels = listing.syllabus_snapshot?.levels ?? []
-  const ageCutoffDate = ageCutoffOf(listing)
+  // The cutoff Submit uses: the organiser's date, otherwise January 1 of the feis year
+  const ageCutoffDate = useMemo(() => ageCutoffDateFor(listing, new Date()), [listing])
   const deadline = entryDeadline(listing)
 
   const [cart, setCart] = useState<Cart>(() => cartFrom(paidRegistration ?? data.heldRegistration))
@@ -104,6 +90,10 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
   )
   const [paymentStarted, setPaymentStarted] = useState(
     data.heldRegistration?.status === 'pending_payment'
+  )
+  // The price the server froze for the order in progress; the cart's own sum is an estimate
+  const [orderBreakdown, setOrderBreakdown] = useState<FeeBreakdown | null>(
+    data.heldRegistration?.purchase_snapshot?.pricing.breakdown ?? null
   )
   const [loading, setLoading] = useState(false)
   // The pinned total bar hides while the full receipt is on screen
@@ -131,41 +121,38 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
 
   const eligibleByDancer = useMemo(() => {
     const map: Record<string, EligibleCompetition[]> = {}
-    const cutoff = ageCutoffOf(listing)
     const syllabusLevels = listing.syllabus_snapshot?.levels ?? []
     for (const dancer of dancers) {
       map[dancer.id] = getEligibleCompetitions(
-        profileOf(dancer),
+        toDancerProfile(dancer),
         competitions,
-        cutoff,
+        ageCutoffDate,
         syllabusLevels
       )
     }
     return map
-  }, [dancers, competitions, listing])
+  }, [dancers, competitions, listing, ageCutoffDate])
 
-  const feeEntries: FeeEntry[] = useMemo(() => {
-    const entries: FeeEntry[] = []
-    for (const dancer of dancers) {
-      for (const compId of cart[dancer.id] ?? []) {
-        const comp = competitionById.get(compId)
-        if (!comp) continue
-        entries.push({
-          dancer_id: dancer.id,
-          fee_category: comp.fee_category,
-          fee_cents_override: comp.fee_cents,
-          exclude_from_family_cap: comp.exclude_from_family_cap,
-          is_day_of: false
-        })
-      }
-    }
-    return entries
-  }, [cart, dancers, competitionById])
-
-  const breakdown = useMemo(
-    () => (feeSchedule && feeEntries.length > 0 ? calculateFees(feeSchedule, feeEntries) : null),
-    [feeSchedule, feeEntries]
+  // What Pay submits: each dancer's chosen dances that this feis still offers
+  const requestedEntries: RequestedEntry[] = useMemo(
+    () =>
+      dancers.flatMap((dancer) =>
+        (cart[dancer.id] ?? [])
+          .filter((competitionId) => competitionById.has(competitionId))
+          .map((competitionId) => ({ dancerId: dancer.id, competitionId }))
+      ),
+    [cart, dancers, competitionById]
   )
+
+  // Priced the way Submit prices it; once Submit has run, its frozen price is shown instead
+  const cartBreakdown = useMemo(
+    () =>
+      feeSchedule && requestedEntries.length > 0
+        ? calculateFees(feeSchedule, feeEntriesFor(requestedEntries, competitionById))
+        : null,
+    [feeSchedule, requestedEntries, competitionById]
+  )
+  const breakdown = orderBreakdown ?? cartBreakdown
 
   const receiptLines: ReceiptLine[] = useMemo(() => {
     if (!breakdown || !feeSchedule) return []
@@ -201,7 +188,7 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
   }, [breakdown, feeSchedule, dancers, cart])
 
   const totalCents = breakdown?.grand_total_cents ?? 0
-  const dancesChosen = feeEntries.length
+  const dancesChosen = requestedEntries.length
 
   function toggle(dancerId: string, competitionId: string) {
     setCart((prev) => {
@@ -213,30 +200,28 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
     })
   }
 
-  async function handlePay() {
+  async function handlePay(consentAccepted: boolean) {
     setError(null)
     setLoading(true)
     try {
       let regId: string | null = registrationId
       if (regId === null) {
-        const result = await createDraftRegistration({
+        // The browser says only that the family agreed; the server records when and from where
+        const order = await createDraftRegistration({
           feisListingId: feisId,
-          entries: Object.entries(cart).flatMap(([dancerId, compIds]) =>
-            compIds.map((competitionId) => ({ dancerId, competitionId }))
-          ),
-          consentAcceptedAt: new Date().toISOString(),
-          consentIp: '0.0.0.0'
+          entries: requestedEntries,
+          consentAccepted
         })
-        if ('error' in result) {
-          setError(result.error ?? 'Your entries could not be saved. Try again.')
+        if ('error' in order) {
+          setError(order.error)
           return
         }
-        regId = result.registrationId
+        regId = order.registrationId
         setRegistrationId(regId)
-        setHoldExpiresAt(result.holdExpiresAt)
+        setHoldExpiresAt(order.holdExpiresAt)
+        setOrderBreakdown(order.breakdown)
         setEditingId(null)
       }
-      if (regId === null) return
 
       const checkout = await createCheckoutSession(regId)
       if ('error' in checkout) {
@@ -266,6 +251,7 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
       setRegistrationId(null)
       setHoldExpiresAt(null)
       setPaymentStarted(false)
+      setOrderBreakdown(null)
     } catch (err) {
       console.error('Failed to reopen entries:', err)
       setError('Your entries could not be reopened. Check your connection and try again.')

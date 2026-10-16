@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import { CONSENT_VERSION } from '@/lib/engine/purchase-snapshot'
 import { formatCents } from '@/lib/format'
 
 export interface ReceiptLine {
@@ -19,7 +20,8 @@ interface FamilyReceiptProps {
   paymentStarted: boolean
   loading: boolean
   error: string | null
-  onPay: () => void
+  /** Pay, with whether the agreement is ticked; Submit records that agreement on a new order */
+  onPay: (consentAccepted: boolean) => void
   onChangeEntries: () => void
 }
 
@@ -116,7 +118,11 @@ export function FamilyReceipt({
           choose Change entries to start again.
         </p>
       ) : (
-        <label className="mt-3.5 mb-3 flex items-start gap-2 text-[12.5px] text-muted-foreground">
+        <label
+          // This wording is CONSENT_VERSION: change the two in the same commit
+          data-consent-version={CONSENT_VERSION}
+          className="mt-3.5 mb-3 flex items-start gap-2 text-[12.5px] text-muted-foreground"
+        >
           <input
             type="checkbox"
             checked={agreed}
@@ -157,7 +163,7 @@ export function FamilyReceipt({
       {!paymentStarted && (
         <button
           type="button"
-          onClick={onPay}
+          onClick={() => onPay(agreed)}
           disabled={!agreed || loading || nothingChosen}
           className="mt-3 w-full rounded-[3px] bg-primary py-3 text-[17px] font-extrabold text-primary-foreground [font-stretch:85%] hover:bg-[var(--color-feis-green-600)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-feis-gold)] disabled:opacity-50"
         >

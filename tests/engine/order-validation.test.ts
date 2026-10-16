@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   ageCutoffDateFor,
+  toDancerProfile,
   validateOrderRequest,
   type OrderDancer,
   type OrderRequest
@@ -161,6 +162,27 @@ describe('guest dancers', () => {
     expect(validateOrderRequest(request({ dancers: [{ ...guest, household_id: 'h2' }] }))).toEqual({
       ok: false,
       error: 'One or more dancers do not belong to your family.'
+    })
+  })
+})
+
+// The entry page builds each dancer's eligibility profile with this too, so the two can't drift
+describe('toDancerProfile', () => {
+  it('reads the date of birth as a local date and maps each dance to its level', () => {
+    const profile = toDancerProfile(
+      dancer({
+        championship_status: 'prelim',
+        dance_levels: [
+          { dance_key: 'reel', level_key: 'NOV' },
+          { dance_key: 'treble_jig', level_key: 'PW' }
+        ]
+      })
+    )
+    expect(profile).toEqual({
+      dob: new Date(2018, 4, 1),
+      gender: 'female',
+      championshipStatus: 'prelim',
+      danceLevels: { reel: 'NOV', treble_jig: 'PW' }
     })
   })
 })
