@@ -1,6 +1,8 @@
 import { createClient } from '@/lib/supabase/server'
 import { redirect, notFound } from 'next/navigation'
 import type { Dancer, DancerDanceLevel } from '@/lib/types/feis-listing'
+import { EnteredFeiseanna } from '@/components/registration/entered-feiseanna'
+import { loadEnteredFeiseanna } from '../entered-feiseanna'
 import { EditDancerForm } from './edit-dancer-form'
 
 export const dynamic = 'force-dynamic'
@@ -56,5 +58,18 @@ export default async function EditDancerPage({ params }: Props) {
     levelMap[row.dance_key] = row.level_key
   }
 
-  return <EditDancerForm dancer={dancerTyped} initialLevels={levelMap} />
+  const entered = await loadEnteredFeiseanna(supabase, [dancerTyped.id])
+
+  return (
+    <EditDancerForm
+      dancer={dancerTyped}
+      initialLevels={levelMap}
+      numbers={
+        <EnteredFeiseanna
+          dancerName={`${dancerTyped.first_name} ${dancerTyped.last_name}`}
+          entries={entered[dancerTyped.id] ?? []}
+        />
+      }
+    />
+  )
 }

@@ -26,9 +26,11 @@ const LEVELS = [
 interface Props {
   dancer: Dancer
   initialLevels: Record<string, string>
+  /** The dancer's competitor numbers, shown under the title */
+  numbers?: React.ReactNode
 }
 
-export function EditDancerForm({ dancer, initialLevels }: Props) {
+export function EditDancerForm({ dancer, initialLevels, numbers }: Props) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
   const [isArchiving, startArchiveTransition] = useTransition()
@@ -120,6 +122,8 @@ export function EditDancerForm({ dancer, initialLevels }: Props) {
           intro="Keep levels up to date so each feis shows the right competitions for this dancer."
         />
       </div>
+
+      {numbers}
 
       <form onSubmit={handleSubmit}>
         <div className="feis-entry-form">

@@ -4,6 +4,8 @@ import Link from 'next/link'
 import { parseLocalDate } from '@/lib/format'
 import type { Dancer } from '@/lib/types/feis-listing'
 import { PageTitle } from '@/components/page-title'
+import { NumberTags } from '@/components/registration/entered-feiseanna'
+import { loadEnteredFeiseanna } from './entered-feiseanna'
 
 export const dynamic = 'force-dynamic'
 
@@ -50,6 +52,10 @@ export default async function DancersPage() {
   }
 
   const activeDancers = (dancers ?? []) as Dancer[]
+  const entered = await loadEnteredFeiseanna(
+    supabase,
+    activeDancers.map((d) => d.id)
+  )
 
   return (
     <div>
@@ -101,6 +107,7 @@ export default async function DancersPage() {
                   <p className="mt-0.5 text-sm">
                     {CHAMPIONSHIP_LABELS[dancer.championship_status] ?? dancer.championship_status}
                   </p>
+                  <NumberTags entries={entered[dancer.id] ?? []} />
                 </div>
                 <span className="text-sm font-bold text-[var(--color-feis-green)]">Edit</span>
               </Link>
