@@ -9,8 +9,9 @@ import type { FeeSchedule, FeisCompetition } from '@/lib/types/feis-listing'
 function snapshot(fees: number[]): PurchaseSnapshot {
   return {
     version: 1,
-    dancers: [{ id: 'd1', first_name: 'Aoife', last_name: 'Walsh', school_name: null, tcrg_name: null,
-      date_of_birth: '2018-05-01', gender: 'female', championship_status: 'none', dance_levels: {}, competition_age: 8 }],
+    dancers: [{ id: 'd1', first_name: 'Aoife', last_name: 'Walsh', school_name: null,
+      school_id: null, relationship: 'household', tcrg_name: null, date_of_birth: '2018-05-01',
+      gender: 'female', championship_status: 'none', dance_levels: {}, competition_age: 8 }],
     competitions: fees.map((_, i) => ({ id: `c${i}`, display_code: `21${i}R`, display_name: `Comp ${i}`,
       age_group_key: null, age_group_label: null, age_min_jan1: null, age_max_jan1: null, level_key: null,
       level_label: null, dance_key: null, dance_label: null, competition_type: 'solo', championship_key: null,

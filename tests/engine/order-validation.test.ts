@@ -151,3 +151,16 @@ describe('ageCutoffDateFor', () => {
     expect(cutoff).toEqual(new Date(2031, 0, 1))
   })
 })
+
+// Migration 018: a guest is someone else's child the account holder enters. The row still belongs
+// to the account holder's household, so the household check treats a guest like any dancer.
+describe('guest dancers', () => {
+  it("accepts a guest under the account holder's household, and refuses one under another", () => {
+    const guest = dancer({ relationship: 'guest' })
+    expect(validateOrderRequest(request({ dancers: [guest] })).ok).toBe(true)
+    expect(validateOrderRequest(request({ dancers: [{ ...guest, household_id: 'h2' }] }))).toEqual({
+      ok: false,
+      error: 'One or more dancers do not belong to your family.'
+    })
+  })
+})

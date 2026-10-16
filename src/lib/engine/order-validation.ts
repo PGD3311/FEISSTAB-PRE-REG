@@ -18,7 +18,7 @@ export type OrderListing = Pick<
 export type OrderDancer = Pick<
   Dancer,
   | 'id' | 'household_id' | 'first_name' | 'last_name' | 'date_of_birth' | 'gender'
-  | 'school_name' | 'tcrg_name' | 'championship_status' | 'is_active'
+  | 'school_name' | 'school_id' | 'relationship' | 'tcrg_name' | 'championship_status' | 'is_active'
 > & { dance_levels: Pick<DancerDanceLevel, 'dance_key' | 'level_key'>[] }
 
 export interface RequestedEntry {

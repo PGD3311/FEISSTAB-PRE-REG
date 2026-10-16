@@ -57,7 +57,8 @@ describe('priceOrder', () => {
     expect(snapshot.dancers).toEqual([{
       id: 'd1', first_name: 'Aoife', last_name: 'Walsh', school_name: 'Scoil Rince', tcrg_name: 'Mary Murphy',
       date_of_birth: '2018-05-01', gender: 'female', championship_status: 'none',
-      dance_levels: { reel: 'NOV', slip_jig: 'NOV' }, competition_age: 8,
+      dance_levels: { reel: 'NOV', slip_jig: 'NOV' }, competition_age: 8, school_id: null,
+      relationship: 'household',
     }])
     expect(snapshot.competitions.map((c) => c.display_code)).toEqual(['210R', '210SJ'])
     // Everything eligibility and pricing read, so the order keeps what its age group and level meant
@@ -186,5 +187,33 @@ describe('pairLineItems', () => {
   it('refuses a line for another competition when the line names one', () => {
     const lines = [{ dancer_id: 'd1', competition_id: 'c1' }, { dancer_id: 'd2', competition_id: 'c9' }]
     expect(() => pairLineItems(entries, lines)).toThrow(/line 2 doesn't match entry 2/)
+  })
+})
+
+// Migration 018: the order keeps whether each dancer was a guest (someone else's child the
+// account holder entered) and their school's id, as they were when it was placed
+describe('guests and school links', () => {
+  it('freezes whether each dancer is a guest, and their school id', () => {
+    const niamh: OrderDancer = {
+      ...aoife,
+      id: 'd2',
+      first_name: 'Niamh',
+      relationship: 'guest',
+      school_id: 'b7a1c2d3-0000-4000-8000-000000000018'
+    }
+    const { snapshot } = priceOrder(
+      input({
+        dancers: [aoife, niamh],
+        entries: [
+          { dancerId: 'd1', competitionId: 'c1' },
+          { dancerId: 'd2', competitionId: 'c2' }
+        ]
+      })
+    )
+    // Aoife has neither field set, so she freezes as a household dancer with no school link
+    expect(snapshot.dancers.map((d) => [d.id, d.relationship, d.school_id])).toEqual([
+      ['d1', 'household', null],
+      ['d2', 'guest', 'b7a1c2d3-0000-4000-8000-000000000018']
+    ])
   })
 })

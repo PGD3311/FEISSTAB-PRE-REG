@@ -32,6 +32,10 @@ export interface SnapshotDancer {
   first_name: string
   last_name: string
   school_name: string | null
+  /** The shared schools list's row for school_name (migration 018), or null */
+  school_id: string | null
+  /** 'guest': someone else's child the account holder entered (migration 018) */
+  relationship: 'household' | 'guest'
   tcrg_name: string | null
   date_of_birth: string
   gender: string
@@ -193,6 +197,9 @@ export function priceOrder(input: PriceOrderInput): PricedOrder {
         first_name: dancer.first_name,
         last_name: dancer.last_name,
         school_name: dancer.school_name,
+        // Optional on Dancer; without them, a household dancer with no school link
+        school_id: dancer.school_id ?? null,
+        relationship: dancer.relationship ?? 'household',
         tcrg_name: dancer.tcrg_name,
         date_of_birth: dancer.date_of_birth,
         gender: dancer.gender,
