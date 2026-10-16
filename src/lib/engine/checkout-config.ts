@@ -39,6 +39,17 @@ export interface CheckoutConfigInput {
   now: Date
 }
 
+/** Stripe Checkout takes at most 100 line items in payment mode */
+export const MAX_CHECKOUT_LINE_ITEMS = 100
+
+function sum(amounts: number[]): number {
+  return amounts.reduce((total, amount) => total + amount, 0)
+}
+
+/**
+ * Stripe's lines for an order: the event fee, each dance at its own fee, then the late fee and the
+ * day-of surcharge as lines of their own, as on the receipt. Zero-amount lines are left out.
+ */
 export function checkoutLineItems(
   snapshot: PurchaseSnapshot,
   eventFeeCents: number,
@@ -46,25 +57,57 @@ export function checkoutLineItems(
 ): CheckoutLineItem[] {
   const dancers = new Map(snapshot.dancers.map((d) => [d.id, d]))
   const competitions = new Map(snapshot.competitions.map((c) => [c.id, c]))
-  const items: CheckoutLineItem[] = []
-  if (eventFeeCents > 0) items.push({ name: 'Event fee (per family)', amount_cents: eventFeeCents })
+  const firstName = (dancerId: string) => dancers.get(dancerId)?.first_name ?? 'Dancer'
+
+  const entryLines: CheckoutLineItem[] = []
   for (const entry of snapshot.entries) {
-    const amount = entry.base_fee_cents + entry.late_fee_cents + entry.day_of_surcharge_cents
-    if (amount === 0) continue
-    const dancer = dancers.get(entry.dancer_id)
+    if (entry.base_fee_cents === 0) continue
     const competition = competitions.get(entry.competition_id)
     const label = [competition?.display_code, competition?.display_name].filter(Boolean).join(' ')
-    items.push({
-      name: `${dancer?.first_name ?? 'Dancer'}: ${label || 'Competition entry'}`,
-      amount_cents: amount
+    entryLines.push({
+      name: `${firstName(entry.dancer_id)}: ${label || 'Competition entry'}`,
+      amount_cents: entry.base_fee_cents
     })
   }
-  const sum = items.reduce((total, item) => total + item.amount_cents, 0)
+
+  const lateFeeCents = sum(snapshot.entries.map((e) => e.late_fee_cents))
+  const dayOfCents = sum(snapshot.entries.map((e) => e.day_of_surcharge_cents))
+  const withFees = (dances: CheckoutLineItem[]): CheckoutLineItem[] => [
+    ...(eventFeeCents > 0 ? [{ name: 'Event fee (per family)', amount_cents: eventFeeCents }] : []),
+    ...dances,
+    ...(lateFeeCents > 0 ? [{ name: 'Late fee', amount_cents: lateFeeCents }] : []),
+    ...(dayOfCents > 0 ? [{ name: 'Day-of surcharge', amount_cents: dayOfCents }] : [])
+  ]
+
+  const itemised = withFees(entryLines)
   // Stripe has no negative line items, so a family-max discount becomes one line at the capped total
-  if (sum !== totalCents) {
+  // Any mismatch is the cap: create_order's totals identity makes sum minus total the cap savings
+  if (sum(itemised.map((line) => line.amount_cents)) !== totalCents) {
     return [{ name: 'Feis entries (family maximum applied)', amount_cents: totalCents }]
   }
-  return items
+  if (itemised.length <= MAX_CHECKOUT_LINE_ITEMS) return itemised
+
+  // Too many dances for Stripe's limit: one line per dancer, keeping the fee lines
+  const perDancer = new Map<string, { dances: number; cents: number }>()
+  for (const entry of snapshot.entries) {
+    const soFar = perDancer.get(entry.dancer_id) ?? { dances: 0, cents: 0 }
+    perDancer.set(entry.dancer_id, {
+      dances: soFar.dances + 1,
+      cents: soFar.cents + entry.base_fee_cents
+    })
+  }
+  const byDancer = withFees(
+    [...perDancer]
+      .filter(([, { cents }]) => cents > 0)
+      .map(([dancerId, { dances, cents }]) => ({
+        name: `${firstName(dancerId)}: ${dances} ${dances === 1 ? 'dance' : 'dances'}`,
+        amount_cents: cents
+      }))
+  )
+  if (byDancer.length <= MAX_CHECKOUT_LINE_ITEMS) return byDancer
+
+  // Still too many: one line for the whole order
+  return [{ name: 'Feis entries', amount_cents: totalCents }]
 }
 
 export function buildCheckoutConfig(input: CheckoutConfigInput): CheckoutConfig {

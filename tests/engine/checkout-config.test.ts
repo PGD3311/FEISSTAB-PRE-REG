@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { buildCheckoutConfig, checkoutLineItems, type CheckoutConfigInput } from '@/lib/engine/checkout-config'
+import {
+  buildCheckoutConfig,
+  checkoutLineItems,
+  MAX_CHECKOUT_LINE_ITEMS,
+  type CheckoutConfigInput,
+  type CheckoutLineItem
+} from '@/lib/engine/checkout-config'
 import type { OrderDancer } from '@/lib/engine/order-validation'
 import { buildCreateOrderPayload, priceOrder, type PurchaseSnapshot } from '@/lib/engine/purchase-snapshot'
 import { parseLocalDate } from '@/lib/format'
@@ -22,6 +28,25 @@ function snapshot(fees: number[]): PurchaseSnapshot {
     rules: { age_cutoff_date: '2027-01-01', levels: [], consent_version: 'x', platform_terms_version: 'y',
       feis_terms_url: null, pricing_version: 'p', eligibility_version: 'e' },
   }
+}
+
+/** `dancerCount` dancers, each in the same $15 solos as snapshot(); the first is Aoife */
+function family(dancerCount: number, dances: number): PurchaseSnapshot {
+  const one = snapshot(Array<number>(dances).fill(1500))
+  const ids = Array.from({ length: dancerCount }, (_, i) => `d${i + 1}`)
+  return {
+    ...one,
+    dancers: ids.map((id, i) => ({
+      ...one.dancers[0],
+      id,
+      first_name: i === 0 ? 'Aoife' : `Dancer ${i + 1}`
+    })),
+    entries: ids.flatMap((id) => one.entries.map((entry) => ({ ...entry, dancer_id: id })))
+  }
+}
+
+function lineTotal(lines: CheckoutLineItem[]): number {
+  return lines.reduce((total, line) => total + line.amount_cents, 0)
 }
 
 function configInput(overrides: Partial<CheckoutConfigInput> = {}): CheckoutConfigInput {
@@ -72,6 +97,50 @@ describe('checkoutLineItems', () => {
       { name: 'Aoife: 210R Comp 0', amount_cents: 1500 },
     ])
   })
+
+  it("adds up each dancer's day-of surcharge on one line of its own", () => {
+    const order = family(2, 1)
+    for (const entry of order.entries) entry.day_of_surcharge_cents = 500
+    const lines = checkoutLineItems(order, 1000, 5000)
+    expect(lines).toEqual([
+      { name: 'Event fee (per family)', amount_cents: 1000 },
+      { name: 'Aoife: 210R Comp 0', amount_cents: 1500 },
+      { name: 'Dancer 2: 210R Comp 0', amount_cents: 1500 },
+      { name: 'Day-of surcharge', amount_cents: 1000 }
+    ])
+    expect(lineTotal(lines)).toBe(5000)
+  })
+
+  it("lists every dance while the order fits in Stripe's 100 lines", () => {
+    // 99 dances and the event fee
+    const lines = checkoutLineItems(snapshot(Array<number>(99).fill(1500)), 1000, 149_500)
+    expect(lines).toHaveLength(MAX_CHECKOUT_LINE_ITEMS)
+    expect(lines[1]).toEqual({ name: 'Aoife: 210R Comp 0', amount_cents: 1500 })
+    expect(lineTotal(lines)).toBe(149_500)
+  })
+
+  it('gives each dancer one line past 100 lines, keeping the fee lines', () => {
+    // Two dancers in 50 dances each, the event fee and one late fee line: 102 lines
+    const order = family(2, 50)
+    for (const dancerId of ['d1', 'd2']) {
+      order.entries.find((entry) => entry.dancer_id === dancerId)!.late_fee_cents = 2500
+    }
+    const lines = checkoutLineItems(order, 1000, 156_000)
+    expect(lines).toEqual([
+      { name: 'Event fee (per family)', amount_cents: 1000 },
+      { name: 'Aoife: 50 dances', amount_cents: 75_000 },
+      { name: 'Dancer 2: 50 dances', amount_cents: 75_000 },
+      { name: 'Late fee', amount_cents: 5000 }
+    ])
+    expect(lineTotal(lines)).toBe(156_000)
+  })
+
+  it('charges one line when even one line per dancer is past 100 lines', () => {
+    // 100 dancers in one dance each, and the event fee
+    expect(checkoutLineItems(family(100, 1), 1000, 151_000)).toEqual([
+      { name: 'Feis entries', amount_cents: 151_000 }
+    ])
+  })
 })
 
 describe('the checkout for an order Submit priced', () => {
@@ -93,7 +162,7 @@ describe('the checkout for an order Submit priced', () => {
     display_name: `Novice ${dance} U10`, display_code: code, capacity_cap: null, enabled: true,
   })
 
-  it("adds up to the total the family was quoted, with each fee on its own entry and the order's own application fee", () => {
+  it('adds up to the quoted total, with the late fee on its own line as on the receipt', () => {
     const priced = priceOrder({
       now: new Date('2026-11-01T12:00:00Z'), ageCutoffDate: parseLocalDate('2027-01-01'),
       levels: [{ key: 'NOV', label: 'Novice', rank: 3 }], feisTermsUrl: null, dancers: [aoife],
@@ -108,9 +177,11 @@ describe('the checkout for an order Submit priced', () => {
     }))
     expect(config.line_items).toEqual([
       { name: 'Event fee (per family)', amount_cents: 1000 },
-      { name: 'Aoife: 210R Novice reel U10', amount_cents: 4000 },
+      { name: 'Aoife: 210R Novice reel U10', amount_cents: 1500 },
       { name: 'Aoife: 210SJ Novice slip_jig U10', amount_cents: 1500 },
+      { name: 'Late fee', amount_cents: 2500 }
     ])
+    expect(lineTotal(config.line_items)).toBe(order.total_cents)
     // The config carries the fee Submit worked out in whole basis points: 2.9% of $65.00 is 188.5 cents,
     // so 189 (a float percent gives 188)
     expect(config).toMatchObject({ total_cents: 6500, application_fee_cents: 189 })

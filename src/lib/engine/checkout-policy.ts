@@ -8,7 +8,7 @@ export type CheckoutBlock =
 export const CHECKOUT_BLOCK_MESSAGES: Record<CheckoutBlock, string> = {
   organiser_stopped: 'Registration has been closed by the organiser.',
   competition_unavailable:
-    'A competition in this registration is no longer available. Please cancel it and start again.',
+    'One of your competitions is no longer offered. Choose Change entries and pick again.',
   stripe_not_connected:
     "The organiser hasn't finished setting up payments yet. Please try again later.",
   amount_too_small:
