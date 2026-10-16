@@ -46,6 +46,10 @@
     - The snapshot freezes each competition's labels, age bounds and flags, and the feis's own terms link (`priceOrder` takes `feisTermsUrl`).
     - The application fee is computed in basis points from a validated percentage.
     - `CONSENT_VERSION` and `PLATFORM_TERMS_VERSION` name the current checkbox wording and the RunFeis terms and privacy pages (Daniel's decision).
+- **Follow-up 1** (Daniel and Steve's decisions, after the batch):
+  - `authenticated` reads `registrations` column by column, without `consent_ip` and `checkout_config`.
+  - App reads use `REGISTRATION_COLUMNS`.
+  - The consent checkbox also covers someone entering a dancer with the parent or guardian's permission (`CONSENT_VERSION = 'consent-2026-10-16b'`).
 - **Tasks 5–16 are revised** to fit the as-built code and the redesigned registration pages. Tasks 7 and 12 were rewritten for the new entry page, success page and dashboard.
 
 ## Global Constraints
@@ -82,6 +86,10 @@
   - an uncertain delivery is never retried more than 23 hours after its first attempt; it becomes `needs_check`
   - the provider idempotency key is `<dedupe_key>:<send_generation>`
 - **Code style:** match the surrounding code: single quotes, no semicolons, no trailing commas, 2-space indent, 100 columns. The repo has no Prettier config, so run Prettier with `--single-quote --no-semi --trailing-comma none --print-width 100`.
+- **Order reads:**
+  - Code that reads `registrations` with a user's client selects `REGISTRATION_COLUMNS` (`src/lib/registration-columns.ts`), never `*`.
+  - `consent_ip` and `checkout_config` are private: only the service role and the payment functions read them.
+  - A migration that adds a `registrations` column grants `SELECT` on it to `authenticated` and adds it to `REGISTRATION_COLUMNS`, unless it is private.
 - **Migrations:** this plan owns 012–017. Migration 018 belongs to the schools work on `feisweb-layout`, so any extra migration starts at 019.
 - **Migration 012 as built:** every later function and every test setup must satisfy its rules (see Progress). Create test states the way the real functions do, or the way `tests/db/helpers/fixtures.ts` does.
 - **Next 16.2 dev traps** (`docs/known-issues.md`):
@@ -3374,6 +3382,7 @@ import {
 } from '@/lib/engine/purchase-snapshot'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { isHouseholdComplete, REQUIRED_HOUSEHOLD_FIELDS } from '@/lib/household'
+import { REGISTRATION_COLUMNS } from '@/lib/registration-columns'
 import { createOrderStore, type CreateOrderResult } from '@/app/_payments/order-store'
 import { supabaseRpc } from '@/app/_payments/rpc'
 import type {
@@ -3438,7 +3447,7 @@ export async function getExistingRegistration(feisListingId: string): Promise<
 
   const { data: registration, error } = await ctx.supabase
     .from('registrations')
-    .select('*, registration_entries(*)')
+    .select(`${REGISTRATION_COLUMNS}, registration_entries(*)`)
     .eq('feis_listing_id', feisListingId)
     .eq('household_id', ctx.household.id)
     .in('status', ['draft', 'pending_payment'])
@@ -7886,7 +7895,8 @@ with:
       .order('created_at', { ascending: false })
   ])
 
-  const typedRegistrations = (registrations ?? []) as (Registration & {
+  // `unknown` first: the client types a to-one embed (feis_listings) as an array, but each registration has one feis
+  const typedRegistrations = (registrations ?? []) as unknown as (Registration & {
     feis_listings: { name: string; feis_date: string; venue_name: string }
     registration_entries: { dancer_id: string; feis_competitions: { display_name: string } }[]
   })[]
@@ -7902,8 +7912,9 @@ with:
 
   // Released and expired holds never became entries, so they stay off the list, unless the order
   // has an open payment case: then it shows, so its message A or B reaches the family
+  // `unknown` first: the client types a to-one embed (feis_listings) as an array, but each registration has one feis
   const typedRegistrations = (
-    (registrations ?? []) as (Registration & {
+    (registrations ?? []) as unknown as (Registration & {
       feis_listings: { name: string; feis_date: string; venue_name: string }
       registration_entries: { dancer_id: string; feis_competitions: { display_name: string } }[]
     })[]
@@ -9894,7 +9905,7 @@ This task touches the live project. Steps 3, 4, 7 and 8 need Daniel's go-ahead a
 - [ ] **Step 1: Write the live test script, and prove it locally first**
 
 The script checks the rules the way the local suite does:
-- the table ACLs themselves (`aclexplode`), so nothing but `SELECT` for `authenticated` slips through
+- the table ACLs themselves (`aclexplode`), so nothing but `SELECT` for `authenticated` slips through. On `registrations` that `SELECT` is granted column by column, and leaves out `consent_ip` and `checkout_config`.
 - column-level write grants (`has_any_column_privilege`)
 - row-level security
 - the three row guards and the three `TRUNCATE` guards, and that the service role can't `TRUNCATE`
@@ -10105,8 +10116,16 @@ DO $$ DECLARE v_acl text; BEGIN
     AND c.relname IN ('registrations', 'registration_entries', 'registration_snapshots')
     AND (a.grantee = 0 OR a.grantee IN ('anon'::regrole, 'authenticated'::regrole));
   PERFORM pg_temp.ok('PUBLIC and anon hold nothing on the order tables, and authenticated only SELECT', v_acl =
-    'registration_entries:authenticated:SELECT, registration_snapshots:authenticated:SELECT, registrations:authenticated:SELECT',
+    'registration_entries:authenticated:SELECT, registration_snapshots:authenticated:SELECT',
     v_acl);
+END $$;
+
+-- consent_ip and checkout_config are private: authenticated reads registrations column by column
+DO $$ DECLARE v_private text; BEGIN
+  SELECT string_agg(col, ', ') INTO v_private
+  FROM unnest(ARRAY['consent_ip', 'checkout_config']) AS col
+  WHERE has_column_privilege('authenticated', 'pre_registration.registrations', col, 'SELECT');
+  PERFORM pg_temp.ok('authenticated cannot read consent_ip or checkout_config', v_private IS NULL, v_private);
 END $$;
 
 -- has_table_privilege misses column-level grants; has_any_column_privilege sees them
@@ -10224,6 +10243,12 @@ WHERE c.relnamespace = 'pre_registration'::regnamespace
   AND c.relname IN ('registrations', 'registration_entries', 'registration_snapshots')
   AND (a.grantee = 0 OR a.grantee IN ('anon'::regrole, 'authenticated'::regrole, 'service_role'::regrole))
 GROUP BY 1, 2, 3 ORDER BY 1, 2, 3;
+
+-- Which registrations columns authenticated can read (consent_ip and checkout_config must be missing after 012)
+SELECT column_name FROM information_schema.column_privileges
+WHERE table_schema = 'pre_registration' AND table_name = 'registrations'
+  AND grantee = 'authenticated' AND privilege_type = 'SELECT'
+ORDER BY column_name;
 
 -- Column-level write grants, which the table ACLs above don't show
 SELECT r.role, t.tbl, p.priv

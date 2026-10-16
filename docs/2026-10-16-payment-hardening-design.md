@@ -21,7 +21,8 @@ Building and reviewing Tasks 1–4 settled these. None of them changes the desig
 | A checkout claim is all-or-nothing and never null. An unpaid order always has a hold. Moving to `paid` or `pending_payment` needs payment evidence. Entries and snapshots can only be written in the transaction that creates or pays the order | §3 |
 | Submit judges eligibility against every competition of the feis, with 1 January of the feis year as the fallback age cutoff, exactly as the entry page does | §4 |
 | The purchase snapshot also freezes each competition's labels, age bounds and flags, and the feis's own terms link. The application fee is worked out in whole basis points | §4 |
-| The consent and terms versions name the documents the parent actually accepts | §4, Decision 6 |
+| The consent and terms versions name the documents the parent actually accepts. The checkbox also covers a guardian or family friend entering a dancer with permission | §4, Decision 6 |
+| `consent_ip` and `checkout_config` can't be read by parents or organisers | §2, Decision 7 |
 | The confirmation number uses the year in Eastern time | §9 |
 | The confirmation email keeps the competitor numbers and competition codes that the redesigned email shows | §12 |
 | The live check also covers row-level security, column grants, `TRUNCATE` and 011's `confirmed` status. 012–017 are rehearsed on a copy of the live data first | Rollout |
@@ -174,7 +175,7 @@ TypeScript makes the Stripe and Resend calls between these functions, and calls 
 - Every privilege is revoked from `PUBLIC`, `anon` and `authenticated`, and `authenticated` gets `SELECT` back. On Postgres 17 a list of named privileges would leave `MAINTAIN`, which can lock the table.
 - 012 turns row-level security on for the three tables itself, instead of trusting earlier migrations, because the live database was migrated by hand.
 - `TRUNCATE` is revoked from the service role and refused by a trigger for every role, so it can't get around the delete rules.
-- **Open question (decide before launch):** organisers can read every column of their feis's orders, including `consent_ip` and `checkout_config`. Hiding those needs column grants or a view.
+- `authenticated` reads `registrations` column by column. `consent_ip` and `checkout_config` are left out (Decision 7), so neither organisers nor parents can read a parent's IP address or the checkout details. The service role and the payment functions still can. App code reads orders through one shared column list, never `*`, and a test keeps that list equal to the grant.
 
 **The new tables** (`payment_exceptions`, `notifications` and `admin_actions`):
 - They have no policies for `anon` or `authenticated`, and get the same revokes. Only the service role and the functions can use them.
@@ -663,7 +664,8 @@ This runs with the real Stripe setup, using test keys and a connected test accou
 3. **Cards only:** cards, Apple Pay and Google Pay. No bank debits for now.
 4. **Retry schedule:** pg_cron with pg_net, every 5 minutes.
 5. **Deadline policy (proposed in revision 2; Daniel or Steve may change it):** a submitted order can be paid within its hold even if the deadline passes. When the organiser closes registration, new checkouts stop.
-6. **Consent record:** each order records the consent checkbox wording (`consent-2026-10-16`), the RunFeis terms and privacy pages (`runfeis-terms-2026-10-16/privacy-2026-10-16`), and the feis's own terms link. Bump the versions whenever the wording or pages change.
+6. **Consent record:** each order records the consent checkbox wording (`consent-2026-10-16b`: "I'm the parent or guardian of these dancers, or I'm entering them with their parent or guardian's permission", since a family friend or guardian sometimes enters a child), the RunFeis terms and privacy pages (`runfeis-terms-2026-10-16/privacy-2026-10-16`), and the feis's own terms link. Bump the versions whenever the wording or pages change.
+7. **Private order details:** organisers (and parents' database role) can't read a parent's IP address or the order's checkout details.
 
 ## Dependencies
 
