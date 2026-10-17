@@ -4,8 +4,8 @@ Who: the payments contacts, Daniel and Steve to start (their addresses go in `PA
 Where: the Supabase SQL editor for the RunFeis project, and the Stripe dashboard (the connected account named in the case).
 
 Every case has a reference like `PAY-7KQ2M`. The family sees it on the success page and their dashboard when
-their charge went through but their registration isn't confirmed. Alerts arrive by email, and the Vercel
-logs have a `[PAYMENT_EXCEPTION] PAY-…` line.
+their charge went through but their registration isn't confirmed. Alerts arrive by email once email is turned on (it's paused for now; see below), and the Vercel
+logs always have a `[PAYMENT_EXCEPTION] PAY-…` line.
 
 During registration, run the open-cases query (section 1) and the stuck-emails query (section 4) routinely, for
 example every day. A payment-case alert that fails to send is found only by the second query. Also watch the Vercel
