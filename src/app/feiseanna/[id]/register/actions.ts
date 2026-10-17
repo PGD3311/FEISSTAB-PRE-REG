@@ -4,6 +4,7 @@ import { headers } from 'next/headers'
 import { createClient, getSignedInUser } from '@/lib/supabase/server'
 import { createServiceClient, type ServiceClient } from '@/lib/supabase/service'
 import { canTransitionRegistration } from '@/lib/registration-states'
+import { belowCardMinimum, CHECKOUT_BLOCK_MESSAGES } from '@/lib/engine/checkout-policy'
 import { clientIpFrom } from '@/lib/engine/consent'
 import {
   validateOrderRequest,
@@ -197,6 +198,12 @@ export async function createDraftRegistration(
   } catch (err) {
     console.error('Submit could not price the order:', err)
     return { error: 'Your entries could not be priced. Please try again later.' }
+  }
+
+  // Stripe can't take a card payment this small, so no order is made that could never be paid.
+  // Pay's claim blocks such an order too, with the same message.
+  if (belowCardMinimum(payload.total_cents)) {
+    return { error: CHECKOUT_BLOCK_MESSAGES.amount_too_small }
   }
 
   try {

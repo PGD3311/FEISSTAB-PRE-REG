@@ -1,6 +1,15 @@
 import type { ListingStatus } from '@/lib/types/feis-listing'
 
+/** Stripe's smallest card charge in US dollars */
 export const MIN_CHARGE_CENTS = 50
+
+/**
+ * Whether an order's total is too small to pay by card. Submit refuses to create such an order;
+ * claim_checkout's amount_too_small block is the database's backstop.
+ */
+export function belowCardMinimum(totalCents: number): boolean {
+  return totalCents < MIN_CHARGE_CENTS
+}
 
 export type CheckoutBlock =
   'organiser_stopped' | 'competition_unavailable' | 'stripe_not_connected' | 'amount_too_small'
@@ -11,8 +20,7 @@ export const CHECKOUT_BLOCK_MESSAGES: Record<CheckoutBlock, string> = {
     'One of your competitions is no longer offered. Choose Change entries and pick again.',
   stripe_not_connected:
     "The organiser hasn't finished setting up payments yet. Please try again later.",
-  amount_too_small:
-    'This registration is below the minimum card payment. Please contact the organiser.'
+  amount_too_small: 'This order is too small to pay by card. Please contact the organiser.'
 }
 
 /**
@@ -30,6 +38,6 @@ export function checkoutBlockReason(input: {
   const enabled = new Set(input.enabledCompetitionIds)
   if (input.competitionIds.some((id) => !enabled.has(id))) return 'competition_unavailable'
   if (!input.stripeAccountId) return 'stripe_not_connected'
-  if (input.totalCents < MIN_CHARGE_CENTS) return 'amount_too_small'
+  if (belowCardMinimum(input.totalCents)) return 'amount_too_small'
   return null
 }
