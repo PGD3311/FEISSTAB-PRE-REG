@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { writeFileSync } from 'node:fs'
-import { renderConfirmationEmail } from '@/lib/email/send-confirmation'
+import { renderConfirmationEmail } from '@/lib/email/templates'
 
 const sample = {
   feisName: 'Newport Feis 2027 (Demo)',
