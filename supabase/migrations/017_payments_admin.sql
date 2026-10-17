@@ -16,8 +16,9 @@ CREATE TABLE IF NOT EXISTS admin_actions (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 ALTER TABLE admin_actions ENABLE ROW LEVEL SECURITY;
--- PUBLIC as well, as in 012: whatever PUBLIC holds, every role holds
-REVOKE ALL ON admin_actions FROM PUBLIC, anon, authenticated;
+-- PUBLIC as well, as in 012: whatever PUBLIC holds, every role holds. The service role too: the app
+-- never reads or writes the audit trail, so its key can't rewrite or erase it
+REVOKE ALL ON admin_actions FROM PUBLIC, anon, authenticated, service_role;
 
 CREATE SCHEMA IF NOT EXISTS payments_admin;
 REVOKE ALL ON SCHEMA payments_admin FROM PUBLIC;
@@ -42,7 +43,8 @@ DECLARE
   v_cancelled uuid[] := '{}';
   v_number text;
 BEGIN
-  IF coalesce(btrim(p_note), '') = '' THEN
+  -- A note must say something: blank, or only spaces, tabs or newlines, is refused
+  IF p_note IS NULL OR p_note !~ '\S' THEN
     RAISE EXCEPTION 'a note explaining the decision is required';
   END IF;
 
@@ -133,7 +135,8 @@ AS $$
 DECLARE
   v_case payment_exceptions%ROWTYPE;
 BEGIN
-  IF coalesce(btrim(p_note), '') = '' THEN
+  -- A note must say something: blank, or only spaces, tabs or newlines, is refused
+  IF p_note IS NULL OR p_note !~ '\S' THEN
     RAISE EXCEPTION 'a note explaining the decision is required';
   END IF;
 
@@ -167,10 +170,15 @@ BEGIN
   ELSE
     RAISE EXCEPTION 'unknown resolution %', p_resolution;
   END IF;
+  -- A refund ID belongs only on a refund: on any other closing it would claim money went back
+  IF p_stripe_refund_id IS NOT NULL AND p_resolution <> 'refunded' THEN
+    RAISE EXCEPTION 'a Stripe refund ID is only recorded when the resolution is refunded';
+  END IF;
 
   UPDATE payment_exceptions
   SET status = 'resolved', resolution = p_resolution, resolved_at = now(), resolved_by = session_user,
-      details = details || jsonb_build_object('stripe_refund_id', p_stripe_refund_id)
+      details = details || CASE WHEN p_stripe_refund_id IS NULL THEN '{}'::jsonb
+                                ELSE jsonb_build_object('stripe_refund_id', p_stripe_refund_id) END
   WHERE id = v_case.id;
 
   INSERT INTO admin_actions (action, support_ref, registration_id, note, evidence)
@@ -181,5 +189,8 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION payments_admin.confirm_late_payment(text, text) FROM PUBLIC;
-REVOKE ALL ON FUNCTION payments_admin.close_exception(text, text, text, text) FROM PUBLIC;
+-- Every API role, by name as well as through PUBLIC: run these from the SQL editor only
+REVOKE ALL ON FUNCTION payments_admin.confirm_late_payment(text, text)
+  FROM PUBLIC, anon, authenticated, service_role;
+REVOKE ALL ON FUNCTION payments_admin.close_exception(text, text, text, text)
+  FROM PUBLIC, anon, authenticated, service_role;

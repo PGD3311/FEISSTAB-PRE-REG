@@ -163,7 +163,7 @@ TypeScript makes the Stripe and Resend calls between these functions, and calls 
 - `EXECUTE` goes only to the role that needs it:
   - `service_role` for app functions
   - `authenticated` for the parent view function (§10)
-- Admin functions live in a separate schema, `payments_admin`, which the API doesn't expose. `USAGE` on that schema is revoked from `PUBLIC`, `anon`, `authenticated` and `service_role`, so only `postgres` (the SQL editor) can run them.
+- Admin functions live in a separate schema, `payments_admin`, which the API doesn't expose. `USAGE` on that schema, and `EXECUTE` on each function, are revoked from `PUBLIC`, `anon`, `authenticated` and `service_role`, so only `postgres` (the SQL editor) can run them.
 
 ### 2. Database permissions
 
@@ -179,6 +179,7 @@ TypeScript makes the Stripe and Resend calls between these functions, and calls 
 
 **The new tables** (`payment_exceptions`, `notifications` and `admin_actions`):
 - They have no policies for `anon` or `authenticated`, and get the same revokes. Only the service role and the functions can use them.
+- `admin_actions` is revoked from the service role as well. The app never touches the audit trail, so only the admin functions (§11) write it, and the app's key can't rewrite or erase it.
 - Parents see their review cases only through `get_my_payment_reviews` (§10).
 
 **Profiles:** parents keep full control of `households`, `dancers` and `dancer_dance_levels`. Profile edits never change an existing order (§3).
@@ -455,7 +456,8 @@ Resolutions are allowed by reason. No function marks an order paid by skipping c
 **Recording a resolution:**
 - Use `payments_admin.close_exception(support_ref, resolution, stripe_refund_id, note)`.
 - The resolution is one of `refunded`, `no_action` or `acknowledged`: `no_action` for `payment_failed` and `payment_reused`, `acknowledged` for `listing_account_changed`. A case closed by `confirm_late_payment` is marked `confirmed_late_payment`.
-- `refunded` requires the Stripe refund ID.
+- `refunded` requires the Stripe refund ID, and no other resolution takes one. A closing without a refund adds no `stripe_refund_id` to the case's `details`.
+- Every admin function refuses a note that is empty or only whitespace.
 - Every admin function writes an `admin_actions` audit row: who, when, what, and the evidence.
 
 **The runbook:** `docs/runbooks/payment-exceptions.md` walks through each reason step by step.
