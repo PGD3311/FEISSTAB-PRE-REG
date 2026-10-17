@@ -1,7 +1,15 @@
 import { randomUUID } from 'node:crypto'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createOrderStore, type ConfirmPaymentInput, type OrderStore } from '@/app/_payments/order-store'
-import { asParent, asService, createTestDatabase, refused, type TestDatabase } from './helpers/db'
+import {
+  asParent,
+  asRole,
+  asService,
+  createTestDatabase,
+  refused,
+  type DbRole,
+  type TestDatabase
+} from './helpers/db'
 import { buildPayload, createDraftOrder, readyToPay, type DraftOrderFixture } from './helpers/fixtures'
 import { pgRpc } from './helpers/pg-rpc'
 
@@ -64,6 +72,25 @@ async function orderRow(id: string) {
   return rows[0]
 }
 
+/** Every case and every notification in this test database, row by row */
+async function paymentTables() {
+  const { rows } = await db.pool.query(`
+    SELECT (SELECT coalesce(jsonb_agg(e ORDER BY e.id), '[]') FROM payment_exceptions e) AS cases,
+      (SELECT coalesce(jsonb_agg(n ORDER BY n.id), '[]') FROM notifications n) AS notifications`)
+  return rows[0]
+}
+
+/** The late payment conflict case on an order, found by the explicit check or by the relabel */
+async function conflictDetails(registrationId: string) {
+  const { rows } = await db.pool.query(
+    `SELECT details FROM payment_exceptions
+     WHERE registration_id = $1 AND reason = 'late_payment_conflict'`,
+    [registrationId]
+  )
+  expect(rows).toHaveLength(1)
+  return rows[0].details
+}
+
 describe('confirm_order_payment', () => {
   it('confirms a correct payment: paid, numbered, snapshotted and one email queued, together', async () => {
     const order = await createDraftOrder(db.pool)
@@ -91,6 +118,17 @@ describe('confirm_order_payment', () => {
     const again = await store.confirmOrderPayment(payment(order, ready))
     expect(again.result).toBe('already_confirmed')
     expect(await counts(order.registrationId)).toEqual({ snapshots: 1, emails: 1, numbers: 1, cases: 0 })
+  })
+
+  it('confirms nothing, and records nothing, for a payment Stripe does not call paid', async () => {
+    const order = await createDraftOrder(db.pool)
+    const ready = await readyToPay(db.pool, order)
+    const before = await orderRow(order.registrationId)
+    const tables = await paymentTables()
+    expect(await store.confirmOrderPayment(payment(order, ready, { paymentStatus: 'unpaid' })))
+      .toEqual({ result: 'not_paid' })
+    expect(await orderRow(order.registrationId)).toEqual(before)
+    expect(await paymentTables()).toEqual(tables)
   })
 
   it('fulfils once when two confirmations arrive together', async () => {
@@ -163,6 +201,8 @@ describe('confirm_order_payment', () => {
     expect(result).toMatchObject({ result: 'exception', reason: 'late_payment_conflict' })
     expect((await orderRow(order.registrationId)).status).toBe('expired')
     if (newer.status === 'created') expect((await orderRow(newer.registration_id)).status).toBe('draft')
+    // The explicit check found it: only the unique index's relabel adds `caught`
+    expect(await conflictDetails(order.registrationId)).not.toHaveProperty('caught')
   })
 
   it('records a case, and keeps the new draft, when Submit replaced an order whose hold had passed', async () => {
@@ -185,6 +225,8 @@ describe('confirm_order_payment', () => {
     const result = await store.confirmOrderPayment(payment(order, ready))
     if (result.result !== 'exception') throw new Error(`expected a case, got ${result.result}`)
     expect(result.reason).toBe('late_payment_conflict')
+    // The explicit check found it: only the unique index's relabel adds `caught`
+    expect(await conflictDetails(order.registrationId)).not.toHaveProperty('caught')
 
     expect(await orderRow(order.registrationId)).toMatchObject({ status: 'expired', paid_at: null, confirmation_number: null })
     expect(await orderRow(newer.registration_id)).toMatchObject({ status: 'draft' })
@@ -222,6 +264,10 @@ describe('confirm_order_payment', () => {
       const confirmedWins = confirmed.result === 'confirmed' && created.status === 'refused'
       const submitWins = created.status === 'created' && confirmed.result === 'exception' && confirmed.reason === 'late_payment_conflict'
       expect(confirmedWins || submitWins).toBe(true)
+      // Both take the household-and-feis lock, so the explicit check sees a Submit that won
+      if (submitWins) {
+        expect(await conflictDetails(order.registrationId)).not.toHaveProperty('caught')
+      }
     }
   })
 
@@ -296,6 +342,26 @@ describe('record_payment_failure', () => {
     expect(await store.recordPaymentFailure({ ...base, account: ready.config.account })).toMatchObject({ result: 'recorded' })
     expect((await orderRow(order.registrationId)).status).toBe('expired')
   })
+
+  it.each<[string, { claimId?: string | null; sessionId?: string }]>([
+    ['another claim', { claimId: randomUUID() }],
+    ['no claim', { claimId: null }],
+    ['another session', { sessionId: 'cs_someone_else' }]
+  ])('ignores a failure notice naming %s, and leaves the order as it is', async (_, mismatch) => {
+    const order = await createDraftOrder(db.pool)
+    const ready = await readyToPay(db.pool, order)
+    const notice = {
+      registrationId: order.registrationId,
+      claimId: ready.claimId,
+      sessionId: ready.sessionId,
+      account: ready.config.account,
+      eventId: `evt_${randomUUID()}`,
+      ...mismatch
+    }
+    expect(await store.recordPaymentFailure(notice)).toEqual({ result: 'ignored' })
+    expect((await orderRow(order.registrationId)).status).toBe('pending_payment')
+    expect((await counts(order.registrationId)).cases).toBe(0)
+  })
 })
 
 describe('what parents can see', () => {
@@ -317,8 +383,11 @@ describe('what parents can see', () => {
     expect(theirs).toEqual([])
   })
 
-  it('keeps the payment tables and functions away from parents', async () => {
+  it('keeps payment data from parents and anon, and internal steps from the server', async () => {
     const order = await createDraftOrder(db.pool)
+    const ready = await readyToPay(db.pool, order)
+    const before = await orderRow(order.registrationId)
+    const tables = await paymentTables()
     for (const sql of [
       'SELECT * FROM payment_exceptions',
       'SELECT * FROM notifications',
@@ -326,6 +395,43 @@ describe('what parents can see', () => {
     ]) {
       expect(await refused(asParent(db.pool, order.family.userId, (c) => c.query(sql)))).toMatch(/permission denied/)
     }
+
+    // A parent can't record a failure and a visitor can't read the parent view. Not even the
+    // service role may run the steps that fulfil an order or record a case, except through
+    // confirm_order_payment and record_payment_failure. Each write would change something if run.
+    const id = order.registrationId
+    const { claimId, sessionId } = ready
+    const account = ready.config.account
+    const attempts: [DbRole, string, RegExp][] = [
+      [
+        'authenticated',
+        `SELECT record_payment_failure('${id}', '${claimId}', '${sessionId}', '${account}', 'e')`,
+        /permission denied for function record_payment_failure/
+      ],
+      [
+        'anon',
+        'SELECT get_my_payment_reviews(NULL)',
+        /permission denied for function get_my_payment_reviews/
+      ],
+      [
+        'service_role',
+        `SELECT _fulfil_order('${id}', '${sessionId}', 'pi_internal', 'ch_internal', 4000, 'usd')`,
+        /permission denied for function _fulfil_order/
+      ],
+      [
+        'service_role',
+        `SELECT _record_payment_exception('blocking', 'payment_failed', '${id}', '${claimId}',
+           'evt_internal', '${account}', '${sessionId}', NULL, NULL, NULL, '{}')`,
+        /permission denied for function _record_payment_exception/
+      ]
+    ]
+    for (const [role, sql, denied] of attempts) {
+      const userId = role === 'authenticated' ? order.family.userId : null
+      expect(await refused(asRole(db.pool, role, userId, (c) => c.query(sql)))).toMatch(denied)
+    }
+
+    expect(await orderRow(order.registrationId)).toEqual(before)
+    expect(await paymentTables()).toEqual(tables)
   })
 })
 

@@ -14,7 +14,9 @@ DECLARE
   v_order registrations%ROWTYPE;
   v_listing feis_listings%ROWTYPE;
   v_expires timestamptz;
-  v_line_total integer;
+  v_line_total numeric;
+  v_line_count integer;
+  v_bad_lines integer;
 BEGIN
   SELECT * INTO v_order FROM registrations
   WHERE id = p_registration_id AND household_id = p_household_id
@@ -55,12 +57,22 @@ BEGIN
     RETURN jsonb_build_object('result', 'blocked', 'reason', 'amount_too_small');
   END IF;
 
-  -- The frozen request must describe this order exactly, on the feis's current Stripe account. A claim
-  -- with no id or no expiry is refused here: 012 only takes a claim whose id, config, claim time and
-  -- expiry all arrive together, and an unpaid order must keep a hold.
+  -- The frozen request must describe this order exactly, on the feis's current Stripe account, for
+  -- cards only (Decision 3). A claim with no id or no expiry is refused here: 012 only takes a claim
+  -- whose id, config, claim time and expiry all arrive together, and an unpaid order must keep a hold.
   v_expires := to_timestamp((p_config ->> 'expires_at')::bigint);
-  SELECT coalesce(sum((item ->> 'amount_cents')::integer), -1)::integer INTO v_line_total
-  FROM jsonb_array_elements(coalesce(p_config -> 'line_items', '[]'::jsonb)) AS item;
+  -- Stripe takes 1 to 100 lines, each a whole, positive number of cents. A line whose amount is
+  -- missing or isn't a JSON number counts as bad, rather than dropping out of the sum.
+  SELECT count(*)::integer,
+         count(*) FILTER (WHERE amount IS NULL OR amount <= 0 OR amount <> trunc(amount))::integer,
+         coalesce(sum(amount), -1)
+  INTO v_line_count, v_bad_lines, v_line_total
+  FROM (
+    SELECT CASE WHEN jsonb_typeof(item -> 'amount_cents') = 'number'
+                THEN (item ->> 'amount_cents')::numeric END AS amount
+    FROM jsonb_array_elements(CASE WHEN jsonb_typeof(p_config -> 'line_items') = 'array'
+                                   THEN p_config -> 'line_items' ELSE '[]'::jsonb END) AS item
+  ) AS lines;
   IF p_claim_id IS NULL
      OR v_expires IS NULL
      OR p_config ->> 'account' IS DISTINCT FROM v_listing.stripe_account_id
@@ -71,6 +83,9 @@ BEGIN
      OR p_config -> 'metadata' ->> 'registration_id' IS DISTINCT FROM p_registration_id::text
      OR p_config -> 'metadata' ->> 'claim_id' IS DISTINCT FROM p_claim_id::text
      OR p_config ->> 'idempotency_key' IS DISTINCT FROM ('checkout:' || p_registration_id::text || ':' || p_claim_id::text)
+     OR v_line_count NOT BETWEEN 1 AND 100
+     OR v_bad_lines > 0
+     OR p_config -> 'payment_method_types' IS DISTINCT FROM '["card"]'::jsonb
      OR v_expires < now() + interval '50 minutes'
      OR v_expires > now() + interval '70 minutes' THEN
     RAISE EXCEPTION 'checkout configuration does not match order %', p_registration_id;

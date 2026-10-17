@@ -1,9 +1,21 @@
 import { randomUUID } from 'node:crypto'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createOrderStore } from '@/app/_payments/order-store'
-import { buildCheckoutConfig } from '@/lib/engine/checkout-config'
+import {
+  buildCheckoutConfig,
+  type CheckoutConfig,
+  type CheckoutLineItem
+} from '@/lib/engine/checkout-config'
 import { asParent, createTestDatabase, refused, type TestDatabase } from './helpers/db'
-import { createDraftOrder, type DraftOrderFixture } from './helpers/fixtures'
+import {
+  buildPayload,
+  checkoutConfigFor,
+  createDancer,
+  createDraftOrder,
+  createFamily,
+  createListing,
+  type DraftOrderFixture
+} from './helpers/fixtures'
 import { pgRpc } from './helpers/pg-rpc'
 
 let db: TestDatabase
@@ -51,6 +63,113 @@ async function runExpiryJob() {
   const { rows } = await db.pool.query(`SELECT command FROM cron.job WHERE jobname = 'expire-registration-holds'`)
   await db.pool.query(rows[0].command)
 }
+
+/** An order of one 20-cent dance: create_order takes it, but no card payment can be that small */
+async function createTinyOrder(): Promise<DraftOrderFixture> {
+  const created = await createListing(db.pool)
+  await db.pool.query(
+    'UPDATE fee_schedules SET event_fee_cents = 0, solo_fee_cents = 20 WHERE feis_listing_id = $1',
+    [created.listing.id]
+  )
+  const listing = {
+    ...created,
+    feeSchedule: { ...created.feeSchedule, event_fee_cents: 0, solo_fee_cents: 20 }
+  }
+  const family = await createFamily(db.pool)
+  const dancer = await createDancer(db.pool, family.householdId)
+  const entries = [{ dancerId: dancer.id, competitionId: listing.competitions[0].id }]
+  const payload = buildPayload({ listing, dancers: [dancer], entries })
+  const result = await store.createOrder(family.householdId, listing.listing.id, payload)
+  if (result.status !== 'created') throw new Error(`Tiny order was refused: ${result.reason}`)
+  const registrationId = result.registration_id
+  return { family, listing, dancers: [dancer], entries, payload, registrationId }
+}
+
+type BrokenConfig = Record<string, unknown>
+
+function without(config: CheckoutConfig, key: keyof CheckoutConfig): BrokenConfig {
+  const copy: BrokenConfig = { ...config }
+  delete copy[key]
+  return copy
+}
+
+/** Moves `cents` from the first line to a new last line, so the lines still add up to the total */
+function splitFirstLine(config: CheckoutConfig, cents: number, name: string): BrokenConfig {
+  const [first, ...rest] = config.line_items
+  const lines: CheckoutLineItem[] = [
+    { ...first, amount_cents: first.amount_cents - cents },
+    ...rest,
+    { name, amount_cents: cents }
+  ]
+  return { ...config, line_items: lines }
+}
+
+const inMinutes = (minutes: number) => Math.floor(Date.now() / 1000) + minutes * 60
+
+/** Each breaks exactly one field of a valid frozen request */
+const BROKEN_REQUESTS: [string, (config: CheckoutConfig) => BrokenConfig][] = [
+  ['another currency', (c) => ({ ...c, currency: 'eur' })],
+  [
+    'lines that add up to more than the total',
+    (c) => ({
+      ...c,
+      line_items: c.line_items.map((line, i) =>
+        i === 0 ? { ...line, amount_cents: line.amount_cents + 1 } : line
+      )
+    })
+  ],
+  [
+    'another application fee',
+    (c) => ({ ...c, application_fee_cents: c.application_fee_cents + 1 })
+  ],
+  [
+    "another order's id in the metadata",
+    (c) => ({ ...c, metadata: { ...c.metadata, registration_id: randomUUID() } })
+  ],
+  [
+    "another claim's id in the metadata",
+    (c) => ({ ...c, metadata: { ...c.metadata, claim_id: randomUUID() } })
+  ],
+  [
+    'another idempotency key',
+    (c) => ({ ...c, idempotency_key: `checkout:${c.metadata.registration_id}:${randomUUID()}` })
+  ],
+  ['an expiry under 50 minutes away', (c) => ({ ...c, expires_at: inMinutes(49) })],
+  ['an expiry over 70 minutes away', (c) => ({ ...c, expires_at: inMinutes(71) })],
+  ['no expiry', (c) => without(c, 'expires_at')],
+  ['a line with no amount', (c) => ({ ...c, line_items: [...c.line_items, { name: 'Extra' }] })],
+  [
+    'a line of zero',
+    (c) => ({ ...c, line_items: [...c.line_items, { name: 'Free', amount_cents: 0 }] })
+  ],
+  ['a negative line', (c) => splitFirstLine(c, -100, 'Discount')],
+  ['a line of a fraction of a cent', (c) => splitFirstLine(c, 0.5, 'Half a cent')],
+  [
+    'an amount written as text',
+    (c) => ({
+      ...c,
+      line_items: c.line_items.map((line, i) =>
+        i === 0 ? { ...line, amount_cents: String(line.amount_cents) } : line
+      )
+    })
+  ],
+  ['no lines', (c) => ({ ...c, line_items: [] })],
+  [
+    'more than 100 lines',
+    (c) => ({
+      ...c,
+      line_items: [
+        ...Array.from({ length: 100 }, (_, i) => ({ name: `Line ${i + 1}`, amount_cents: 1 })),
+        { name: 'The rest', amount_cents: c.total_cents - 100 }
+      ]
+    })
+  ],
+  [
+    'a delayed payment method as well as card',
+    (c) => ({ ...c, payment_method_types: ['card', 'us_bank_account'] })
+  ],
+  ['no payment methods', (c) => without(c, 'payment_method_types')]
+]
 
 describe('claim_checkout', () => {
   it('freezes the request, records when it was claimed, and moves the hold 15 minutes past the window', async () => {
@@ -123,6 +242,20 @@ describe('claim_checkout', () => {
     expect(await orderRow(order.registrationId)).toEqual(before)
   })
 
+  it.each(BROKEN_REQUESTS)('refuses a request with %s, and sets no claim', async (_, breakIt) => {
+    const order = await createDraftOrder(db.pool)
+    const claimId = randomUUID()
+    // Straight to the function: the store's types never allow most of these
+    const message = await refused(pgRpc(db.pool)('claim_checkout', {
+      p_registration_id: order.registrationId,
+      p_household_id: order.family.householdId,
+      p_claim_id: claimId,
+      p_config: breakIt(checkoutConfigFor(order, claimId))
+    }))
+    expect(message).toMatch(/does not match order/)
+    expect((await orderRow(order.registrationId)).checkout_claim_id).toBeNull()
+  })
+
   it('will not claim once the hold has passed', async () => {
     const order = await createDraftOrder(db.pool)
     await db.pool.query(`UPDATE registrations SET hold_expires_at = now() - interval '1 minute' WHERE id = $1`, [order.registrationId])
@@ -138,6 +271,22 @@ describe('claim_checkout', () => {
     const disabled = await createDraftOrder(db.pool)
     await db.pool.query(`UPDATE feis_competitions SET enabled = false WHERE id = $1`, [disabled.entries[0].competitionId])
     expect(await claim(disabled)).toEqual({ result: 'blocked', reason: 'competition_unavailable' })
+  })
+
+  it('starts no checkout for a feis with no Stripe account connected', async () => {
+    const order = await createDraftOrder(db.pool)
+    await db.pool.query('UPDATE feis_listings SET stripe_account_id = NULL WHERE id = $1', [
+      order.listing.listing.id
+    ])
+    expect(await claim(order)).toEqual({ result: 'blocked', reason: 'stripe_not_connected' })
+    expect((await orderRow(order.registrationId)).checkout_claim_id).toBeNull()
+  })
+
+  it('starts no checkout for an order below the 50-cent card minimum', async () => {
+    const order = await createTinyOrder()
+    expect(order.payload.total_cents).toBeLessThan(50)
+    expect(await claim(order)).toEqual({ result: 'blocked', reason: 'amount_too_small' })
+    expect((await orderRow(order.registrationId)).checkout_claim_id).toBeNull()
   })
 
   it('lets an attempt claimed before the organiser closed registration finish', async () => {
