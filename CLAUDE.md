@@ -28,7 +28,7 @@ Nobody does the complete chain from registration to results. FeisWeb (dominant i
 
 ## Tech Stack
 - **Frontend:** Next.js 15 (App Router) + TypeScript + Tailwind CSS + shadcn/ui v4
-- **Backend:** Supabase (Postgres + Auth) — project `vwfrmhbczwpvqonlpfzs`
+- **Backend:** Supabase (Postgres + Auth) — project `acxyvouzwgvobtbmvoej`, `pre_registration` schema
 - **Payments:** Stripe Connect (organisers connect their own accounts, FeisTab never holds funds)
 - **Testing:** Vitest (unit)
 - **Hosting:** Vercel
@@ -38,6 +38,7 @@ Nobody does the complete chain from registration to results. FeisWeb (dominant i
 npm run dev              # localhost:3000
 npm run build            # production build
 npm test                 # vitest unit tests
+npm run test:db          # database tests on a temporary Postgres (needs: brew install postgresql@17)
 npm run lint             # eslint
 npx vitest run tests/engine/  # engine tests only
 ```
@@ -106,7 +107,11 @@ npx vitest run tests/engine/  # engine tests only
 - Don't commit `any` types in new code or dead code
 - Don't modify FeisTab Phase 1 tables or schema
 - Don't let template edits mutate existing listings — frozen snapshots are immutable
-- Webhook handler is authoritative for payment status — success page is cosmetic
+- Only `confirm_order_payment` marks an order paid. The webhook and the success-page sync both call it with data they fetched from Stripe themselves; never trust payment data from a URL
+- Order state changes go through the Postgres functions in migrations 012–017 (via `src/app/_payments/`). Never write `registrations`, `registration_entries` or `registration_snapshots` directly
+- A submitted order never changes. To change entries, cancel it and create a new one
+- Reads of `registrations` with a user's client select `REGISTRATION_COLUMNS` (`src/lib/registration-columns.ts`), never `*`. `consent_ip` and `checkout_config` are private: the database refuses them to a user's client, so a new `registrations` column stays private until a migration grants it and it is added to that list
+- Submit refuses an order under Stripe's 50-cent card minimum (`belowCardMinimum()` in `src/lib/engine/checkout-policy.ts`), so no order is made that could never be paid
 - Eligibility engine is pure — no Supabase, no side effects
 
 ---
@@ -154,6 +159,7 @@ All project imports use the `@/` alias.
 - **Engine code** (`src/lib/engine/`) — every public function
 - **State machine** (`src/lib/feis-listing-states.ts`) — valid transitions, invalid transitions, publish prerequisites
 - **Freezing/isolation** — template edits don't mutate listings, clones are independent
+- **Order and payment functions** (migrations 012–017): `tests/db/`, including concurrency and crash cases
 
 ### Doesn't need tests yet
 - React components, page-level integration (manual testing during prototype)
@@ -420,6 +426,7 @@ Copy-paste with convention for now (globals.css, font setup, shadcn components f
 | `src/lib/engine/syllabus-expander.ts` | Template → competitions expansion |
 | `src/lib/engine/eligibility.ts` | Eligibility filtering (pure, per-dance levels) |
 | `src/app/feiseanna/[id]/register/actions.ts` | Registration server actions (draft, checkout, cancel) |
-| `src/app/api/webhooks/stripe/route.ts` | Stripe webhook — authoritative payment confirmation |
-| `src/lib/email/send-confirmation.ts` | Resend confirmation email |
+| `src/app/api/webhooks/stripe/route.ts` | Stripe webhook — confirms payments through `confirm_order_payment` |
+| `src/lib/email/templates.ts` | Confirmation and payment-alert emails (sent by the notification queue, `src/app/_payments/notification-worker.ts`) |
+| `docs/runbooks/payment-exceptions.md` | Payment cases, email queue and test-data reset: what to run in the SQL editor |
 | `src/lib/stripe.ts` | Stripe client singleton |
