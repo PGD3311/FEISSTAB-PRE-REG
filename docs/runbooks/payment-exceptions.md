@@ -8,7 +8,8 @@ their charge went through but their registration isn't confirmed. Alerts arrive 
 logs have a `[PAYMENT_EXCEPTION] PAY-…` line.
 
 During registration, run the open-cases query (section 1) and the stuck-emails query (section 4) routinely, for
-example every day. A payment-case alert that fails to send is found only by the second query.
+example every day. A payment-case alert that fails to send is found only by the second query. Also watch the Vercel
+logs for `[NOTIFICATION_FAILED]` lines: they mean an email failed or needs checking.
 
 ## 1. Look up a case
 
@@ -46,7 +47,7 @@ WHERE stripe_payment_intent_id = '<pi>';
 | `amount_mismatch` | Stripe charged a different amount from the order total. | Refund it (3b). The family registers again. |
 | `currency_mismatch` | The charge wasn't in USD. | Refund it (3b). |
 | `order_not_payable` | A payment arrived for a cancelled order, or for an order already paid by a different checkout. | Refund the case's payment intent (3b), never the order's own payment: if the order is paid, that payment is the family's genuine one. |
-| `payment_reused` | A payment that is already recorded on another order arrived for this one. That other order is paid and confirmed: use the lookup in section 1. | **Never refund this payment intent**: it is that order's payment. Look at this order's checkout session in Stripe. Refund only a genuine second charge, if it shows one (3b). If it shows none, close the case with no action (3c). |
+| `payment_reused` | A payment that is already recorded on another order arrived for this one. That other order is paid and confirmed: use the lookup in section 1. | **Never refund this payment intent**: it is that order's payment. Look at this order's checkout session in Stripe. If it shows a genuine second charge, refund that charge only and record its refund ID: the one exception in 3b. If it shows none, close the case with no action (3c). |
 | `account_mismatch` | A payment for this order arrived on a different Stripe account. The payer may not be this family. | Open the case's `stripe_account_id`, not the feis's account: the charge is there. Investigate in both accounts. Refund the charge in the case's account (3b). |
 | `claim_mismatch` | A payment for this order came from a checkout this order didn't claim. The payer may not be this family. | Investigate. Refund the charge (3b). |
 | `session_mismatch` | A payment arrived for a checkout session this order doesn't own. The payer may not be this family. | Investigate. Refund the charge (3b). |
@@ -74,13 +75,21 @@ other order ends, whether the case is open or already closed.
 
 Before you run it:
 1. In Stripe, in the case's connected account (`stripe_account_id`), open the case's `stripe_payment_intent_id`. It
-   must show Succeeded, with no refund and no dispute. If it shows a refund or a dispute, don't confirm.
+   must show Succeeded, with no refund and no dispute.
+   - If it shows a refund, don't confirm. Close the case with 3b, using that refund's ID.
+   - If it shows a dispute, don't confirm. Leave the case open and handle the dispute in Stripe first.
 2. Tell the other payments contact that you are taking this case, so nobody refunds it while you confirm it.
 ```sql
 SELECT payments_admin.confirm_late_payment('PAY-XXXXX', 'Daniel: rang the family; they want the paid order');
 ```
 
-**3b. Refund.** Refund the case's payment intent in Stripe (in the case's `stripe_account_id`), and nothing else.
+**3b. Refund.** For every reason except `payment_reused`, refund the case's payment intent in Stripe (in the case's
+`stripe_account_id`), and nothing else.
+
+The one exception is `payment_reused`: the case's payment intent belongs to the other, confirmed order, so never
+refund it. Refund only the genuine second charge you found in Stripe for this order's checkout session, and record
+that charge's refund ID.
+
 Copy the refund ID (`re_…`), then run this straight after refunding, so the case doesn't sit open for someone to
 refund or confirm it again:
 ```sql
@@ -115,7 +124,8 @@ minutes, 15 minutes, 1 hour, 3 hours and 6 hours, so there are 6 attempts in tot
 
 Only a failed or stuck `registration_confirmation` sends you a delivery-failure email. A payment-case alert (or a
 delivery-failure email) that fails or gets stuck is only logged: look for `[NOTIFICATION_FAILED]` lines in the Vercel
-logs (an alert held at the 23-hour mark is logged by the database instead). So run this routinely, for example every
+logs (an alert held at the 23-hour mark is logged by the database instead: look in the Supabase dashboard's Postgres
+logs). So run this routinely, for example every
 day during registration, along with the open-cases query in section 1:
 ```sql
 SELECT id, kind, dedupe_key, status, recipient, first_attempt_at, last_error
@@ -143,7 +153,8 @@ WHERE id = '<id from the query>' AND status IN ('needs_check','failed')
 RETURNING id, status;
 ```
 It returns one row, with `pending`. No row means the notification isn't `needs_check` or `failed` (it was sent, or
-is being sent right now): leave it, because resending it would send a duplicate.
+is being sent right now): leave it, because resending it would send a duplicate. It also means a mistyped id, so check
+the id.
 
 The resend sends the same message to the same address; if the address was wrong, add `recipient = '<corrected
 address>'` to the `SET`. If it fails again, no second delivery-failure email is sent, so run the query above again.
@@ -169,6 +180,8 @@ and paste the same value as `NOTIFICATIONS_CRON_SECRET`. (If you create it with 
 the SQL editor instead, delete that snippet straight afterwards.) Then run this in the SQL editor, with the site's
 real URL:
 ```sql
+-- only needed if pg_cron isn't enabled yet (or turn it on in the dashboard: Integrations or Extensions page)
+CREATE EXTENSION IF NOT EXISTS pg_cron;
 CREATE EXTENSION IF NOT EXISTS pg_net WITH SCHEMA extensions;
 SELECT cron.schedule('process-notifications', '*/5 * * * *', $$
   SELECT net.http_post(
@@ -217,9 +230,14 @@ ORDER BY r.status;
 Read it before going on. No rows means the id is wrong. Check that `name` is the test feis and that its orders look
 like test orders. Note the exact name and the `all_orders` figure.
 
-**Step 2: delete.** Fill in the id, the exact name from the preview (double any apostrophe: `O''Brien`), and the `all_orders` figure as the
-expected count. The whole
-block is one statement, so it does everything or nothing. It stops with an error, before changing anything, if the
+A test feis with no name (`name` is empty in the preview) can't be reset this way: the block refuses it safely. Give it
+a name first, then run the preview again:
+```sql
+UPDATE pre_registration.feis_listings SET name = 'Test feis' WHERE id = '<test feis id>';
+```
+
+**Step 2: delete.** Fill in the id, the exact name from the preview (double any apostrophe: `O''Brien`), and the
+`all_orders` figure as the expected count. The whole block is one statement, so it does everything or nothing. It stops with an error, before changing anything, if the
 id and name don't match one feis or the number of orders isn't the number you typed. An error part-way rolls
 back everything, the guards included, and there is no `BEGIN` to leave a session open holding locks:
 ```sql
@@ -230,7 +248,7 @@ DECLARE
   v_expected constant integer := <all_orders from the preview>;
   v_ids uuid[];
 BEGIN
-  SET LOCAL lock_timeout = '10s'; -- give up rather than make other work queue behind the table changes below
+  SET LOCAL lock_timeout = '3s'; -- limits how long other order writes wait behind this block; it doesn't stop them waiting
 
   IF NOT EXISTS (SELECT 1 FROM pre_registration.feis_listings WHERE id = v_listing AND name = v_name) THEN
     RAISE EXCEPTION 'no feis has that id and that exact name: nothing was deleted';

@@ -9673,8 +9673,10 @@ BEGIN
       RAISE EXCEPTION 'a Stripe refund ID (re_...) is required';
     END IF;
   ELSIF p_resolution = 'no_action' THEN
-    IF v_case.reason <> 'payment_failed' THEN
-      RAISE EXCEPTION 'only failed payments close with no action';
+    -- A failed payment moved no money. A reused payment is the recorded payment of another, confirmed order:
+    -- refunding it would refund that order, so unless Stripe shows a genuine second charge there is nothing to refund
+    IF v_case.reason NOT IN ('payment_failed', 'payment_reused') THEN
+      RAISE EXCEPTION 'only failed payments, and payments already recorded on another order, close with no action';
     END IF;
   ELSIF p_resolution = 'acknowledged' THEN
     IF v_case.reason <> 'listing_account_changed' THEN
