@@ -243,6 +243,8 @@ Triggers enforce this for every role, including the service role:
    Dance selections, such as a championship set piece, aren't collected yet. When they are, they go in the snapshot too.
 
    The application fee is `STRIPE_APPLICATION_FEE_PERCENT` of the total, worked out in whole basis points and rounded to the cent. If the percentage is missing or out of range, Submit stops instead of pricing the order wrongly.
+
+   If the priced total is under Stripe's 50-cent card minimum, Submit refuses with "This order is too small to pay by card. Please contact the organiser." and creates nothing (Daniel's decision: every feis charges a family fee, so it shouldn't happen, and there is no path to `paid` without a payment).
 5. Record consent on the server. The browser sends only `consentAccepted: true`. The server sets the time and reads the IP from the request headers. The consent version names the checkbox wording, and the platform terms version names the RunFeis terms and privacy pages. Each changes in the same commit as the wording or page it names.
 
 **In the database:** `create_order(household_id, feis_listing_id, order jsonb)` runs as one transaction:
