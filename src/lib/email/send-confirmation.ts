@@ -158,22 +158,24 @@ export async function sendConfirmationEmail(registrationId: string, supabase: Se
     return
   }
 
-  const [entriesResult, numbersResult] = await Promise.all([
-    supabase
-      .from('registration_entries')
-      .select(
-        `
+  const entriesResult = await supabase
+    .from('registration_entries')
+    .select(
+      `
         *,
         dancers(first_name, last_name),
         feis_competitions(display_name, display_code, dance_label, competition_type)
       `
-      )
-      .eq('registration_id', registrationId),
-    supabase
-      .from('competitor_numbers')
-      .select('dancer_id, competitor_number')
-      .eq('registration_id', registrationId)
-  ])
+    )
+    .eq('registration_id', registrationId)
+
+  // A dancer added to in a later order keeps the number from their first order
+  const dancerIds = [...new Set((entriesResult.data ?? []).map((e) => e.dancer_id as string))]
+  const numbersResult = await supabase
+    .from('competitor_numbers')
+    .select('dancer_id, competitor_number')
+    .eq('feis_listing_id', reg.feis_listing_id)
+    .in('dancer_id', dancerIds)
 
   if (entriesResult.error) console.error('Failed to fetch entries for email:', entriesResult.error)
   if (numbersResult.error) console.error('Failed to fetch numbers for email:', numbersResult.error)

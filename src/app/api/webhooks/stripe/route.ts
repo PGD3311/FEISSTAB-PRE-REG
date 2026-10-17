@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import type Stripe from 'stripe'
 import { getStripe } from '@/lib/stripe'
 import { createServiceClient, type ServiceClient } from '@/lib/supabase/service'
+import { generateConfirmationNumber } from '@/lib/confirmation-number'
 
 
 // Competitor numbers go out in payment order. Idempotent, so Stripe retries are safe.
@@ -17,16 +18,6 @@ async function assignCompetitorNumbers(
     return false
   }
   return true
-}
-
-function generateConfirmationNumber(): string {
-  const year = new Date().getFullYear()
-  const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789' // No 0/O, 1/I/L
-  let code = ''
-  for (let i = 0; i < 4; i++) {
-    code += chars[Math.floor(Math.random() * chars.length)]
-  }
-  return `FT-${year}-${code}`
 }
 
 export async function POST(request: Request) {

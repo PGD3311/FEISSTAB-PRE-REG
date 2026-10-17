@@ -2,8 +2,10 @@
 
 import { createClient } from '@/lib/supabase/server'
 import { canTransitionRegistration } from '@/lib/registration-states'
-import { calculateFees } from '@/lib/engine/fee-calculator'
+import { calculateFees, summarisePaidOrders } from '@/lib/engine/fee-calculator'
 import { isHouseholdComplete } from '@/lib/household'
+import { generateConfirmationNumber } from '@/lib/confirmation-number'
+import { createServiceClient } from '@/lib/supabase/service'
 import type {
   RegistrationStatus,
   FeeSchedule,
@@ -161,6 +163,44 @@ export async function createDraftRegistration(input: CreateDraftInput) {
 
   const compMap = new Map(competitions.map(c => [c.id, c]))
 
+  // Orders the family already paid for this feis: new entries are added on top of them
+  const { data: paidOrders, error: paidError } = await supabase
+    .from('registrations')
+    .select(
+      'event_fee_cents, registration_entries(dancer_id, feis_competition_id, base_fee_cents, late_fee_cents, feis_competitions(exclude_from_family_cap))'
+    )
+    .eq('feis_listing_id', input.feisListingId)
+    .eq('household_id', household.id)
+    .eq('status', 'paid')
+
+  if (paidError) {
+    console.error('Failed to load paid orders:', paidError)
+    return { error: 'Your entries could not be checked. Try again.' }
+  }
+
+  // TODO: type when Supabase types generated
+  const paidEntries = (paidOrders ?? []).flatMap(o => o.registration_entries as unknown as {
+    dancer_id: string
+    feis_competition_id: string
+    base_fee_cents: number
+    late_fee_cents: number
+    feis_competitions: { exclude_from_family_cap: boolean } | null
+  }[])
+  const alreadyEntered = new Set(paidEntries.map(e => `${e.dancer_id}|${e.feis_competition_id}`))
+  if (input.entries.length === 0) return { error: 'Choose at least one dance.' }
+  if (input.entries.some(e => alreadyEntered.has(`${e.dancerId}|${e.competitionId}`))) {
+    return { error: 'One of these dances is already entered and paid for. Refresh the page.' }
+  }
+  const prior = summarisePaidOrders(
+    paidOrders ?? [],
+    paidEntries,
+    new Set(
+      paidEntries
+        .filter(e => e.feis_competitions?.exclude_from_family_cap)
+        .map(e => e.feis_competition_id)
+    )
+  )
+
   const feeEntries: FeeEntry[] = input.entries.map(e => {
     const comp = compMap.get(e.competitionId)
     return {
@@ -172,7 +212,7 @@ export async function createDraftRegistration(input: CreateDraftInput) {
     }
   })
 
-  const breakdown = calculateFees(feeSchedule as FeeSchedule, feeEntries, now)
+  const breakdown = calculateFees(feeSchedule as FeeSchedule, feeEntries, now, prior)
   const isLate = breakdown.active_late_tier !== null
 
   const holdExpiresAt = new Date(now.getTime() + 30 * 60 * 1000).toISOString()
@@ -260,6 +300,9 @@ export async function createCheckoutSession(registrationId: string) {
     await supabase.from('registrations').update({ status: 'expired' }).eq('id', registrationId)
     return { error: 'Registration hold has expired. Please start over.' }
   }
+
+  // Added dances that cost nothing (the family max is already reached) need no card payment
+  if (reg.total_cents === 0) return confirmFreeOrder(registrationId, reg.feis_listing_id)
 
   const connectedAccountId = reg.feis_listings?.stripe_account_id
   if (!connectedAccountId) {
@@ -353,4 +396,56 @@ export async function createCheckoutSession(registrationId: string) {
     console.error('Stripe checkout error:', err)
     return { error: 'Failed to create checkout session' }
   }
+}
+
+/**
+ * Confirms an order with nothing to pay, as the Stripe webhook does for a paid one: marks it
+ * paid, gives new dancers their numbers and sends the confirmation email. Runs with the
+ * service role because parents can't mark their own orders paid.
+ */
+async function confirmFreeOrder(registrationId: string, feisListingId: string) {
+  const service = createServiceClient()
+  for (const next of ['pending_payment', 'paid'] as RegistrationStatus[]) {
+    const { data: current, error: readError } = await service
+      .from('registrations')
+      .select('status')
+      .eq('id', registrationId)
+      .single()
+    if (readError || !current) return { error: 'Registration not found' }
+    if (!canTransitionRegistration(current.status as RegistrationStatus, next)) {
+      return { error: `Cannot move a ${current.status} registration to ${next}` }
+    }
+    const { error } = await service
+      .from('registrations')
+      .update(
+        next === 'paid'
+          ? {
+              status: 'paid',
+              paid_at: new Date().toISOString(),
+              hold_expires_at: null,
+              confirmation_number: generateConfirmationNumber()
+            }
+          : { status: next }
+      )
+      .eq('id', registrationId)
+      .eq('status', current.status)
+    if (error) {
+      console.error('Failed to confirm free order:', error)
+      return { error: 'Your entries could not be confirmed. Try again.' }
+    }
+  }
+
+  const { error: numbersError } = await service.rpc('assign_competitor_numbers', {
+    p_registration_id: registrationId
+  })
+  if (numbersError) console.error('Failed to assign numbers for free order:', numbersError)
+
+  try {
+    const { sendConfirmationEmail } = await import('@/lib/email/send-confirmation')
+    await sendConfirmationEmail(registrationId, service)
+  } catch (err) {
+    console.error('Failed to send confirmation email for free order:', err)
+  }
+
+  return { url: `/feiseanna/${feisListingId}/register/success` }
 }

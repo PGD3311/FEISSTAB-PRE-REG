@@ -4,7 +4,8 @@ import type {
   FeeLineItem,
   FeeBreakdown,
   FeeCategoryType,
-  LateFeeTier
+  LateFeeTier,
+  PriorPaidFees
 } from '@/lib/types/feis-listing'
 
 const FEE_CATEGORY_MAP: Record<FeeCategoryType, keyof FeeSchedule> = {
@@ -38,15 +39,20 @@ export function getActiveLateTier(tiers: LateFeeTier[], at: Date): LateFeeTier |
  * - The family cap limits competition entry fees only. The event fee, late fees,
  *   day-of surcharges and competitions excluded from the cap are paid on top.
  * - The active late tier charges its fee once per dancer, up to the tier's family max.
+ * - `prior` is what the family already paid for this feis in earlier orders: the event fee
+ *   isn't charged again, dancers already charged a late fee aren't charged again, and the
+ *   family max and the late tier's family max count what was already paid.
  */
 export function calculateFees(
   schedule: FeeSchedule,
   entries: FeeEntry[],
-  at: Date = new Date()
+  at: Date = new Date(),
+  prior: PriorPaidFees | null = null
 ): FeeBreakdown {
   const active_late_tier = getActiveLateTier(schedule.late_fee_tiers, at)
-  const lateCharged = new Set<string>()
+  const lateCharged = new Set<string>(prior?.late_fee_dancer_ids ?? [])
   const dayOfCharged = new Set<string>()
+  const latePaidBefore = prior?.late_fees_paid_cents ?? 0
   let late_fees_cents = 0
 
   const line_items: FeeLineItem[] = entries.map((entry) => {
@@ -61,7 +67,7 @@ export function calculateFees(
       const remaining =
         active_late_tier.family_max_cents === null
           ? active_late_tier.fee_cents
-          : Math.max(0, active_late_tier.family_max_cents - late_fees_cents)
+          : Math.max(0, active_late_tier.family_max_cents - latePaidBefore - late_fees_cents)
       late_fee_cents = Math.min(active_late_tier.fee_cents, remaining)
       late_fees_cents += late_fee_cents
     }
@@ -82,7 +88,7 @@ export function calculateFees(
     }
   })
 
-  const event_fee_cents = schedule.event_fee_cents
+  const event_fee_cents = prior?.event_fee_paid ? 0 : schedule.event_fee_cents
 
   const subtotal_per_dancer: Record<string, number> = {}
   for (const item of line_items) {
@@ -97,10 +103,15 @@ export function calculateFees(
     .filter((item) => item.counts_toward_family_cap)
     .reduce((sum, item) => sum + item.base_fee_cents, 0)
 
+  // What's left under the family max once earlier orders are counted
   const family_cap_savings_cents =
     schedule.family_cap_cents === null
       ? 0
-      : Math.max(0, cappable_cents - schedule.family_cap_cents)
+      : Math.max(
+          0,
+          cappable_cents -
+            Math.max(0, schedule.family_cap_cents - (prior?.cappable_paid_cents ?? 0))
+        )
 
   return {
     line_items,
@@ -112,5 +123,32 @@ export function calculateFees(
     family_cap_applied: family_cap_savings_cents > 0,
     family_cap_savings_cents,
     grand_total_cents: subtotal_before_cap_cents - family_cap_savings_cents
+  }
+}
+
+/**
+ * What a family has already paid for one feis, from the entries of its paid orders.
+ * `excludedFromCap` holds the competitions that don't count toward the family max.
+ */
+export function summarisePaidOrders(
+  orders: { event_fee_cents: number }[],
+  entries: {
+    dancer_id: string
+    feis_competition_id: string
+    base_fee_cents: number
+    late_fee_cents: number
+  }[],
+  excludedFromCap: Set<string>
+): PriorPaidFees | null {
+  if (orders.length === 0) return null
+  return {
+    event_fee_paid: orders.some((o) => o.event_fee_cents > 0),
+    cappable_paid_cents: entries
+      .filter((e) => !excludedFromCap.has(e.feis_competition_id))
+      .reduce((sum, e) => sum + e.base_fee_cents, 0),
+    late_fee_dancer_ids: [
+      ...new Set(entries.filter((e) => e.late_fee_cents > 0).map((e) => e.dancer_id))
+    ],
+    late_fees_paid_cents: entries.reduce((sum, e) => sum + e.late_fee_cents, 0)
   }
 }

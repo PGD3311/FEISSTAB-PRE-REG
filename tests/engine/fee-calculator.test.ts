@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { calculateFees, competitionFeeCents, getActiveLateTier } from '@/lib/engine/fee-calculator'
+import {
+  calculateFees,
+  competitionFeeCents,
+  getActiveLateTier,
+  summarisePaidOrders
+} from '@/lib/engine/fee-calculator'
 import type { FeeSchedule, FeeEntry, LateFeeTier } from '@/lib/types/feis-listing'
 
 const TIER_1: LateFeeTier = {
@@ -245,6 +250,93 @@ describe('competitionFeeCents', () => {
 
   it('falls back to the category fee', () => {
     expect(competitionFeeCents({ fee_category: 'solo', fee_cents: null }, SCHEDULE)).toBe(1300)
-    expect(competitionFeeCents({ fee_category: 'open_champ', fee_cents: null }, SCHEDULE)).toBe(6000)
+    expect(competitionFeeCents({ fee_category: 'open_champ', fee_cents: null }, SCHEDULE)).toBe(
+      6000
+    )
+  })
+})
+
+describe('calculateFees with earlier paid orders', () => {
+  const PAID_BEFORE = {
+    event_fee_paid: true,
+    cappable_paid_cents: 3900,
+    late_fee_dancer_ids: [],
+    late_fees_paid_cents: 0
+  }
+
+  it("doesn't charge the family fee again", () => {
+    const result = calculateFees(SCHEDULE, [solo('d1')], ON_TIME, PAID_BEFORE)
+    expect(result.event_fee_cents).toBe(0)
+    expect(result.grand_total_cents).toBe(1300)
+  })
+
+  it('charges the family fee if no earlier order paid it', () => {
+    const result = calculateFees(SCHEDULE, [solo('d1')], ON_TIME, {
+      ...PAID_BEFORE,
+      event_fee_paid: false
+    })
+    expect(result.grand_total_cents).toBe(3800)
+  })
+
+  it('counts earlier entries toward the family max', () => {
+    // 14300 already paid under a 15000 cap leaves 700 for a 1300 solo
+    const result = calculateFees(SCHEDULE, [solo('d1')], ON_TIME, {
+      ...PAID_BEFORE,
+      cappable_paid_cents: 14300
+    })
+    expect(result.family_cap_savings_cents).toBe(600)
+    expect(result.grand_total_cents).toBe(700)
+  })
+
+  it('charges nothing for entries once the family max is already reached', () => {
+    const result = calculateFees(SCHEDULE, [solo('d1'), solo('d2')], ON_TIME, {
+      ...PAID_BEFORE,
+      cappable_paid_cents: 16000
+    })
+    expect(result.grand_total_cents).toBe(0)
+  })
+
+  it("doesn't charge a late fee twice for the same dancer", () => {
+    const result = calculateFees(SCHEDULE, [solo('d1'), solo('d2')], IN_TIER_1, {
+      ...PAID_BEFORE,
+      late_fee_dancer_ids: ['d1'],
+      late_fees_paid_cents: 2500
+    })
+    expect(result.line_items[0].late_fee_cents).toBe(0)
+    expect(result.line_items[1].late_fee_cents).toBe(2500)
+  })
+
+  it("counts earlier late fees toward the late tier's family max", () => {
+    const capped = { ...SCHEDULE, late_fee_tiers: [{ ...TIER_1, family_max_cents: 3000 }] }
+    const result = calculateFees(capped, [solo('d2')], IN_TIER_1, {
+      ...PAID_BEFORE,
+      late_fee_dancer_ids: ['d1'],
+      late_fees_paid_cents: 2500
+    })
+    expect(result.late_fees_cents).toBe(500)
+  })
+})
+
+describe('summarisePaidOrders', () => {
+  it('is null when nothing has been paid', () => {
+    expect(summarisePaidOrders([], [], new Set())).toBeNull()
+  })
+
+  it('totals the earlier orders, leaving out competitions excluded from the family max', () => {
+    const prior = summarisePaidOrders(
+      [{ event_fee_cents: 2500 }],
+      [
+        { dancer_id: 'd1', feis_competition_id: 'r', base_fee_cents: 1300, late_fee_cents: 2500 },
+        { dancer_id: 'd1', feis_competition_id: 'lj', base_fee_cents: 1300, late_fee_cents: 0 },
+        { dancer_id: 'd2', feis_competition_id: 'team', base_fee_cents: 4000, late_fee_cents: 0 }
+      ],
+      new Set(['team'])
+    )
+    expect(prior).toEqual({
+      event_fee_paid: true,
+      cappable_paid_cents: 2600,
+      late_fee_dancer_ids: ['d1'],
+      late_fees_paid_cents: 2500
+    })
   })
 })

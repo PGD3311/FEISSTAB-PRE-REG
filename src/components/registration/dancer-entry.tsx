@@ -19,6 +19,8 @@ interface DancerEntryProps {
   number: number | null
   eligible: EligibleCompetition[]
   selected: FeisCompetition[]
+  /** Dances already entered and paid for at this feis; shown ticked and locked */
+  entered?: FeisCompetition[]
   feeSchedule: FeeSchedule | null
   editing: boolean
   canEdit: boolean
@@ -41,6 +43,7 @@ export function DancerEntry({
   number,
   eligible,
   selected,
+  entered = [],
   feeSchedule,
   editing,
   canEdit,
@@ -50,9 +53,13 @@ export function DancerEntry({
   onToggle
 }: DancerEntryProps) {
   const selectedIds = new Set(selected.map((c) => c.id))
+  const enteredIds = new Set(entered.map((c) => c.id))
   const eligibleCount = eligible.filter((e) => e.eligible).length
-  // Only dances the dancer can enter, plus any already chosen
-  const visible = eligible.filter((e) => e.eligible || selectedIds.has(e.competition.id))
+  // Only dances the dancer can enter, plus any already chosen or entered
+  const visible = eligible.filter(
+    (e) => e.eligible || selectedIds.has(e.competition.id) || enteredIds.has(e.competition.id)
+  )
+  const shown = [...entered, ...selected]
   const groups = groupForEntryForm(visible)
   const first = dancer.first_name
 
@@ -93,19 +100,20 @@ export function DancerEntry({
                 {group.label}
               </legend>
               {group.items.map(({ competition, eligible: canEnter, reason }) => {
-                const checked = selectedIds.has(competition.id)
+                const paid = enteredIds.has(competition.id)
+                const checked = paid || selectedIds.has(competition.id)
                 return (
                   <label
                     key={competition.id}
                     className={`grid cursor-pointer grid-cols-[22px_56px_minmax(0,1fr)_auto] items-center gap-2.5 border-t border-[#E2DCCD] px-4 py-2 focus-within:outline-3 focus-within:outline-[var(--color-feis-gold)] sm:grid-cols-[22px_64px_minmax(0,1fr)_auto] ${
                       checked ? 'bg-[var(--color-feis-green-light)]' : ''
-                    } ${canEnter ? '' : 'cursor-default text-muted-foreground'}`}
+                    } ${canEnter && !paid ? '' : 'cursor-default text-muted-foreground'}`}
                   >
                     <input
                       type="checkbox"
                       className="feis-tick"
                       checked={checked}
-                      disabled={!canEnter && !checked}
+                      disabled={paid || (!canEnter && !checked)}
                       onChange={() => onToggle(competition.id)}
                     />
                     <span className="feis-narrow text-[17px]">
@@ -116,9 +124,11 @@ export function DancerEntry({
                       {!canEnter && <span className="block text-xs">{reason}</span>}
                     </span>
                     <span className="text-muted-foreground tabular-nums">
-                      {feeSchedule
-                        ? formatCents(competitionFeeCents(competition, feeSchedule))
-                        : ''}
+                      {paid
+                        ? 'Entered'
+                        : feeSchedule
+                          ? formatCents(competitionFeeCents(competition, feeSchedule))
+                          : ''}
                     </span>
                   </label>
                 )
@@ -140,9 +150,13 @@ export function DancerEntry({
         <div className="feis-sticker mx-2.5 grid content-start self-start gap-2.5 rounded-b border-t-0 px-4 py-3.5 sm:mx-0 sm:my-3.5 sm:rounded-r sm:rounded-bl-none sm:border-t sm:border-l-0">
           <div className="flex flex-wrap items-baseline justify-between gap-2.5">
             <b className="text-base [font-stretch:80%]">
-              {selected.length === 0
+              {shown.length === 0
                 ? 'Not entered'
-                : `${selected.length} ${selected.length === 1 ? 'dance' : 'dances'}`}
+                : selected.length > 0 && entered.length > 0
+                  ? `${entered.length} entered, ${selected.length} to add`
+                  : `${shown.length} ${shown.length === 1 ? 'dance' : 'dances'}${
+                      entered.length > 0 ? ', paid' : ''
+                    }`}
             </b>
             {canEdit && (
               <button
@@ -150,16 +164,20 @@ export function DancerEntry({
                 onClick={onEdit}
                 className="text-sm font-bold text-primary underline underline-offset-[3px] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-feis-gold)]"
               >
-                {selected.length === 0 ? `Enter ${first}` : 'Change'}
+                {selected.length > 0
+                  ? 'Change'
+                  : entered.length > 0
+                    ? 'Add dances'
+                    : `Enter ${first}`}
               </button>
             )}
           </div>
-          {!canEdit && lockedNote && selected.length === 0 && (
+          {!canEdit && lockedNote && shown.length === 0 && (
             <p className="text-[13px] text-muted-foreground">{lockedNote}</p>
           )}
-          {selected.length > 0 && (
+          {shown.length > 0 && (
             <ul className="flex flex-wrap gap-x-4 gap-y-1.5">
-              {selected.map((comp) => (
+              {shown.map((comp) => (
                 <li key={comp.id}>
                   <span className="feis-narrow block text-xl leading-tight">
                     {comp.display_code ?? competitionName(comp)}
@@ -168,6 +186,9 @@ export function DancerEntry({
                     <span className="block text-[11.5px] text-muted-foreground">
                       {competitionName(comp)}
                     </span>
+                  )}
+                  {entered.length > 0 && !enteredIds.has(comp.id) && (
+                    <span className="block text-[11.5px] font-bold text-primary">Adding</span>
                   )}
                 </li>
               ))}

@@ -128,6 +128,18 @@ export interface FeeEntry {
   is_day_of: boolean
 }
 
+/** What the family has already paid for this feis, so an added order isn't charged twice. */
+export interface PriorPaidFees {
+  /** The once-per-family event fee was paid in an earlier order */
+  event_fee_paid: boolean
+  /** Entry fees already paid that count toward the family max */
+  cappable_paid_cents: number
+  /** Dancers already charged a late fee */
+  late_fee_dancer_ids: string[]
+  /** Late fees already paid, for the late tier's family max */
+  late_fees_paid_cents: number
+}
+
 export interface FeeLineItem {
   dancer_id: string
   base_fee_cents: number

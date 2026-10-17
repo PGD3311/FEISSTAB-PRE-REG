@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { formatCents, parseLocalDate } from '@/lib/format'
-import { calculateFees, getActiveLateTier } from '@/lib/engine/fee-calculator'
+import { calculateFees, getActiveLateTier, summarisePaidOrders } from '@/lib/engine/fee-calculator'
 import { calculateAgeOnDate, getEligibleCompetitions } from '@/lib/engine/eligibility'
 import { dancerLevelSummary, entryDeadline, entryFeesPerDancer } from '@/lib/entry-display'
 import {
@@ -44,7 +44,8 @@ export type EntryPageData = {
   competitions: FeisCompetition[]
   dancers: DancerWithLevels[]
   heldRegistration: RegistrationWithEntries | null
-  paidRegistration: RegistrationWithEntries | null
+  /** Orders already paid for this feis; anything chosen now is added on top */
+  paidRegistrations: RegistrationWithEntries[]
   numbers: Record<string, number>
   expiredHold: boolean
 }
@@ -89,12 +90,12 @@ function ageCutoffOf(listing: FeisListing): Date {
 }
 
 export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: string }) {
-  const { listing, feeSchedule, competitions, dancers, paidRegistration, numbers } = data
+  const { listing, feeSchedule, competitions, dancers, paidRegistrations, numbers } = data
   const levels = listing.syllabus_snapshot?.levels ?? []
   const ageCutoffDate = ageCutoffOf(listing)
   const deadline = entryDeadline(listing)
 
-  const [cart, setCart] = useState<Cart>(() => cartFrom(paidRegistration ?? data.heldRegistration))
+  const [cart, setCart] = useState<Cart>(() => cartFrom(data.heldRegistration))
   const [editingId, setEditingId] = useState<string | null>(null)
   const [registrationId, setRegistrationId] = useState<string | null>(
     data.heldRegistration?.id ?? null
@@ -123,11 +124,35 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
   }, [])
   const [error, setError] = useState<string | null>(null)
 
-  const paid = paidRegistration !== null
+  const paid = paidRegistrations.length > 0
   const held = registrationId !== null
-  const canEdit = !paid && !held && !deadline.closed && feeSchedule !== null
+  const canEdit = !held && !deadline.closed && feeSchedule !== null
 
   const competitionById = useMemo(() => new Map(competitions.map((c) => [c.id, c])), [competitions])
+
+  // Dances already entered and paid for, per dancer
+  const entered: Cart = useMemo(() => {
+    const map: Cart = {}
+    for (const reg of paidRegistrations) {
+      for (const [dancerId, ids] of Object.entries(cartFrom(reg))) {
+        map[dancerId] = [...(map[dancerId] ?? []), ...ids]
+      }
+    }
+    return map
+  }, [paidRegistrations])
+  const paidTotalCents = paidRegistrations.reduce((sum, r) => sum + r.total_cents, 0)
+  const latestPaid = paidRegistrations[paidRegistrations.length - 1] ?? null
+
+  // What earlier orders already covered, so the family fee and family max aren't charged twice
+  const prior = useMemo(
+    () =>
+      summarisePaidOrders(
+        paidRegistrations,
+        paidRegistrations.flatMap((r) => r.registration_entries),
+        new Set(competitions.filter((c) => c.exclude_from_family_cap).map((c) => c.id))
+      ),
+    [paidRegistrations, competitions]
+  )
 
   const eligibleByDancer = useMemo(() => {
     const map: Record<string, EligibleCompetition[]> = {}
@@ -163,8 +188,11 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
   }, [cart, dancers, competitionById])
 
   const breakdown = useMemo(
-    () => (feeSchedule && feeEntries.length > 0 ? calculateFees(feeSchedule, feeEntries) : null),
-    [feeSchedule, feeEntries]
+    () =>
+      feeSchedule && feeEntries.length > 0
+        ? calculateFees(feeSchedule, feeEntries, new Date(), prior)
+        : null,
+    [feeSchedule, feeEntries, prior]
   )
 
   const receiptLines: ReceiptLine[] = useMemo(() => {
@@ -336,6 +364,9 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
                     selected={(cart[dancer.id] ?? [])
                       .map((id) => competitionById.get(id))
                       .filter((c): c is FeisCompetition => c !== undefined)}
+                    entered={(entered[dancer.id] ?? [])
+                      .map((id) => competitionById.get(id))
+                      .filter((c): c is FeisCompetition => c !== undefined)}
                     feeSchedule={feeSchedule}
                     editing={canEdit && editingId === dancer.id}
                     canEdit={canEdit}
@@ -363,13 +394,14 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
           )}
         </section>
 
-        {paid ? (
+        {paid && dancesChosen === 0 && !held ? (
           <PaidReceipt
             familyName={data.familyName}
-            totalCents={paidRegistration.total_cents}
-            confirmationNumber={paidRegistration.confirmation_number}
+            totalCents={paidTotalCents}
+            confirmationNumber={latestPaid?.confirmation_number ?? null}
             contactEmail={listing.contact_email}
             cardsHref={`/dashboard/numbers/${feisId}`}
+            canAdd={canEdit}
           />
         ) : deadline.closed && !held ? (
           <aside className="feis-receipt px-[18px] py-5">
@@ -393,6 +425,12 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
           <div className="lg:sticky lg:top-6">
             <FamilyReceipt
               familyName={data.familyName}
+              title={paid ? 'Adding to your entry' : undefined}
+              note={
+                paid
+                  ? `You've already paid ${formatCents(paidTotalCents)} for this feis. This is only for what you're adding.`
+                  : undefined
+              }
               lines={receiptLines}
               totalCents={totalCents}
               termsUrl={listing.terms_url}
@@ -407,7 +445,7 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
         )}
       </main>
 
-      {!paid && dancesChosen > 0 && !receiptVisible && (
+      {dancesChosen > 0 && !receiptVisible && (
         <div className="fixed inset-x-0 bottom-0 flex items-center justify-between gap-3 bg-[var(--color-feis-charcoal)] px-4 pt-3 pb-[max(12px,env(safe-area-inset-bottom))] text-white lg:hidden">
           <div>
             <span className="block text-xs opacity-70">

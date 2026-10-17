@@ -97,7 +97,7 @@ export default function RegisterPage() {
               .eq('feis_listing_id', feisId)
               .eq('household_id', household.id)
               .eq('status', 'paid')
-              .maybeSingle()
+              .order('paid_at', { ascending: true })
           ])
 
         if (listingResult.error || !listingResult.data) {
@@ -138,7 +138,7 @@ export default function RegisterPage() {
             competitions: (compsResult.data ?? []) as FeisCompetition[],
             dancers,
             heldRegistration: (heldResult.registration as RegistrationWithEntries | null) ?? null,
-            paidRegistration: (paidResult.data as RegistrationWithEntries | null) ?? null,
+            paidRegistrations: (paidResult.data ?? []) as RegistrationWithEntries[],
             numbers,
             expiredHold: heldResult.expired === true
           }

@@ -128,7 +128,10 @@ export default async function DashboardPage() {
         </div>
       ) : (
         <ul className="border-b-[1.5px] border-[var(--color-feis-charcoal)]">
-          {typedRegistrations.map((reg) => {
+          {typedRegistrations.map((reg, i) => {
+            // Newest first, so this is the family's latest order for the feis
+            const latestForFeis =
+              typedRegistrations.findIndex((r) => r.feis_listing_id === reg.feis_listing_id) === i
             const status = STATUS_STYLES[reg.status]
             const dancerIds = [...new Set(reg.registration_entries.map((e) => e.dancer_id))]
             const dancerNames = dancerIds
@@ -181,6 +184,14 @@ export default async function DashboardPage() {
                       className="feis-btn feis-btn-outline"
                     >
                       See receipt
+                    </Link>
+                  )}
+                  {reg.status === 'paid' && latestForFeis && (
+                    <Link
+                      href={`/feiseanna/${reg.feis_listing_id}/register`}
+                      className="feis-btn feis-btn-outline"
+                    >
+                      Add dances
                     </Link>
                   )}
                   {reg.status === 'draft' && (
