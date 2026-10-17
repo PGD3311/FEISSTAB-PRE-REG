@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { reviewCodeForReason, reviewMessage } from '@/lib/payment-review-messages'
+import {
+  openReviewsByOrder,
+  reviewCodeForReason,
+  reviewMessage,
+  type PaymentReview
+} from '@/lib/payment-review-messages'
 
 describe('parent review messages', () => {
   it('uses message A when the charge is verified but the registration is not resolved', () => {
@@ -24,5 +29,38 @@ describe('parent review messages', () => {
 
   it('has message C for a payment that is still being checked', () => {
     expect(reviewMessage('C', null)).toBe("We're checking your payment. Please don't try again until this updates.")
+  })
+})
+
+describe('openReviewsByOrder', () => {
+  function review(overrides: Partial<PaymentReview> = {}): PaymentReview {
+    return {
+      registration_id: 'r1',
+      support_ref: 'PAY-7KQ2M',
+      message_code: 'A',
+      created_at: '2026-10-16T12:00:00+00:00',
+      resolved: false,
+      ...overrides
+    }
+  }
+
+  it("keeps each order's newest unresolved case, whatever order the rows come in", () => {
+    const older = review({ support_ref: 'PAY-OLDER' })
+    const newer = review({ support_ref: 'PAY-NEWER', created_at: '2026-10-16T13:00:00+00:00' })
+    const other = review({ registration_id: 'r2', support_ref: 'PAY-OTHER', message_code: 'B' })
+    for (const rows of [
+      [newer, other, older],
+      [older, other, newer]
+    ]) {
+      const open = openReviewsByOrder(rows)
+      expect(open.get('r1')).toBe(newer)
+      expect(open.get('r2')).toBe(other)
+    }
+  })
+
+  it('shows nothing for a resolved case', () => {
+    const resolvedLater = review({ created_at: '2026-10-16T13:00:00+00:00', resolved: true })
+    expect(openReviewsByOrder([review({ resolved: true })]).size).toBe(0)
+    expect(openReviewsByOrder([review(), resolvedLater]).get('r1')).toEqual(review())
   })
 })

@@ -26,3 +26,28 @@ export function reviewMessage(code: ReviewMessageCode, supportRef: string | null
       return "We're checking your payment. Please don't try again until this updates."
   }
 }
+
+/** A row of get_my_payment_reviews(): all a parent may see of a payment case on their own order */
+export interface PaymentReview {
+  registration_id: string
+  support_ref: string
+  message_code: 'A' | 'B'
+  created_at: string
+  resolved: boolean
+}
+
+/**
+ * Each order's newest unresolved case, from get_my_payment_reviews() rows in any order. A
+ * resolved case shows nothing: the payments contacts have dealt with it and told the family.
+ */
+export function openReviewsByOrder(reviews: PaymentReview[]): Map<string, PaymentReview> {
+  const open = new Map<string, PaymentReview>()
+  for (const review of reviews) {
+    if (review.resolved) continue
+    const shown = open.get(review.registration_id)
+    if (!shown || Date.parse(review.created_at) > Date.parse(shown.created_at)) {
+      open.set(review.registration_id, review)
+    }
+  }
+  return open
+}

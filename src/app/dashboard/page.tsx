@@ -1,9 +1,14 @@
-import { createClient } from '@/lib/supabase/server'
+import { createClient, getSignedInUser } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { formatDate, formatCents } from '@/lib/format'
 import { REGISTRATION_COLUMNS } from '@/lib/registration-columns'
 import { isHouseholdComplete } from '@/lib/household'
+import {
+  openReviewsByOrder,
+  reviewMessage,
+  type PaymentReview
+} from '@/lib/payment-review-messages'
 import type { Registration, Dancer, RegistrationStatus } from '@/lib/types/feis-listing'
 import { PageTitle } from '@/components/page-title'
 
@@ -32,11 +37,24 @@ const STATUS_STYLES: Record<RegistrationStatus, { tag: string; label: string }> 
   }
 }
 
+// An open payment case says more than the order's status: what the family should do next
+const REVIEW_STYLES: Record<PaymentReview['message_code'], { tag: string; label: string }> = {
+  A: {
+    tag: 'bg-[var(--color-feis-orange-light)] text-[var(--color-feis-orange-ink)]',
+    label: 'Being checked'
+  },
+  B: {
+    tag: 'bg-[var(--color-feis-orange-light)] text-[var(--color-feis-orange-ink)]',
+    label: 'Payment didn’t go through'
+  }
+}
+
+// The orders My entries lists, besides any with an open payment case
+const LISTED_STATUSES: RegistrationStatus[] = ['paid', 'pending_payment', 'draft']
+
 export default async function DashboardPage() {
   const supabase = await createClient()
-  const {
-    data: { user }
-  } = await supabase.auth.getUser()
+  const user = await getSignedInUser(supabase)
   if (!user) redirect('/auth/login')
 
   const { data: household } = await supabase
@@ -48,8 +66,8 @@ export default async function DashboardPage() {
   if (!household) redirect('/auth/onboarding')
   const detailsComplete = isHouseholdComplete(household)
 
-  // Get dancers and registrations in parallel (both use household.id)
-  const [{ data: dancers }, { data: registrations }] = await Promise.all([
+  // Dancers, registrations and the family's view of any payment cases, in parallel
+  const [{ data: dancers }, { data: registrations }, reviews] = await Promise.all([
     supabase
       .from('dancers')
       .select('id, first_name, last_name')
@@ -66,16 +84,21 @@ export default async function DashboardPage() {
       `
       )
       .eq('household_id', household.id)
-      // Released and expired holds never became entries
-      .in('status', ['paid', 'pending_payment', 'draft'])
-      .order('created_at', { ascending: false })
+      .order('created_at', { ascending: false }),
+    supabase.rpc('get_my_payment_reviews', { p_registration_id: null })
   ])
+  if (reviews.error) console.error('Payment reviews failed to load:', reviews.error)
+  const openReviews = openReviewsByOrder((reviews.data ?? []) as PaymentReview[])
 
+  // Released and expired holds never became entries, so they stay off the list, unless the order
+  // has an open payment case: then it shows, so its message A or B reaches the family
   // `unknown` first: the client types a to-one embed (feis_listings) as an array, but each registration has one feis
-  const typedRegistrations = (registrations ?? []) as unknown as (Registration & {
-    feis_listings: { name: string; feis_date: string; venue_name: string }
-    registration_entries: { dancer_id: string; feis_competitions: { display_name: string } }[]
-  })[]
+  const typedRegistrations = (
+    (registrations ?? []) as unknown as (Registration & {
+      feis_listings: { name: string; feis_date: string; venue_name: string }
+      registration_entries: { dancer_id: string; feis_competitions: { display_name: string } }[]
+    })[]
+  ).filter((reg) => LISTED_STATUSES.includes(reg.status) || openReviews.has(reg.id))
 
   const typedDancers = (dancers ?? []) as Pick<Dancer, 'id' | 'first_name' | 'last_name'>[]
 
@@ -102,6 +125,16 @@ export default async function DashboardPage() {
             Add family details
           </Link>
         </div>
+      )}
+
+      {reviews.error && (
+        <p
+          role="status"
+          className="mb-6 max-w-3xl border-l-4 border-[var(--color-feis-orange)] bg-[var(--color-feis-orange-light)] px-4 py-2.5 text-sm text-[var(--color-feis-orange-ink)]"
+        >
+          We couldn&apos;t check for messages about your payments just now. Refresh the page to
+          try again.
+        </p>
       )}
 
       {typedDancers.length > 0 && hasRegistrations && (
@@ -131,7 +164,15 @@ export default async function DashboardPage() {
       ) : (
         <ul className="border-b-[1.5px] border-[var(--color-feis-charcoal)]">
           {typedRegistrations.map((reg) => {
-            const status = STATUS_STYLES[reg.status]
+            const review = openReviews.get(reg.id)
+            const status = review ? REVIEW_STYLES[review.message_code] : STATUS_STYLES[reg.status]
+            // Message A says not to pay again, so nothing offers another payment beside it
+            const canPayAgain = review?.message_code !== 'A'
+            // Name the session only when there is one (never `session_id=null`); the success
+            // page finds the family's order without it too
+            const receiptHref = `/feiseanna/${reg.feis_listing_id}/register/success${
+              reg.stripe_checkout_session_id ? `?session_id=${reg.stripe_checkout_session_id}` : ''
+            }`
             const dancerIds = [...new Set(reg.registration_entries.map((e) => e.dancer_id))]
             const dancerNames = dancerIds
               .map((id) => typedDancers.find((d) => d.id === id))
@@ -169,6 +210,14 @@ export default async function DashboardPage() {
                       </span>
                     </p>
                   )}
+                  {review && (
+                    <p
+                      role="status"
+                      className="mt-2 max-w-[62ch] border-l-4 border-[var(--color-feis-orange)] bg-[var(--color-feis-orange-light)] px-3 py-2 text-sm text-[var(--color-feis-orange-ink)]"
+                    >
+                      {reviewMessage(review.message_code, review.support_ref)}
+                    </p>
+                  )}
                 </div>
 
                 <div className="flex flex-wrap items-center gap-x-5 gap-y-2 sm:justify-end">
@@ -178,22 +227,19 @@ export default async function DashboardPage() {
                     </span>
                   )}
                   {reg.status === 'paid' && (
-                    <Link
-                      href={`/feiseanna/${reg.feis_listing_id}/register/success?session_id=${reg.stripe_checkout_session_id}`}
-                      className="feis-btn feis-btn-outline"
-                    >
+                    <Link href={receiptHref} className="feis-btn feis-btn-outline">
                       See receipt
                     </Link>
                   )}
-                  {reg.status === 'draft' && (
+                  {(reg.status === 'draft' || reg.status === 'pending_payment') && canPayAgain && (
                     <Link
-                      href={`/feiseanna/${reg.feis_listing_id}/register?step=3`}
+                      href={`/feiseanna/${reg.feis_listing_id}/register`}
                       className="feis-btn feis-btn-primary"
                     >
                       Finish and pay
                     </Link>
                   )}
-                  {reg.status === 'expired' && (
+                  {reg.status === 'expired' && canPayAgain && (
                     <Link
                       href={`/feiseanna/${reg.feis_listing_id}/register`}
                       className="feis-btn feis-btn-ink"

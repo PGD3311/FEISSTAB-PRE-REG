@@ -112,12 +112,7 @@ export function FamilyReceipt({
         </strong>
       </div>
 
-      {paymentStarted ? (
-        <p className="mt-3.5 text-[13px] text-muted-foreground">
-          A payment was started for these entries. If you closed the payment page without paying,
-          choose Change entries to start again.
-        </p>
-      ) : (
+      {!held && (
         <label
           // This wording is CONSENT_VERSION: change the two in the same commit
           data-consent-version={CONSENT_VERSION}
@@ -158,18 +153,28 @@ export function FamilyReceipt({
         </label>
       )}
 
+      {held && paymentStarted && (
+        <p className="mt-3.5 text-[13px] text-muted-foreground">
+          You started paying for these entries. Return to the payment page to finish, or choose
+          Change entries to start again.
+        </p>
+      )}
+
       {held && <HoldCountdown holdExpiresAt={holdExpiresAt} />}
 
-      {!paymentStarted && (
-        <button
-          type="button"
-          onClick={() => onPay(agreed)}
-          disabled={!agreed || loading || nothingChosen}
-          className="mt-3 w-full rounded-[3px] bg-primary py-3 text-[17px] font-extrabold text-primary-foreground [font-stretch:85%] hover:bg-[var(--color-feis-green-600)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-feis-gold)] disabled:opacity-50"
-        >
-          {loading ? 'Opening payment…' : `Pay ${formatCents(totalCents)}`}
-        </button>
-      )}
+      <button
+        type="button"
+        onClick={() => onPay(agreed)}
+        // An order in progress already records the agreement, from when it was submitted
+        disabled={loading || nothingChosen || (!held && !agreed)}
+        className="mt-3 w-full rounded-[3px] bg-primary py-3 text-[17px] font-extrabold text-primary-foreground [font-stretch:85%] hover:bg-[var(--color-feis-green-600)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-feis-gold)] disabled:opacity-50"
+      >
+        {loading
+          ? 'Opening payment…'
+          : paymentStarted
+            ? 'Return to payment'
+            : `Pay ${formatCents(totalCents)}`}
+      </button>
 
       {error && (
         <p className="mt-2.5 text-[13px] text-destructive" role="alert">

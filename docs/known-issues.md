@@ -14,8 +14,6 @@ Found during the October 2026 restyle and left for later. RunFeis is for Northea
 - **The launch page's "Entries are closed" check is hard-coded to passed.** It's true today only because of the redirect above it.
 
 ## Parents
-- **The after-payment page says a confirmation email was sent** even when email isn't set up (`RESEND_API_KEY` missing means the email is only logged).
-- **The "See receipt" link on My entries** builds `?session_id=null` when a registration has no Stripe session, and the page then falls back to the latest registration for that feis.
 - **The entry page links to `/terms` and `/privacy`, which don't exist yet.**
 
 ## Already tracked elsewhere

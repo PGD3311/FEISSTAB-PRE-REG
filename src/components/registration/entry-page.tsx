@@ -62,17 +62,6 @@ function cartFrom(registration: RegistrationWithEntries | null): Cart {
   return cart
 }
 
-/** The checkout's error, said the way a parent needs to hear it. */
-function parentPaymentMessage(error: string | undefined): string {
-  if (error?.toLowerCase().includes('not connected stripe')) {
-    return 'This feis isn’t taking card payments yet. Your places are held for 30 minutes, so try again later, or contact the organiser.'
-  }
-  if (error?.toLowerCase().includes('expired')) {
-    return 'The hold on these places ran out. Choose Change entries to start again.'
-  }
-  return 'The payment page could not be opened. Try again in a moment.'
-}
-
 export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: string }) {
   const { listing, feeSchedule, competitions, dancers, paidRegistration, numbers } = data
   const levels = listing.syllabus_snapshot?.levels ?? []
@@ -200,9 +189,23 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
     })
   }
 
+  // Where a family goes once Stripe has taken a payment for the order: the success page
+  // confirms it, or says what happens next
+  const successHref = `/feiseanna/${feisId}/register/success`
+
+  // The order can't be paid any more: forget it, keep the cart, and Pay submits a fresh one
+  function startAgain(message: string) {
+    setRegistrationId(null)
+    setHoldExpiresAt(null)
+    setOrderBreakdown(null)
+    setPaymentStarted(false)
+    setError(message)
+  }
+
   async function handlePay(consentAccepted: boolean) {
     setError(null)
     setLoading(true)
+    let leaving = false
     try {
       let regId: string | null = registrationId
       if (regId === null) {
@@ -221,19 +224,45 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
         setHoldExpiresAt(order.holdExpiresAt)
         setOrderBreakdown(order.breakdown)
         setEditingId(null)
+        // Submit priced the order afresh. If that isn't the total the Pay button showed (a late
+        // tier started, or the organiser changed a fee, while the page was open), the held order
+        // and its receipt keep Submit's price, and the family presses Pay again to pay it
+        if (order.totalCents !== totalCents) {
+          setError(
+            `Your total is now ${formatCents(order.totalCents)}. ` +
+              'Fees changed since you opened this page (for example, late fees started). ' +
+              'Check the receipt, then press Pay to continue.'
+          )
+          return
+        }
       }
 
-      const checkout = await createCheckoutSession(regId)
-      if ('error' in checkout) {
-        setError(parentPaymentMessage(checkout.error))
-        return
+      const payment = await createCheckoutSession(regId)
+      switch (payment.kind) {
+        case 'redirect':
+          leaving = true
+          window.location.href = payment.url
+          return
+        case 'paid':
+        case 'review':
+        case 'checking':
+          // Stripe has, or may have, the money: the success page says what happens next
+          leaving = true
+          window.location.href = successHref
+          return
+        case 'start_again':
+          startAgain(payment.message)
+          return
+        default:
+          // blocked, try_again or error: the order stays as it is
+          setError(payment.message)
       }
-      if (checkout.url) window.location.href = checkout.url
     } catch (err) {
       console.error('Payment failed to start:', err)
       setError('The payment page could not be opened. Check your connection and try again.')
     } finally {
-      setLoading(false)
+      // Stay busy while the browser leaves, so a second click can't start anything
+      if (!leaving) setLoading(false)
     }
   }
 
@@ -241,22 +270,33 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
     if (!registrationId) return
     setError(null)
     setLoading(true)
+    let leaving = false
     try {
-      const holdOver = holdExpiresAt !== null && new Date(holdExpiresAt) <= new Date()
+      // A submitted order never changes: cancel it, keep the cart, and Pay submits a new one
       const result = await cancelRegistration(registrationId)
-      if ('error' in result && !holdOver) {
-        setError(result.error ?? 'Your entries could not be reopened. Try again.')
-        return
+      switch (result.kind) {
+        case 'cancelled':
+          setRegistrationId(null)
+          setHoldExpiresAt(null)
+          setOrderBreakdown(null)
+          setPaymentStarted(false)
+          return
+        case 'paid':
+        case 'review':
+        case 'checking':
+          // The checkout was paid after all, or may have been
+          leaving = true
+          window.location.href = successHref
+          return
+        default:
+          // try_again or error: the order stays as it is
+          setError(result.message)
       }
-      setRegistrationId(null)
-      setHoldExpiresAt(null)
-      setPaymentStarted(false)
-      setOrderBreakdown(null)
     } catch (err) {
       console.error('Failed to reopen entries:', err)
       setError('Your entries could not be reopened. Check your connection and try again.')
     } finally {
-      setLoading(false)
+      if (!leaving) setLoading(false)
     }
   }
 

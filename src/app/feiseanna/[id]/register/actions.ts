@@ -3,7 +3,6 @@
 import { headers } from 'next/headers'
 import { createClient, getSignedInUser } from '@/lib/supabase/server'
 import { createServiceClient, type ServiceClient } from '@/lib/supabase/service'
-import { canTransitionRegistration } from '@/lib/registration-states'
 import { belowCardMinimum, CHECKOUT_BLOCK_MESSAGES } from '@/lib/engine/checkout-policy'
 import { clientIpFrom } from '@/lib/engine/consent'
 import {
@@ -18,6 +17,8 @@ import {
 } from '@/lib/engine/purchase-snapshot'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { isHouseholdComplete, REQUIRED_HOUSEHOLD_FIELDS } from '@/lib/household'
+import { checkoutDeps } from '@/app/_payments/checkout-deps'
+import { cancel, pay, type CancelResult, type PayResult } from '@/app/_payments/checkout-workflow'
 import { REGISTRATION_COLUMNS } from '@/lib/registration-columns'
 import { createOrderStore, type CreateOrderResult } from '@/app/_payments/order-store'
 import { supabaseRpc } from '@/app/_payments/rpc'
@@ -28,8 +29,7 @@ import type {
   FeisListing,
   Household,
   Registration,
-  RegistrationEntry,
-  RegistrationStatus
+  RegistrationEntry
 } from '@/lib/types/feis-listing'
 
 type RefusalReason = Extract<CreateOrderResult, { status: 'refused' }>['reason']
@@ -225,166 +225,29 @@ export async function createDraftRegistration(
   }
 }
 
-export async function cancelRegistration(registrationId: string) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { error: 'Not authenticated' }
-
-  const { data: household } = await supabase
-    .from('households')
-    .select('id')
-    .eq('user_id', user.id)
-    .single()
-  if (!household) return { error: 'Household not found' }
-
-  const { data: reg, error: fetchError } = await supabase
-    .from('registrations')
-    .select('status')
-    .eq('id', registrationId)
-    .eq('household_id', household.id)
-    .single()
-
-  if (fetchError || !reg) return { error: 'Registration not found' }
-
-  const currentStatus = reg.status as RegistrationStatus
-  if (!canTransitionRegistration(currentStatus, 'cancelled')) {
-    return { error: `Cannot cancel registration in ${currentStatus} state` }
+/** Pay (spec §6): start or resume this order's one checkout, or settle what Stripe already has */
+export async function createCheckoutSession(registrationId: string): Promise<PayResult> {
+  const ctx = await currentHousehold()
+  if ('error' in ctx) return { kind: 'error', message: ctx.error }
+  try {
+    return await pay(checkoutDeps(), { registrationId, householdId: ctx.household.id })
+  } catch (err) {
+    console.error('Pay failed:', err)
+    return { kind: 'error', message: "Payment couldn't start. Please try again in a moment." }
   }
-
-  const { error } = await supabase
-    .from('registrations')
-    .update({ status: 'cancelled' })
-    .eq('id', registrationId)
-
-  if (error) {
-    console.error('Failed to cancel registration:', error)
-    return { error: 'Failed to cancel registration' }
-  }
-
-  return { success: true as const }
 }
 
-export async function createCheckoutSession(registrationId: string) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { error: 'Not authenticated' }
-
-  const { data: household } = await supabase
-    .from('households')
-    .select('id')
-    .eq('user_id', user.id)
-    .single()
-  if (!household) return { error: 'Household not found' }
-
-  const { data: reg, error: regError } = await supabase
-    .from('registrations')
-    .select(
-      `${REGISTRATION_COLUMNS}, registration_entries(*, dancers(first_name, last_name)), feis_listings(name, stripe_account_id)`
-    )
-    .eq('id', registrationId)
-    .eq('household_id', household.id)
-    .single()
-
-  if (regError || !reg) return { error: 'Registration not found' }
-  if (reg.status !== 'draft') return { error: `Cannot create checkout for ${reg.status} registration` }
-
-  if (reg.hold_expires_at && new Date(reg.hold_expires_at) < new Date()) {
-    await supabase.from('registrations').update({ status: 'expired' }).eq('id', registrationId)
-    return { error: 'Registration hold has expired. Please start over.' }
-  }
-
-  // The client types a to-one embed as an array, but a registration has one feis
-  const feisListing = reg.feis_listings as unknown as { stripe_account_id: string | null } | null
-  const connectedAccountId = feisListing?.stripe_account_id
-  if (!connectedAccountId) {
-    return { error: 'Organiser has not connected Stripe' }
-  }
-
-  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL ?? 'http://localhost:3000'
-
+/** Cancel (spec §7): close this order's checkout first, then cancel; never on a guess */
+export async function cancelRegistration(registrationId: string): Promise<CancelResult> {
+  const ctx = await currentHousehold()
+  if ('error' in ctx) return { kind: 'error', message: ctx.error }
   try {
-    const stripe = (await import('@/lib/stripe')).getStripe()
-
-    const lineItems = reg.registration_entries.map((entry: Record<string, unknown>) => ({
-      price_data: {
-        currency: 'usd',
-        product_data: {
-          name: `${(entry.dancers as Record<string, string>)?.first_name ?? 'Dancer'} — Competition Entry`
-        },
-        unit_amount:
-          (entry.base_fee_cents as number) +
-          (entry.late_fee_cents as number) +
-          (entry.day_of_surcharge_cents as number)
-      },
-      quantity: 1
-    }))
-
-    if (reg.event_fee_cents > 0) {
-      lineItems.unshift({
-        price_data: {
-          currency: 'usd',
-          product_data: {
-            name: 'Event Fee (per family)'
-          },
-          unit_amount: reg.event_fee_cents
-        },
-        quantity: 1
-      })
-    }
-
-    // Stripe has no negative line items, so when the family max brings the total down
-    // the whole registration is charged as one line at the capped total
-    const itemsTotal = lineItems.reduce(
-      (sum: number, li: { price_data: { unit_amount: number } }) => sum + li.price_data.unit_amount,
-      0
-    )
-    if (itemsTotal !== reg.total_cents) {
-      lineItems.splice(0, lineItems.length, {
-        price_data: {
-          currency: 'usd',
-          product_data: { name: 'Feis entries (family maximum applied)' },
-          unit_amount: reg.total_cents
-        },
-        quantity: 1
-      })
-    }
-
-    const session = await stripe.checkout.sessions.create(
-      {
-        mode: 'payment',
-        line_items: lineItems,
-        payment_intent_data: {
-          application_fee_amount: reg.application_fee_cents
-        },
-        success_url: `${baseUrl}/feiseanna/${reg.feis_listing_id}/register/success?session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${baseUrl}/feiseanna/${reg.feis_listing_id}/register?step=3`,
-        metadata: {
-          registration_id: registrationId
-        },
-        expires_at: Math.floor(Date.now() / 1000) + 1800
-      },
-      {
-        stripeAccount: connectedAccountId,
-        idempotencyKey: `checkout_${registrationId}`
-      }
-    )
-
-    const { error: updateError } = await supabase
-      .from('registrations')
-      .update({
-        status: 'pending_payment',
-        stripe_checkout_session_id: session.id
-      })
-      .eq('id', registrationId)
-
-    if (updateError) {
-      console.error('Failed to update registration status:', updateError)
-      return { error: 'Failed to update registration status' }
-    }
-
-    return { url: session.url }
+    return await cancel(checkoutDeps(), { registrationId, householdId: ctx.household.id })
   } catch (err) {
-    console.error('Stripe checkout error:', err)
-    return { error: 'Failed to create checkout session' }
+    console.error('Cancel failed:', err)
+    return {
+      kind: 'error',
+      message: "Your entries couldn't be reopened. Please try again in a moment."
+    }
   }
 }
