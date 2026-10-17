@@ -212,7 +212,7 @@ Triggers enforce this for every role, including the service role:
 |---|---|---|
 | draft | pending_payment | `attach_checkout_session` (the claim must match) |
 | draft | cancelled | `cancel_order` |
-| draft | expired | the expiry job |
+| draft | expired | the expiry job, `create_order` (this household's lapsed order for the feis), or `expire_checkout` for this order's own claim (§8) |
 | draft | paid | `confirm_order_payment`, when the payment came through the order's own claim before the session was attached (Pay crashed in between) |
 | pending_payment | paid | `confirm_order_payment` |
 | pending_payment | cancelled | `cancel_order`, after the caller has closed the Stripe session |
