@@ -61,6 +61,40 @@ export type ExpireCheckoutResult =
   | { result: 'expired'; status: 'expired' }
   | { result: 'ignored'; why: 'not_found' | 'mismatch' | 'not_open'; status?: RegistrationStatus }
 
+export type PaymentExceptionReason =
+  | 'amount_mismatch'
+  | 'currency_mismatch'
+  | 'account_mismatch'
+  | 'claim_mismatch'
+  | 'session_mismatch'
+  | 'payment_reused'
+  | 'order_not_payable'
+  | 'late_payment_conflict'
+  | 'order_not_found'
+  | 'payment_failed'
+  | 'listing_account_changed'
+
+export interface ConfirmPaymentInput {
+  registrationId: string
+  claimId: string | null
+  sessionId: string
+  account: string
+  amountCents: number | null
+  currency: string | null
+  paymentStatus: string
+  paymentIntentId: string | null
+  chargeId: string | null
+  eventId: string
+  source: 'webhook' | 'sync'
+}
+
+export type ConfirmResult =
+  | { result: 'confirmed' | 'already_confirmed'; confirmation_number: string | null }
+  | { result: 'exception'; reason: PaymentExceptionReason; support_ref: string }
+  | { result: 'not_paid' }
+
+export type PaymentFailureResult = { result: 'recorded'; support_ref: string } | { result: 'ignored' }
+
 export function createOrderStore(rpc: RpcCaller) {
   return {
     async createOrder(
@@ -135,6 +169,38 @@ export function createOrderStore(rpc: RpcCaller) {
         p_session_id: input.sessionId,
         p_account: input.account
       })) as ExpireCheckoutResult
+    },
+
+    async confirmOrderPayment(input: ConfirmPaymentInput): Promise<ConfirmResult> {
+      return (await rpc('confirm_order_payment', {
+        p_registration_id: input.registrationId,
+        p_claim_id: input.claimId,
+        p_session_id: input.sessionId,
+        p_account: input.account,
+        p_amount_cents: input.amountCents,
+        p_currency: input.currency,
+        p_payment_status: input.paymentStatus,
+        p_payment_intent_id: input.paymentIntentId,
+        p_charge_id: input.chargeId,
+        p_event_id: input.eventId,
+        p_source: input.source
+      })) as ConfirmResult
+    },
+
+    async recordPaymentFailure(input: {
+      registrationId: string
+      claimId: string | null
+      sessionId: string
+      account: string
+      eventId: string
+    }): Promise<PaymentFailureResult> {
+      return (await rpc('record_payment_failure', {
+        p_registration_id: input.registrationId,
+        p_claim_id: input.claimId,
+        p_session_id: input.sessionId,
+        p_account: input.account,
+        p_event_id: input.eventId
+      })) as PaymentFailureResult
     }
   }
 }

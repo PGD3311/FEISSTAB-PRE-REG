@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { Pool } from 'pg'
 import type { Dancer, FeeSchedule, FeisCompetition, FeisListing, Level } from '@/lib/types/feis-listing'
 import { createOrderStore } from '@/app/_payments/order-store'
+import { buildCheckoutConfig, type CheckoutConfig } from '@/lib/engine/checkout-config'
 import { ageCutoffDateFor, type RequestedEntry } from '@/lib/engine/order-validation'
 import {
   buildCreateOrderPayload,
@@ -240,4 +241,37 @@ export async function createDraftOrder(
     payload,
     registrationId: result.registration_id
   }
+}
+
+export function checkoutConfigFor(order: DraftOrderFixture, claimId: string): CheckoutConfig {
+  return buildCheckoutConfig({
+    registrationId: order.registrationId,
+    feisListingId: order.listing.listing.id,
+    claimId,
+    account: order.listing.listing.stripe_account_id ?? 'acct_test_feis',
+    totalCents: order.payload.total_cents,
+    applicationFeeCents: order.payload.application_fee_cents,
+    eventFeeCents: order.payload.event_fee_cents,
+    snapshot: order.payload.purchase_snapshot,
+    baseUrl: 'https://runfeis.test',
+    now: new Date(),
+  })
+}
+
+/** Claims checkout for an order and, unless attach is false, attaches a session, as Pay would. */
+export async function readyToPay(
+  pool: Pool,
+  order: DraftOrderFixture,
+  opts: { attach?: boolean } = {}
+): Promise<{ claimId: string; config: CheckoutConfig; sessionId: string }> {
+  const store = createOrderStore(pgRpc(pool))
+  const claimId = randomUUID()
+  const config = checkoutConfigFor(order, claimId)
+  const claim = await store.claimCheckout({
+    registrationId: order.registrationId, householdId: order.family.householdId, claimId, config,
+  })
+  if (claim.result !== 'claimed') throw new Error(`expected a claim, got ${claim.result}`)
+  const sessionId = `cs_${claimId.replace(/-/g, '').slice(0, 12)}`
+  if (opts.attach !== false) await store.attachCheckoutSession(order.registrationId, claimId, sessionId)
+  return { claimId, config, sessionId }
 }
