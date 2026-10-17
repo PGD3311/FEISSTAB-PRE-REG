@@ -71,6 +71,9 @@ export function checkoutSessionParams(config: CheckoutConfig): Stripe.Checkout.S
   }
 }
 
+/** How long one create request may take before the workflow treats it as a retryable failure */
+const CREATE_REQUEST_TIMEOUT_MS = 20_000
+
 function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
@@ -87,9 +90,14 @@ export function createStripeGateway(stripe: Stripe): StripeGateway {
   return {
     async createCheckoutSession(config) {
       try {
+        // One HTTP request per call, and a short one. The SDK would otherwise retry on its own
+        // (2 retries, 80 seconds a try), sending create requests long after Pay's 5-minute
+        // deadline. The workflow replays with the same idempotency key, and decides when to stop.
         const session = await stripe.checkout.sessions.create(checkoutSessionParams(config), {
           stripeAccount: config.account,
-          idempotencyKey: config.idempotency_key
+          idempotencyKey: config.idempotency_key,
+          maxNetworkRetries: 0,
+          timeout: CREATE_REQUEST_TIMEOUT_MS
         })
         return { kind: 'created', session: toGatewaySession(session) }
       } catch (err) {

@@ -136,6 +136,20 @@ describe('pay', () => {
     expect(stripe.sessions.size).toBe(0)
   })
 
+  it('sends no create request for a claim older than 5 minutes, and keeps the order while one may still be running', async () => {
+    const stripe = new FakeStripe()
+    const order = await createDraftOrder(db.pool)
+    await claimOnly(order) // Pay claimed, then stopped before making a session
+    // 7 minutes on: past Pay's 5-minute create deadline, but before the 10 minutes after which none can be running
+    expect(await pay(deps(stripe, { now: minutesLater(7) }), ids(order)))
+      .toEqual({ kind: 'try_again', message: CHECKOUT_MESSAGES.starting })
+    expect(stripe.createCalls).toBe(0)
+    expect(stripe.sessionsFor(order.registrationId)).toHaveLength(0)
+    const row = await orderRow(order.registrationId)
+    expect(row.status).toBe('draft')
+    expect(row.checkout_claim_id).not.toBeNull()
+  })
+
   it('starts no checkout once the organiser closes registration, and leaves the order alone', async () => {
     const stripe = new FakeStripe()
     const order = await createDraftOrder(db.pool)
