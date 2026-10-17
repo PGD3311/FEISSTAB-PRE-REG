@@ -57,6 +57,14 @@
     - `create_order` expires this household's lapsed orders for the feis first.
     - Stripe shows late and day-of fees as their own lines, and respects its 100-line limit.
     - The `competition_unavailable` message points at Change entries.
+- **Tasks 8–10 are built, reviewed and fixed** (batch 3): commits `e392ec2..c5a8049`.
+  - The code is the record where it differs from the task text below:
+    - `claim_checkout` also refuses bad line amounts or counts and any method but card.
+    - `confirm_order_payment`'s active-order check uses the unique index's predicate.
+    - Stripe create requests never retry on their own (20 s timeout).
+    - Pay and Cancel return `checking` when a payment may have gone through.
+    - The sync logs its cases.
+    - Submit refuses an order below the 50-cent card minimum.
 - **Tasks 5–16 are revised** to fit the as-built code and the redesigned registration pages. Tasks 7 and 12 were rewritten for the new entry page, success page and dashboard.
 
 ## Global Constraints
@@ -4031,7 +4039,7 @@ git commit -m "feat: submit checks, prices and creates orders on the server, by 
 
 ---
 
-### Task 8: Migration 014, checkout claims
+### Task 8: Migration 014, checkout claims (done)
 
 **Files:**
 - Create: `supabase/migrations/014_checkout_claims.sql`
@@ -4617,7 +4625,7 @@ git commit -m "feat: one frozen checkout claim per order, with the organiser's s
 
 ---
 
-### Task 9: Migration 015, confirmation in one transaction, payment cases and the parent view
+### Task 9: Migration 015, confirmation in one transaction, payment cases and the parent view (done)
 
 **Files:**
 - Create: `supabase/migrations/015_payment_confirmation.sql`
@@ -5529,7 +5537,7 @@ git commit -m "feat: confirm payments in one transaction and record every case t
 
 ---
 
-### Task 10: The Stripe gateway, a fake Stripe, and the Pay, Cancel and sync workflows
+### Task 10: The Stripe gateway, a fake Stripe, and the Pay, Cancel and sync workflows (done)
 
 **Files:**
 - Create: `src/lib/payment-review-messages.ts`
