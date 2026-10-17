@@ -34,7 +34,7 @@ function SignupForm() {
     setLoading(true)
 
     try {
-      const { error: authError } = await supabase.auth.signUp({
+      const { data, error: authError } = await supabase.auth.signUp({
         email,
         password,
         // The confirmation link must come back to this site; the shared Supabase project's
@@ -51,6 +51,13 @@ function SignupForm() {
         } else {
           setError(authError.message)
         }
+        return
+      }
+
+      // For an email that already has an account, Supabase reports success but sends nothing,
+      // returning a user with no identities
+      if (data.user && data.user.identities?.length === 0) {
+        setError('There is already an account with this email. Sign in instead.')
         return
       }
 
