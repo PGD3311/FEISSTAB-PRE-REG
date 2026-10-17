@@ -233,7 +233,9 @@ like test orders. Note the exact name and the `all_orders` figure.
 A test feis with no name (`name` is empty in the preview) can't be reset this way: the block refuses it safely. Give it
 a name first, then run the preview again:
 ```sql
-UPDATE pre_registration.feis_listings SET name = 'Test feis' WHERE id = '<test feis id>';
+UPDATE pre_registration.feis_listings SET name = 'Test feis'
+WHERE id = '<test feis id>' AND coalesce(name, '') = ''  -- only a feis with no name
+RETURNING id, name;  -- exactly one row; no row means a wrong id or a feis that already has a name
 ```
 
 **Step 2: delete.** Fill in the id, the exact name from the preview (double any apostrophe: `O''Brien`), and the

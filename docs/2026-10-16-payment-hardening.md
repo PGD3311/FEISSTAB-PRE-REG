@@ -9729,6 +9729,8 @@ git commit -m "feat: per-reason case resolutions in a schema the API can't reach
 
 - [ ] **Step 1: Write the runbook**
 
+> **Superseded:** this is the plan's first draft. The runbook as built, reviewed and checked against the migrations is `docs/runbooks/payment-exceptions.md`. Use that file, not this draft.
+
 Create `docs/runbooks/payment-exceptions.md`:
 ````markdown
 # Payment cases and emails: runbook
