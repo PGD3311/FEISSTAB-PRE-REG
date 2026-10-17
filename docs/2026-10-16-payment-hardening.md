@@ -97,7 +97,8 @@
   - support references look like `PAY-XXXXX`
   - both use the alphabet `ABCDEFGHJKMNPQRSTUVWXYZ23456789`
 - **Notification retries:**
-  - backoff of 5 min, 15 min, 1 h, 3 h, 6 h, then 12 h, for 6 attempts in total
+  - waits of 5 min, 15 min, 1 h, 3 h and 6 h between attempts, for 6 attempts in total, whatever the outcomes: a refusal on the 6th attempt makes it `failed`, an uncertain send on the 6th makes it `needs_check`
+  - a refusal after an attempt that may have gone out (an earlier uncertain outcome, or a taken-over crashed claim) is treated as uncertain: the idempotency key does not change
   - an uncertain delivery is never retried more than 23 hours after its first attempt; it becomes `needs_check`
   - the provider idempotency key is `<dedupe_key>:<send_generation>`
 - **Code style:** match the surrounding code: single quotes, no semicolons, no trailing commas, 2-space indent, 100 columns. The repo has no Prettier config, so run Prettier with `--single-quote --no-semi --trailing-comma none --print-width 100`.

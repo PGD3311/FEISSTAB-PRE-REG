@@ -491,10 +491,12 @@ These claim, backoff and outcome rules are database functions (migration 016), s
 
 **Outcomes:**
 - **Accepted:** mark it `sent` and save `provider_message_id`.
-- **Explicit failure** (Resend rejected it, so nothing was sent): increase `send_generation`, set it back to `pending`, and wait before the next try: 5 min, 15 min, 1 h, 3 h, 6 h, then 12 h. After the last try it's `failed`.
+- **Explicit failure** (Resend rejected it, so nothing was sent): increase `send_generation`, set it back to `pending`, and wait before the next try: 5 min, 15 min, 1 h, 3 h, then 6 h, which is 6 attempts in total. After the sixth attempt it's `failed`.
   - A failed confirmation queues an alert.
   - A failed alert is only logged (`[NOTIFICATION_FAILED]`), so failures can't loop. The same applies when an alert becomes `needs_check` (below): it never raises another alert.
 - **Uncertain** (a timeout, a network error or a 5xx): retry with the same key, so Resend deduplicates it, while within 23 hours of `first_attempt_at`. After that it becomes `needs_check` and an alert is raised. It's never sent again automatically. The runbook covers checking Resend's logs and resending by hand.
+  - It uses the same waits and the same six attempts in total: an uncertain send that reaches its sixth attempt becomes `needs_check` too.
+  - A refusal after an attempt that may have gone out (an earlier uncertain outcome, or a crashed claim that was taken over) only proves that the retry sent nothing. It's treated as uncertain: the key and `send_generation` stay as they are, and the 23-hour rule applies. The key only changes after a refusal when no earlier attempt under that key may have been delivered.
 
 **What this guarantees:** at most one email per notification within Resend's 24-hour window. Outside that window, an uncertain delivery waits for a person rather than risking a duplicate.
 

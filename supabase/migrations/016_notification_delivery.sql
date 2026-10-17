@@ -61,7 +61,9 @@ BEGIN
     SET status = 'sending',
         claim_token = gen_random_uuid(),
         claimed_at = p_now,
-        first_attempt_at = coalesce(n.first_attempt_at, p_now)
+        first_attempt_at = coalesce(n.first_attempt_at, p_now),
+        -- Taking over a claim that never finished: its worker may have sent the email before it stopped
+        last_outcome = CASE WHEN n.status = 'sending' THEN 'uncertain' ELSE n.last_outcome END
     FROM due
     WHERE n.id = due.id
     RETURNING n.*
@@ -102,8 +104,11 @@ SET search_path = pre_registration, pg_temp
 AS $$
 DECLARE
   v_row notifications%ROWTYPE;
-  v_backoff interval[] := ARRAY['5 minutes', '15 minutes', '1 hour', '3 hours', '6 hours', '12 hours']::interval[];
+  -- The waits before attempts 2 to 6: six attempts in total, whatever the outcomes
+  v_backoff interval[] := ARRAY['5 minutes', '15 minutes', '1 hour', '3 hours', '6 hours']::interval[];
+  v_max_attempts integer := array_length(v_backoff, 1) + 1;
   v_attempts integer;
+  v_outcome text := p_outcome;
 BEGIN
   -- Only the newest claim may finish: an older worker's token no longer matches
   SELECT * INTO v_row FROM notifications
@@ -114,7 +119,13 @@ BEGIN
   END IF;
   v_attempts := v_row.attempts + 1;
 
-  IF p_outcome = 'sent' THEN
+  -- A refusal only proves that this attempt sent nothing. If an earlier attempt with the same key may have
+  -- gone out, the key must not change, or the provider could deliver a second copy: treat it as uncertain
+  IF v_outcome = 'explicit_failure' AND v_row.last_outcome = 'uncertain' THEN
+    v_outcome := 'uncertain';
+  END IF;
+
+  IF v_outcome = 'sent' THEN
     UPDATE notifications
     SET status = 'sent', last_outcome = 'sent', attempts = v_attempts, provider_message_id = p_provider_message_id,
         sent_at = p_now, claim_token = NULL, last_error = NULL
@@ -122,8 +133,8 @@ BEGIN
     RETURN jsonb_build_object('result', 'sent');
   END IF;
 
-  IF p_outcome = 'explicit_failure' THEN
-    IF v_attempts >= array_length(v_backoff, 1) THEN
+  IF v_outcome = 'explicit_failure' THEN
+    IF v_attempts >= v_max_attempts THEN
       UPDATE notifications
       SET status = 'failed', last_outcome = 'explicit_failure', attempts = v_attempts, last_error = p_error,
           claim_token = NULL
@@ -140,11 +151,20 @@ BEGIN
     RETURN jsonb_build_object('result', 'retry_scheduled');
   END IF;
 
-  IF p_outcome = 'uncertain' THEN
-    -- It may have gone out: retry with the same provider key so the provider deduplicates it
+  IF v_outcome = 'uncertain' THEN
+    -- It may have gone out, and the attempts are used up: a person checks, nothing is sent again
+    IF v_attempts >= v_max_attempts THEN
+      UPDATE notifications
+      SET status = 'needs_check', last_outcome = 'uncertain', attempts = v_attempts, last_error = p_error,
+          claim_token = NULL
+      WHERE id = p_id;
+      PERFORM _queue_delivery_alert(p_id);
+      RETURN jsonb_build_object('result', 'needs_check');
+    END IF;
+    -- Otherwise retry with the same provider key so the provider deduplicates it
     UPDATE notifications
     SET status = 'pending', last_outcome = 'uncertain', attempts = v_attempts, last_error = p_error,
-        claim_token = NULL, next_attempt_at = p_now + v_backoff[least(v_attempts, array_length(v_backoff, 1))]
+        claim_token = NULL, next_attempt_at = p_now + v_backoff[v_attempts]
     WHERE id = p_id;
     RETURN jsonb_build_object('result', 'retry_scheduled');
   END IF;

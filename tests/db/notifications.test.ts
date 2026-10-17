@@ -56,6 +56,18 @@ async function row(kind: string) {
   return rows[0]
 }
 
+/** How long after the test clock the confirmation's next attempt is due */
+async function nextAttemptInMs(): Promise<number> {
+  const { rows } = await db.pool.query(
+    `SELECT (extract(epoch FROM next_attempt_at) * 1000)::bigint AS ms
+     FROM notifications WHERE kind = 'registration_confirmation'`
+  )
+  return Number(rows[0].ms) - clock.getTime()
+}
+
+// Six attempts in total, so five waits between them
+const WAITS_MINUTES = [5, 15, 60, 180, 360]
+
 describe('the notification queue', () => {
   it('sends a queued confirmation once and saves the provider id', async () => {
     const order = await confirmedOrder()
@@ -112,6 +124,88 @@ describe('the notification queue', () => {
     await processNotifications(worker(email))
     expect(email.delivered).toHaveLength(1)
     expect(await row('registration_confirmation')).toMatchObject({ status: 'sent' })
+  })
+
+  it('keeps the key when a retry is refused after an earlier send may have gone out', async () => {
+    const order = await confirmedOrder()
+    const email = new FakeEmail()
+    // Attempt 1 reaches Resend but its reply is lost, attempt 2 is refused (429), attempt 3 gets through
+    email.next = ['uncertain-after', 'reject']
+    await processNotifications(worker(email))
+    advance(6)
+    await processNotifications(worker(email))
+    // The refusal proves only that the retry did nothing: the first send may still have gone out
+    expect(await row('registration_confirmation')).toMatchObject({
+      status: 'pending', last_outcome: 'uncertain', send_generation: 0, attempts: 2
+    })
+    advance(16)
+    await processNotifications(worker(email))
+
+    expect(await row('registration_confirmation')).toMatchObject({ status: 'sent', send_generation: 0, attempts: 3 })
+    expect(email.delivered).toHaveLength(1)
+    expect(email.delivered[0].key).toBe(`confirmation:${order.registrationId}:0`)
+  })
+
+  it('keeps the key when a refusal follows taking over a claim whose worker may have sent it', async () => {
+    const order = await confirmedOrder()
+    const email = new FakeEmail()
+    const [claimed] = await notifications.claim(10, clock)
+    await notifications.freeze(claimed.id, claimed.claim_token, claimed.recipient!, { from: 'x', subject: 's', html: 'h' })
+    await email.send({ from: 'x', to: [claimed.recipient!], subject: 's', html: 'h' }, `${claimed.dedupe_key}:0`)
+    // The worker stopped here: nothing recorded that the send may have happened
+    advance(11)
+    email.next = ['reject']
+    await processNotifications(worker(email))
+    expect(await row('registration_confirmation')).toMatchObject({
+      status: 'pending', last_outcome: 'uncertain', send_generation: 0, attempts: 1
+    })
+    advance(6)
+    await processNotifications(worker(email))
+
+    expect(await row('registration_confirmation')).toMatchObject({ status: 'sent', send_generation: 0 })
+    expect(email.delivered).toHaveLength(1)
+    expect(email.delivered[0].key).toBe(`confirmation:${order.registrationId}:0`)
+  })
+
+  it('stops after six attempts for an uncertain send too, then waits for a person', async () => {
+    await confirmedOrder()
+    const email = new FakeEmail()
+    email.next = Array(6).fill('uncertain-before')
+    for (let attempt = 1; attempt <= 6; attempt++) {
+      await processNotifications(worker(email))
+      const current = await row('registration_confirmation')
+      expect(current.attempts).toBe(attempt)
+      if (attempt < 6) {
+        expect(current).toMatchObject({ status: 'pending', last_outcome: 'uncertain', send_generation: 0 })
+        expect(await nextAttemptInMs()).toBe(WAITS_MINUTES[attempt - 1] * 60_000)
+        advance(WAITS_MINUTES[attempt - 1])
+      }
+    }
+    expect(await row('registration_confirmation')).toMatchObject({ status: 'needs_check', attempts: 6 })
+    expect(await row('delivery_failure_alert')).toBeDefined()
+
+    // Well inside the 23 hours, and nothing is sent a seventh time
+    advance(7 * 60)
+    await processNotifications(worker(email))
+    expect(email.delivered.filter((d) => d.key.startsWith('confirmation:'))).toEqual([])
+    expect(await row('registration_confirmation')).toMatchObject({ status: 'needs_check', attempts: 6 })
+  })
+
+  it('waits 5 min, 15 min, 1 h, 3 h and 6 h between refusals, and fails on the sixth', async () => {
+    await confirmedOrder()
+    const email = new FakeEmail()
+    email.next = Array(6).fill('reject')
+    for (let attempt = 1; attempt <= 6; attempt++) {
+      await processNotifications(worker(email))
+      const current = await row('registration_confirmation')
+      expect(current.attempts).toBe(attempt)
+      if (attempt < 6) {
+        expect(current).toMatchObject({ status: 'pending', send_generation: attempt })
+        expect(await nextAttemptInMs()).toBe(WAITS_MINUTES[attempt - 1] * 60_000)
+        advance(WAITS_MINUTES[attempt - 1])
+      }
+    }
+    expect(await row('registration_confirmation')).toMatchObject({ status: 'failed', attempts: 6 })
   })
 
   it('recovers a send whose worker stopped after the provider accepted it', async () => {

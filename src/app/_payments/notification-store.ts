@@ -37,7 +37,7 @@ export interface NotificationContext {
 }
 
 export type CompleteOutcome = 'sent' | 'explicit_failure' | 'uncertain'
-export type CompleteResult = 'sent' | 'retry_scheduled' | 'failed' | 'stale_claim'
+export type CompleteResult = 'sent' | 'retry_scheduled' | 'failed' | 'needs_check' | 'stale_claim'
 
 export function createNotificationStore(rpc: RpcCaller) {
   return {

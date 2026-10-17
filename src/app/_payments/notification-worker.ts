@@ -147,6 +147,9 @@ export async function processNotifications(
       deps.log(`[NOTIFICATIONS] ${row.id} was claimed again while sending; the newer claim stands`)
     }
     if (result === 'failed') deps.log(`[NOTIFICATION_FAILED] ${row.kind} ${row.id}`)
+    if (result === 'needs_check') {
+      deps.log(`[NOTIFICATION_FAILED] ${row.kind} ${row.id} may have been sent; a person must check`)
+    }
   }
 
   return { paused: false, claimed: rows.length, sent }
