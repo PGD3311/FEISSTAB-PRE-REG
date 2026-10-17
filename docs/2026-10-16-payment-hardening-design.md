@@ -383,7 +383,8 @@ It runs as one transaction:
    - the payment intent isn't already recorded on another order (a new partial unique index); otherwise `payment_reused`
 4. **State checks:**
    - A `draft` with this claim, or `pending_payment`, is fine.
-   - An `expired` order is fine only if no other order for this household and feis is active (`draft`, `pending_payment` or `paid`). Otherwise it's `late_payment_conflict`.
+   - An `expired` order is fine only if no other order for this household and feis is active (anything but `expired` or `cancelled`). Otherwise it's `late_payment_conflict`.
+   - Once a session's payment has been recorded as a `late_payment_conflict` case for this order, open or resolved, a later confirmation returns that case and never fulfils, even if the other order has since ended. Only `payments_admin.confirm_late_payment` (§11) can confirm it.
    - A `cancelled` order is `order_not_payable`.
 5. **Any failed check** records a case (§10) and returns its reference. The order is left exactly as it was.
 6. **Otherwise, all of these happen together, or none of them do:**
