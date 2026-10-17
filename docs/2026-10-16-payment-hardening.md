@@ -24,7 +24,7 @@
 
 **Spec:** `docs/2026-10-16-payment-hardening-design.md` (revision 4). Read it before you start. "§n" below means section n of the spec.
 
-## Progress (2026-10-16)
+## Progress (2026-10-17)
 
 - **Tasks 1–4 are built, reviewed and fixed:** commits `e9f05f3..284ca4f` on `payment-hardening`, rebased onto the redesigned `main` (337ab01).
   - Their task text below is the plan as first written. The code on the branch is the record of what was built.
@@ -66,6 +66,14 @@
     - The sync logs its cases.
     - Submit refuses an order below the 50-cent card minimum.
 - **Tasks 5–16 are revised** to fit the as-built code and the redesigned registration pages. Tasks 7 and 12 were rewritten for the new entry page, success page and dashboard.
+- **Tasks 11–15 are built, reviewed and fixed** (batch 4): commits `259c74b..6e2db2e`, then the batch 4 fixes.
+  - The code is the record where it differs from the task text below:
+    - **The late-payment-case rule (015):** once a session's payment is recorded as a `late_payment_conflict` case for an order, open or resolved, every later confirmation for that session and order returns that case and never fulfils it. Only `payments_admin.confirm_late_payment` confirms it.
+    - **The notification key and attempts rules (016):** six attempts in total for every outcome, with waits of 5 min, 15 min, 1 h, 3 h and 6 h. A refusal after an attempt that may have gone out (an earlier uncertain send, or a stale `sending` claim taken over) counts as uncertain, so the key and `send_generation` stay. An uncertain send that reaches its sixth attempt becomes `needs_check`.
+    - **The `payment_reused` closing (017):** `close_exception` allows `no_action` for `payment_reused` when Stripe shows no second charge, since the case's payment intent is the other, confirmed order's payment. Batch 4 also revokes `admin_actions` from the service role and both functions from every API role by name, refuses a note without a non-space character, and takes a refund ID only on `refunded`.
+    - **The runbook's safety changes (Task 15):** the test-data reset is a read-only preview, then one all-or-nothing block that checks the feis id, its exact name and the order count. Before confirming a late payment (3a), Stripe is checked for refunds and disputes. Before 3a or a refund (3b), the other payments contact is told, and 3b first checks the case is still open. A reused payment's intent is never refunded. Stuck emails have a query and a guarded resend. The family is emailed by hand after any message-A case is closed (3e). Email is paused until a sending domain is verified.
+    - **The app (batch 4):** Back from Stripe re-enables Pay. The dashboard says when it couldn't load entries. The success page shows "This payment has been reviewed…" once a message-A case is closed. One bad email row doesn't stall the rest. An ignored failure notice is logged.
+  - **Task 16** is updated to match: the live test fixture's snapshot has `rules`; Step 4 sets `STRIPE_APPLICATION_FEE_PERCENT` and `NEXT_PUBLIC_BASE_URL`, checks Fluid compute and leaves `PAYMENTS_ALERT_EMAIL` unset; Step 7 reloads the API's schema cache and adds the three new webhook events after the deploy; the live script also checks `payments_admin`, the email queue functions and the one-active-order index; Step 8 dry-reads the runbook; Step 12 turns email on.
 
 ## Global Constraints
 
@@ -6729,7 +6737,7 @@ git commit -m "feat: Pay, Cancel and the sync find and settle a claim's session 
 
 ---
 
-### Task 11: The new webhook
+### Task 11: The new webhook (done)
 
 **Files:**
 - Create: `src/app/_payments/webhook-handler.ts`
@@ -7024,7 +7032,7 @@ git commit -m "feat: the webhook confirms, records failures and expires checkout
 
 ---
 
-### Task 12: Pay and Cancel actions, the success page and the dashboard
+### Task 12: Pay and Cancel actions, the success page and the dashboard (done)
 
 **Files:**
 - Create: `src/app/_payments/checkout-deps.ts`
@@ -8097,7 +8105,7 @@ git commit -m "feat: Pay and Cancel use the claim workflow; success page confirm
 
 ---
 
-### Task 13: Migration 016 and the notification queue
+### Task 13: Migration 016 and the notification queue (done)
 
 **Files:**
 - Create: `supabase/migrations/016_notification_delivery.sql`
@@ -9333,7 +9341,7 @@ git commit -m "feat: email queue with frozen messages, claim tokens and provider
 
 ---
 
-### Task 14: Migration 017, resolving cases safely (admin only)
+### Task 14: Migration 017, resolving cases safely (admin only) (done)
 
 **Files:**
 - Create: `supabase/migrations/017_payments_admin.sql`
@@ -9717,7 +9725,7 @@ git commit -m "feat: per-reason case resolutions in a schema the API can't reach
 
 ---
 
-### Task 15: The payment-cases runbook and the project rules
+### Task 15: The payment-cases runbook and the project rules (done)
 
 **Files:**
 - Create: `docs/runbooks/payment-exceptions.md`
@@ -9926,7 +9934,9 @@ git commit -m "docs: payment cases runbook and payment rules in CLAUDE.md"
 
 ### Task 16: Live check, rehearsal, live verification and rollout
 
-This task touches the live project. Steps 3, 4, 7 and 8 need Daniel's go-ahead at the time: Step 3 copies the live data to this machine, Step 4 sets Vercel variables, Step 7 applies the migrations and pushes to `main` (which deploys), and Step 8 schedules a job. Ask before each one. Don't treat approval of this plan as approval for them.
+This task touches the live project. Steps 3, 4, 7, 8 and 12 need Daniel's go-ahead at the time: Step 3 copies the live data to this machine, Step 4 sets Vercel settings, Step 7 applies the migrations, pushes to `main` (which deploys) and adds the new Stripe webhook events, Step 8 schedules a job, and Step 12 turns email on. Ask before each one. Don't treat approval of this plan as approval for them.
+
+**Email goes live paused (Daniel's decision, 2026-10-17).** Resend's sender is still the sandbox `onboarding@resend.dev`, which delivers only to the Resend account owner. So `PAYMENTS_ALERT_EMAIL` stays unset on Vercel: `emailIsConfigured()` is false, nothing is sent, and the queue waits as `pending` without using attempts. Payment-case alerts are watched through the logs and the runbook's daily queries. A verified sending domain, `EMAIL_FROM` and `PAYMENTS_ALERT_EMAIL` must be set up before the first real feis opens (Step 12).
 
 **Files:**
 - Create: `supabase/checks/payment-hardening-live-check.sql`
@@ -9946,6 +9956,10 @@ The script checks the rules the way the local suite does:
 - column-level write grants (`has_any_column_privilege`)
 - row-level security
 - the three row guards and the three `TRUNCATE` guards, and that the service role can't `TRUNCATE`
+- who can reach `payments_admin` and its audit table (no one but the SQL editor: not parents, `anon` or the service
+  role), and who can run 016's email queue functions (not `anon` or `authenticated`)
+- that the one-active-order index is `idx_registrations_active_unique` with 002's predicate, since 015 tells a
+  late-payment conflict apart from any other uniqueness failure by that name
 
 It also reads a test feis's orders as its organiser, the way the organiser entries view (`getFeisEntries`) does.
 
@@ -9975,6 +9989,11 @@ CREATE FUNCTION pg_temp.as_anon() RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
   PERFORM set_config('request.jwt.claims', '{"role":"anon"}', true);
   PERFORM set_config('role', 'anon', true);
+END $$;
+CREATE FUNCTION pg_temp.as_service() RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM set_config('request.jwt.claims', '{"role":"service_role"}', true);
+  PERFORM set_config('role', 'service_role', true);
 END $$;
 CREATE FUNCTION pg_temp.as_admin() RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
@@ -10024,6 +10043,8 @@ BEGIN
     'entries', jsonb_build_array(v_entry || jsonb_build_object('feis_competition_id', v_comp)),
     'purchase_snapshot', jsonb_build_object(
       'version', 1,
+      -- create_order checks the order's consent and terms versions against the snapshot's rules
+      'rules', jsonb_build_object('consent_version', 'live-test', 'platform_terms_version', 'live-test'),
       'entries', jsonb_build_array(v_entry || jsonb_build_object('competition_id', v_comp)),
       'pricing', jsonb_build_object('breakdown', jsonb_build_object(
         'grand_total_cents', 1500, 'event_fee_cents', 0, 'family_cap_savings_cents', 0)))));
@@ -10114,11 +10135,43 @@ DO $$ BEGIN
   PERFORM pg_temp.as_admin(); PERFORM pg_temp.ok('parent cannot call confirm_order_payment', false, 'call succeeded');
 EXCEPTION WHEN OTHERS THEN PERFORM pg_temp.ok('parent cannot call confirm_order_payment', true, SQLERRM); END $$;
 
+-- A refusal only counts if the script really was that role: a failed switch would also raise 42501
+DO $$ DECLARE v_anon text; v_service text; BEGIN
+  PERFORM pg_temp.as_anon(); v_anon := current_user; PERFORM pg_temp.as_admin();
+  PERFORM pg_temp.as_service(); v_service := current_user; PERFORM pg_temp.as_admin();
+  PERFORM pg_temp.ok('the script can act as anon and as the service role',
+    v_anon = 'anon' AND v_service = 'service_role', concat_ws(', ', v_anon, v_service));
+EXCEPTION WHEN OTHERS THEN PERFORM pg_temp.ok('the script can act as anon and as the service role', false, SQLERRM); END $$;
+
+-- payments_admin is for the SQL editor only. Each call must be refused for lack of permission (42501), not
+-- reach the function and fail there ("no payment case")
 DO $$ BEGIN
   PERFORM pg_temp.as_user('parent');
   PERFORM payments_admin.close_exception('PAY-XXXXX', 'no_action', NULL, 'x');
   PERFORM pg_temp.as_admin(); PERFORM pg_temp.ok('parent cannot reach payments_admin', false, 'call succeeded');
-EXCEPTION WHEN OTHERS THEN PERFORM pg_temp.ok('parent cannot reach payments_admin', true, SQLERRM); END $$;
+EXCEPTION WHEN OTHERS THEN PERFORM pg_temp.ok('parent cannot reach payments_admin', SQLSTATE = '42501', SQLERRM); END $$;
+
+DO $$ BEGIN
+  PERFORM pg_temp.as_anon();
+  PERFORM payments_admin.close_exception('PAY-XXXXX', 'no_action', NULL, 'x');
+  PERFORM pg_temp.as_admin(); PERFORM pg_temp.ok('anon cannot reach payments_admin', false, 'call succeeded');
+EXCEPTION WHEN OTHERS THEN PERFORM pg_temp.ok('anon cannot reach payments_admin', SQLSTATE = '42501', SQLERRM); END $$;
+
+DO $$ BEGIN
+  PERFORM pg_temp.as_service();
+  PERFORM payments_admin.confirm_late_payment('PAY-XXXXX', 'x');
+  PERFORM pg_temp.as_admin(); PERFORM pg_temp.ok('the service role cannot reach payments_admin', false, 'call succeeded');
+EXCEPTION WHEN OTHERS THEN
+  PERFORM pg_temp.ok('the service role cannot reach payments_admin', SQLSTATE = '42501', SQLERRM);
+END $$;
+
+DO $$ BEGIN
+  PERFORM pg_temp.as_service();
+  INSERT INTO pre_registration.admin_actions (action, note) VALUES ('forged', 'not a real decision');
+  PERFORM pg_temp.as_admin(); PERFORM pg_temp.ok('the service role cannot write the audit trail', false, 'insert succeeded');
+EXCEPTION WHEN OTHERS THEN
+  PERFORM pg_temp.ok('the service role cannot write the audit trail', SQLSTATE = '42501', SQLERRM);
+END $$;
 
 -- ---------- State after the attempts, and the effective rules ----------
 DO $$ DECLARE v record; BEGIN
@@ -10201,6 +10254,47 @@ DO $$ DECLARE v_n int; BEGIN
   JOIN pg_trigger t ON t.tgrelid = ('pre_registration.' || g.tbl)::regclass AND t.tgname = g.trigger_name
   WHERE NOT t.tgisinternal AND t.tgenabled IN ('O', 'A');
   PERFORM pg_temp.ok('the three row guards and the three TRUNCATE guards are installed and on', v_n = 6, v_n::text);
+END $$;
+
+-- 017: no API role can use the admin schema or its functions, or holds anything on the audit table (an empty ACL
+-- is read as the default one, which for a function includes EXECUTE for PUBLIC)
+DO $$ DECLARE v_reach text; v_acl text; BEGIN
+  SELECT string_agg(r.role || ':' || f.fn, ', ') INTO v_reach
+  FROM unnest(ARRAY['anon', 'authenticated', 'service_role']) AS r(role)
+  CROSS JOIN unnest(ARRAY['payments_admin.confirm_late_payment(text, text)',
+                          'payments_admin.close_exception(text, text, text, text)']) AS f(fn)
+  WHERE has_schema_privilege(r.role, 'payments_admin', 'USAGE') OR has_function_privilege(r.role, f.fn, 'EXECUTE');
+  SELECT string_agg(CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE a.grantee::regrole::text END || ':' || a.privilege_type,
+                    ', ' ORDER BY a.privilege_type) INTO v_acl
+  FROM pg_class c
+  CROSS JOIN LATERAL aclexplode(coalesce(c.relacl, acldefault('r', c.relowner))) AS a
+  WHERE c.oid = 'pre_registration.admin_actions'::regclass
+    AND (a.grantee = 0 OR a.grantee IN ('anon'::regrole, 'authenticated'::regrole, 'service_role'::regrole));
+  PERFORM pg_temp.ok('no API role can run payments_admin or touch admin_actions', v_reach IS NULL AND v_acl IS NULL,
+    concat_ws(' | ', v_reach, v_acl));
+END $$;
+
+-- 016's email queue is for the service role (the cron endpoint) only
+DO $$ DECLARE v_callable text; BEGIN
+  SELECT string_agg(r.role || ':' || f.fn, ', ') INTO v_callable
+  FROM unnest(ARRAY['anon', 'authenticated']) AS r(role)
+  CROSS JOIN unnest(ARRAY['pre_registration.claim_notifications(integer, timestamptz)',
+                          'pre_registration.freeze_notification(uuid, uuid, text, jsonb)',
+                          'pre_registration.complete_notification(uuid, uuid, text, text, text, timestamptz)',
+                          'pre_registration.get_notification_context(uuid)',
+                          'pre_registration._queue_delivery_alert(uuid)']) AS f(fn)
+  WHERE has_function_privilege(r.role, f.fn, 'EXECUTE');
+  PERFORM pg_temp.ok('anon and authenticated cannot run the email queue functions', v_callable IS NULL, v_callable);
+END $$;
+
+-- 013 and 015 copy this index's predicate, and 015 relabels a unique violation as late_payment_conflict only when
+-- it names this index, so live must have exactly this index under exactly this name
+DO $$ DECLARE v_def text; BEGIN
+  v_def := pg_get_indexdef(to_regclass('pre_registration.idx_registrations_active_unique'));
+  PERFORM pg_temp.ok('the one-active-order index is idx_registrations_active_unique, as 002 made it', v_def =
+    'CREATE UNIQUE INDEX idx_registrations_active_unique ON pre_registration.registrations USING btree '
+    '(feis_listing_id, household_id) WHERE (status <> ALL (ARRAY[''expired''::text, ''cancelled''::text]))',
+    coalesce(v_def, 'no index by that name'));
 END $$;
 
 -- 012's hold-expiry job, naming its schema, and no other (002's, if it was scheduled under another name)
@@ -10374,6 +10468,11 @@ FROM unnest(ARRAY['id', 'feis_listing_id', 'household_id', 'status', 'confirmati
   'platform_terms_version', 'consent_ip', 'hold_expires_at', 'created_at', 'updated_at', 'paid_at']) AS c
 WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
                   WHERE table_schema = 'pre_registration' AND table_name = 'registrations' AND column_name = c);
+
+-- 9. Indexes on orders. 013 and 015 copy the one-active-order index's predicate, and 015 tells a late-payment
+-- conflict apart from any other uniqueness failure by the index's name, idx_registrations_active_unique
+SELECT indexname, indexdef FROM pg_indexes
+WHERE schemaname = 'pre_registration' AND tablename = 'registrations' ORDER BY indexname;
 ```
 Run it against live. Use the Supabase connector's `execute_sql`, once it's reconnected to the RunFeis organisation, or Daniel pastes it into the SQL editor. Record the answers. **Stop and ask Daniel** if any of these is true:
 - an order is `confirmed`, or has a `payment_method` (pay at the door was used)
@@ -10382,10 +10481,11 @@ Run it against live. Use the Supabase connector's `execute_sql`, once it's recon
 - a paid order's total doesn't match its entries
 - section 8 lists a missing column
 - section 3 shows a hold-expiry job other than `expire-registration-holds`. That is 002's job under another name. It would keep running beside 012's, so Step 7 unschedules it.
+- section 9 doesn't show `idx_registrations_active_unique` exactly as `CREATE UNIQUE INDEX idx_registrations_active_unique ON pre_registration.registrations USING btree (feis_listing_id, household_id) WHERE (status <> ALL (ARRAY['expired'::text, 'cancelled'::text]))`, or shows another unique index on `feis_listing_id` and `household_id`. 015 recognises a one-active-order failure by that name only: under another name, a late payment that hits the rule would roll back and Stripe would retry it forever, instead of becoming a `late_payment_conflict` case.
 
 Otherwise, carry on. Note whether `cron.job_run_details` shows the old hold-expiry job failing; 012 replaces it either way.
 
-Also read `STRIPE_APPLICATION_FEE_PERCENT` for Production and Preview in Vercel (project "project-f06v2" → Settings → Environment Variables), and record it. Today's Submit reads it with `parseInt`, so `2.9` charges 2%. From Task 7 on, Submit reads it with `parseFloat` and charges the whole percentage, worked out in basis points, so a fractional value raises the platform fee at deploy. If it's fractional, or missing (Submit then uses 5), tell Daniel before Step 7.
+Also read `STRIPE_APPLICATION_FEE_PERCENT` for Production and Preview in Vercel (project "project-f06v2" → Settings → Environment Variables), and record it. Today's Submit reads it with `parseInt`, so `2.9` charges 2%. From Task 7 on, Submit reads it with `parseFloat` and charges the whole percentage, worked out in basis points, so a fractional value raises the platform fee at deploy. If it's fractional, tell Daniel before Step 7. If it's missing, today's Submit falls back to 5%, but from this branch on a missing value makes every Submit fail to price ("Your entries could not be priced"), so no family can enter until it's set: Step 4 sets it, before Step 7.
 
 - [ ] **Step 3: Rehearse 012–017 on a copy of the live data (ask first)**
 
@@ -10545,14 +10645,18 @@ Expected: the last two lines are `PAYMENT HARDENING LIVE TESTS: N/N passed; FAIL
 - A `'confirmed'` order fails the rehearsal on purpose. 012 freezes it: it can never change status again, and it still counts as active in `idx_registrations_active_unique`, so that family's next Submit fails. Decide what to do with it before Step 7.
 - If the restore stops on a Supabase object the stand-ins lack (a function in `auth`, say), add a stand-in for it to the script's prelude and run it again. Never edit the copied data.
 
-- [ ] **Step 4: Set the Vercel environment variables (ask first)**
+- [ ] **Step 4: Set and check the Vercel settings (ask first)**
 
-For project "project-f06v2" (team cgds-projects), add these to Production and Preview:
-- `SUPABASE_SERVICE_ROLE_KEY`
-- `PAYMENTS_ALERT_EMAIL`: Daniel's and Steve's addresses, comma-separated. Ask Daniel for Steve's.
-- `NOTIFICATIONS_CRON_SECRET`: from `openssl rand -hex 32`
+For project "project-f06v2" (team cgds-projects), in Production and Preview (Settings → Environment Variables). Use the Vercel connector once it's reconnected to that team, or Daniel does it in the dashboard. Set or confirm:
+- `STRIPE_APPLICATION_FEE_PERCENT`: RunFeis's platform fee, as a percentage (`2.9` means 2.9%). Ask Daniel and Steve for the value; Step 2 recorded what's there now. From this branch on, Submit refuses to price an order without it, so every family's Submit would fail.
+- `NEXT_PUBLIC_BASE_URL`: the site's real URL, with `https://` and no trailing slash. For Preview, the URL previews are tested on, never `localhost`. It's inlined at build time, and it's frozen into every order's Stripe return URLs (at Pay's claim) and into every email, so check it here, before Step 7. Without it they all point to `http://localhost:3000`. After changing it, redeploy, since a built site keeps the old value.
+- `SUPABASE_SERVICE_ROLE_KEY`: Submit, Pay, Cancel, the webhook and the email job use it.
+- `NOTIFICATIONS_CRON_SECRET`: from `openssl rand -hex 32`. Step 8 stores the same value in Vault.
+- `PAYMENTS_ALERT_EMAIL`: **leave it unset** (Daniel's decision, 2026-10-17). `EMAIL_FROM` is still Resend's sandbox sender, `onboarding@resend.dev`, which delivers only to the Resend account owner, so with the contacts set, every confirmation and alert to anyone else would be refused and use up its attempts. While it's unset, `emailIsConfigured()` is false: the success page promises no email, nothing is sent, and the queue waits as `pending` without using attempts. Payment cases are watched through the logs and the runbook's daily queries. Step 12 turns email on: a verified sending domain in Resend, then `EMAIL_FROM` and `PAYMENTS_ALERT_EMAIL`. Queued emails then go out.
 
-Use the Vercel connector once it's reconnected to that team, or Daniel adds them in the dashboard. `RESEND_API_KEY`, `EMAIL_FROM`, `STRIPE_SECRET_KEY` and `STRIPE_CONNECT_WEBHOOK_SECRET` come with the email and real-Stripe work. Until they are set, emails wait and Pay reports that payment couldn't start.
+`RESEND_API_KEY`, `STRIPE_SECRET_KEY` and `STRIPE_CONNECT_WEBHOOK_SECRET` come with the email and real-Stripe work. Until the Stripe ones are set, Pay reports that payment couldn't start.
+
+Also check how long a function may run. Pay can take about 85 s when Stripe is failing, and it must not be cut off part-way through a claim. Confirm the project runs on Fluid compute (Settings → Functions), where the default limit is 300 s. If it doesn't, turn Fluid compute on, or (ask Daniel) set `export const maxDuration` in the route segment config of the register page (where Pay and Cancel run), the success page and the webhook route, above 85.
 
 - [ ] **Step 5: Run the full local suite one last time**
 
@@ -10566,16 +10670,31 @@ Have a fresh reviewer check `git diff main...payment-hardening` against the spec
 - [ ] **Step 7: Apply 012–017 live, then deploy straight away (ask first)**
 
 1. Apply `012_order_integrity.sql` through `017_payments_admin.sql`, in order: with `apply_migration` (one call per file) or in the SQL editor. If Step 2 found 002's hold-expiry job under another name, unschedule it straight after 012, with `SELECT cron.unschedule(<that job's jobid>);`.
-2. Straight after, merge `payment-hardening` into `main` and push. Vercel deploys `main`. The old code can't write under the new permissions, so do these back to back, at a quiet time.
+2. Make the API load the new functions, so Submit, Pay and the webhook don't fail with "not in the schema cache". In the SQL editor:
+   ```sql
+   NOTIFY pgrst, 'reload schema';
+   ```
+   Then make one harmless call through the API. Put the project's URL and its public anon key (the same values as on Vercel) in `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` first:
+   ```bash
+   curl -s -X POST "$NEXT_PUBLIC_SUPABASE_URL/rest/v1/rpc/get_my_payment_reviews" \
+     -H "apikey: $NEXT_PUBLIC_SUPABASE_ANON_KEY" -H "Authorization: Bearer $NEXT_PUBLIC_SUPABASE_ANON_KEY" \
+     -H 'Content-Profile: pre_registration' -H 'Content-Type: application/json' -d '{}'
+   ```
+   Expected: code `42501`, "permission denied for function get_my_payment_reviews". That's right: the API has the new function, and `anon` may not run it. Code `PGRST202` ("Could not find the function … in the schema cache") means the reload hasn't happened yet: send the `NOTIFY` again, wait a few seconds, and repeat.
+3. Straight after, merge `payment-hardening` into `main` and push. Vercel deploys `main`. The old code can't write under the new permissions, so do these back to back, at a quiet time.
+4. Once the deploy is live, and not before (`main`'s old handler doesn't expect them), add three events to the Connect webhook endpoint for `/api/webhooks/stripe` (Stripe dashboard → Developers → Webhooks; the endpoint that listens to connected accounts): `checkout.session.expired`, `checkout.session.async_payment_succeeded` and `checkout.session.async_payment_failed`. It then sends four, with `checkout.session.completed` (runbook §5).
+5. Sign in to the deployed site as a test parent and open My entries. It should show no "We couldn't check for messages about your payments" banner, which appears when `get_my_payment_reviews` fails.
 
 **Rollback.** There is no down-migration, and before real registrations none is needed:
 - `apply_migration` runs each file as one transaction, so a file that fails changes nothing. Fix it and apply it again: 012–017 can all be re-run.
 - Once 012 is live, the old app can't write orders, so rolling Vercel back to an older deployment doesn't reopen registration. Roll forward with a fixed deploy instead, and close registration on any open feis until it's out.
 - 012's only change to existing data is expiring the unpaid test orders that Step 2 listed. They stay expired.
 
-- [ ] **Step 8: Schedule the email job (ask first)**
+- [ ] **Step 8: Dry-read the runbook, then schedule the email job (ask first)**
 
-Run the SQL in `docs/runbooks/payment-exceptions.md` §5 with the production URL and `NOTIFICATIONS_CRON_SECRET`. Then check it runs:
+First, read `docs/runbooks/payment-exceptions.md` once with the live Supabase dashboard open, before anyone relies on it. Check that what it points at is where it says: whether pg_cron is already on, and where the dashboard turns it on (the `CREATE EXTENSION IF NOT EXISTS pg_cron` line in §5); the Vault page for adding a secret (Integrations → Vault, or Database on older dashboards); and the Postgres logs. Run only the read-only queries (the open-cases query and the stuck-emails query). Fix the runbook where the dashboard differs, and commit that.
+
+Then run the SQL in `docs/runbooks/payment-exceptions.md` §5 with the production URL and `NOTIFICATIONS_CRON_SECRET`. Then check it runs:
 ```sql
 SELECT status, return_message, start_time FROM cron.job_run_details d JOIN cron.job j USING (jobid)
 WHERE j.jobname = 'process-notifications' ORDER BY start_time DESC LIMIT 3;
@@ -10585,7 +10704,7 @@ Expected: `succeeded`. The endpoint answers `{"paused":true,...}` until email is
 - [ ] **Step 9: Verify live**
 
 Run `supabase/tests/payment_hardening_live_tests.sql` as one transaction (`apply_migration` or the SQL editor).
-Expected error text: `PAYMENT HARDENING LIVE TESTS: N/N passed; FAILED: none`.
+Expected error text: `PAYMENT HARDENING LIVE TESTS: N/N passed; FAILED: none`. Besides the order tables, this covers `payments_admin` and `admin_actions` (refused to parents, `anon` and the service role), 016's email queue functions (refused to `anon` and `authenticated`), and the one-active-order index's name and definition.
 
 Re-run the live check (Step 2). Section 1 should now show:
 - only the six read-only policies
@@ -10594,7 +10713,7 @@ Re-run the live check (Step 2). Section 1 should now show:
 - `service_role_can_truncate` false on all three tables
 - the three guard triggers and the three `TRUNCATE` guards, all enabled (`O`)
 
-Section 3 should show the schema-qualified hold-expiry job and no other.
+Section 3 should show the schema-qualified hold-expiry job and no other. Section 9 should show `idx_registrations_active_unique` as in Step 2, and no other unique index on `feis_listing_id` and `household_id`.
 
 Then check the organiser entries view on the deployed site. Sign in as the organiser of a feis that has paid orders, and open its Entries tab: the entries show, with dancer names and competitor numbers. If no feis has paid orders yet, the live test script's organiser check stands in for this; record which one you used.
 
@@ -10606,6 +10725,10 @@ Append to the "Rollout" section of `docs/2026-10-16-payment-hardening-design.md`
 - Live check before: <summary of anything found and how it was handled>
 - Rehearsal on a copy of the live data: <REHEARSAL PASSED, and the before and after counts>
 - STRIPE_APPLICATION_FEE_PERCENT: <the value in Production and Preview>
+- NEXT_PUBLIC_BASE_URL: <the value in Production and Preview>; Fluid compute: <on, or the maxDuration set>
+- Email: paused (PAYMENTS_ALERT_EMAIL unset), until Step 12
+- Schema reload: <the smoke call's answer>
+- Stripe webhook events: <the four events, added at <time>>
 - Migrations 012–017 applied: <time>; deployed commit <sha>
 - Live tests: <N>/<N> passed
 - Organiser entries view: <checked on the site, or covered by the live test script>
@@ -10633,6 +10756,14 @@ Once Stripe test keys and a connected test account exist, run each of these on a
 | Send an expiry notice for an old session (Stripe CLI `stripe trigger`, or resend an old event) | Unchanged |
 
 Record the results under "Live verification".
+
+- [ ] **Step 12: Turn email on, before the first real feis opens (ask first)**
+
+Email went live paused (see the top of this task). Before the first real feis opens for entries:
+1. In Resend, add and verify RunFeis's sending domain.
+2. On Vercel, in Production (and Preview if previews should send), set `EMAIL_FROM` to an address on that domain and `PAYMENTS_ALERT_EMAIL` to Daniel's and Steve's addresses, comma-separated (ask Daniel for Steve's). Redeploy.
+3. Confirm that the queued emails go out: within a few runs of the email job (every 5 minutes, 20 at a time), the `pending` rows in `pre_registration.notifications` become `sent`, and Resend's dashboard (Emails) shows them delivered. Then run the runbook's stuck-emails query (§4): no rows expected. The success page now promises a confirmation email.
+4. Record it under "Live verification": `Email turned on: <date>, sending domain <domain>`.
 
 ---
 

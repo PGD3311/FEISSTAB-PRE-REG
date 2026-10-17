@@ -441,7 +441,8 @@ No Stripe IDs, amounts, details or notes are included.
 
 **When any case is recorded:**
 - An alert to the payments contacts is queued (key `exception:<id>`).
-- `[PAYMENT_EXCEPTION] <support_ref>` is logged.
+- `[PAYMENT_EXCEPTION] <support_ref>` is logged by whichever caller got the case back: the webhook, or the sync in Pay, Cancel or the success page.
+- A `listing_account_changed` notice is the one case that isn't logged: the confirmation it comes with returns `confirmed`, not the case. It's still alerted, and it appears in the runbook's open-cases query until someone acknowledges it.
 
 ### 11. Resolving exceptions
 
