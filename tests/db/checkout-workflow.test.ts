@@ -110,6 +110,25 @@ describe('pay', () => {
     expect((await orderRow(order.registrationId)).stripe_checkout_session_id).toBe(stripe.sessionId())
   })
 
+  it('finds an unattached session by listing, sending no create, past the deadline', async () => {
+    const stripe = new FakeStripe()
+    const order = await createDraftOrder(db.pool)
+    // Pay made the session, then stopped before attaching it
+    const crashing = { ...deps(stripe), store: crashingAttach() }
+    expect(await pay(crashing, ids(order)).catch(() => null)).toBeNull()
+    expect(stripe.createCalls).toBe(1)
+
+    // 7 minutes on: too late to replay the create, so Pay lists the claim's sessions instead
+    const later = deps(stripe, { now: minutesLater(7) })
+    expect(await pay(later, ids(order))).toEqual(checkoutPage(stripe))
+    expect(stripe.createCalls).toBe(1)
+    expect(stripe.sessionsFor(order.registrationId)).toHaveLength(1)
+    expect(await orderRow(order.registrationId)).toMatchObject({
+      status: 'pending_payment',
+      stripe_checkout_session_id: stripe.sessionId()
+    })
+  })
+
   it('replays retryable failures with the identical request', async () => {
     const stripe = new FakeStripe()
     stripe.nextCreate = ['retry-before', 'retry-after']
@@ -172,6 +191,21 @@ describe('pay', () => {
     expect(await pay(deps(stripe), ids(order)))
       .toEqual({ kind: 'blocked', message: 'Registration has been closed by the organiser.' })
     expect((await orderRow(order.registrationId)).checkout_claim_id).toBeNull()
+  })
+
+  it('lets a checkout claimed before the organiser closed registration finish', async () => {
+    const stripe = new FakeStripe()
+    const order = await createDraftOrder(db.pool)
+    expect(await pay(deps(stripe), ids(order))).toEqual(checkoutPage(stripe))
+    await db.pool.query(`UPDATE feis_listings SET status = 'closed' WHERE id = $1`, [
+      order.listing.listing.id
+    ])
+
+    // The family comes back to the open checkout, not to "closed by the organiser"
+    expect(await pay(deps(stripe), ids(order))).toEqual(checkoutPage(stripe))
+    expect(stripe.createCalls).toBe(1)
+    stripe.pay(stripe.sessionId())
+    expect((await pay(deps(stripe), ids(order))).kind).toBe('paid')
   })
 
   it('lets a submitted order be paid after the deadline while registration stays open', async () => {
