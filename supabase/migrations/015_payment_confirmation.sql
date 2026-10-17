@@ -246,6 +246,14 @@ BEGIN
     RETURN jsonb_build_object('result', 'already_confirmed', 'confirmation_number', v_order.confirmation_number);
   END IF;
 
+  -- A late payment recorded as a conflict is never fulfilled by a later sync, resolved or not: only an admin does
+  SELECT support_ref INTO v_ref FROM payment_exceptions
+  WHERE stripe_checkout_session_id = p_session_id AND reason = 'late_payment_conflict'
+    AND registration_id = p_registration_id;
+  IF FOUND THEN
+    RETURN jsonb_build_object('result', 'exception', 'reason', 'late_payment_conflict', 'support_ref', v_ref);
+  END IF;
+
   -- Every check is against the order's own claim, never the listing's current settings
   v_reason := CASE
     WHEN v_order.checkout_claim_id IS NULL OR v_order.checkout_claim_id IS DISTINCT FROM p_claim_id THEN 'claim_mismatch'

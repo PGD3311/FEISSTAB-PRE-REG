@@ -251,6 +251,58 @@ describe('confirm_order_payment', () => {
     expect(mine[0]).toMatchObject({ registration_id: order.registrationId, message_code: 'A', resolved: false })
   })
 
+  describe('a late payment already recorded as a conflict case', () => {
+    /** The first conflict test's setup, then the family does as message A says and the newer draft ends */
+    async function conflictThenNewerOrderEnds() {
+      const order = await createDraftOrder(db.pool)
+      const ready = await readyToPay(db.pool, order)
+      await store.expireCheckout({ registrationId: order.registrationId, claimId: ready.claimId, sessionId: ready.sessionId, account: ready.config.account })
+      const newer = await store.createOrder(order.family.householdId, order.listing.listing.id,
+        buildPayload({ listing: order.listing, dancers: order.dancers, entries: order.entries }))
+      if (newer.status !== 'created') throw new Error(`expected a newer order, got ${newer.status}`)
+
+      const first = await store.confirmOrderPayment(payment(order, ready))
+      if (first.result !== 'exception') throw new Error(`expected a case, got ${first.result}`)
+      expect(first.reason).toBe('late_payment_conflict')
+
+      // The family doesn't pay again, so the newer draft ends and no other order is active
+      const ended = await store.cancelOrder(newer.registration_id, order.family.householdId, null)
+      expect(ended.result).toBe('cancelled')
+      return { order, ready, first }
+    }
+
+    async function expectCaseKeptAndNothingElseChanged(
+      order: DraftOrderFixture,
+      ready: Ready,
+      supportRef: string
+    ) {
+      const tables = await paymentTables()
+      const again = await store.confirmOrderPayment(payment(order, ready))
+      expect(again).toMatchObject({ result: 'exception', reason: 'late_payment_conflict', support_ref: supportRef })
+
+      expect(await orderRow(order.registrationId)).toMatchObject({ status: 'expired', paid_at: null, confirmation_number: null })
+      expect(await counts(order.registrationId)).toEqual({ snapshots: 0, emails: 0, numbers: 0, cases: 1 })
+      // No new case, no alert, no confirmation email anywhere
+      expect(await paymentTables()).toEqual(tables)
+    }
+
+    it('is never confirmed on a later sync, even when no other order is active any more', async () => {
+      const { order, ready, first } = await conflictThenNewerOrderEnds()
+      await expectCaseKeptAndNothingElseChanged(order, ready, first.support_ref)
+    })
+
+    it('stays unconfirmed after the case is resolved, for example refunded', async () => {
+      const { order, ready, first } = await conflictThenNewerOrderEnds()
+      await asService(db.pool, (c) =>
+        c.query(
+          `UPDATE payment_exceptions SET status = 'resolved', resolution = 'refunded', resolved_at = now()
+           WHERE registration_id = $1 AND reason = 'late_payment_conflict'`,
+          [order.registrationId]
+        ))
+      await expectCaseKeptAndNothingElseChanged(order, ready, first.support_ref)
+    })
+  })
+
   it('never loses a late payment that races a new Submit', async () => {
     for (let round = 0; round < 5; round++) {
       const order = await createDraftOrder(db.pool)
