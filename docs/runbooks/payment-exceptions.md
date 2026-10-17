@@ -1,6 +1,6 @@
 # Payment cases and emails: runbook
 
-Who: the payments contacts in `PAYMENTS_ALERT_EMAIL` (Daniel and Steve to start).
+Who: the payments contacts, Daniel and Steve to start (their addresses go in `PAYMENTS_ALERT_EMAIL` once email is on).
 Where: the Supabase SQL editor for the RunFeis project, and the Stripe dashboard (the connected account named in the case).
 
 Every case has a reference like `PAY-7KQ2M`. The family sees it on the success page and their dashboard when
@@ -10,6 +10,13 @@ logs have a `[PAYMENT_EXCEPTION] PAY-…` line.
 During registration, run the open-cases query (section 1) and the stuck-emails query (section 4) routinely, for
 example every day. A payment-case alert that fails to send is found only by the second query. Also watch the Vercel
 logs for `[NOTIFICATION_FAILED]` lines: they mean an email failed or needs checking.
+
+**Email is paused for now.** Resend's sender is still its sandbox address, which only delivers to the Resend account
+owner, so until a sending domain is verified `PAYMENTS_ALERT_EMAIL` stays unset and RunFeis sends no email at all:
+no alerts to you and no confirmations to families. The emails wait in the queue as `pending`. Meanwhile you find
+cases with the open-cases query (section 1) and the stuck-emails query (section 4), and the `[PAYMENT_EXCEPTION]` and
+`[NOTIFICATION_FAILED]` lines in the Vercel logs. Run both queries every day during registration: Vercel keeps its
+logs only for a short time, so the queries are the record. Turning email on is in section 5.
 
 ## 1. Look up a case
 
@@ -82,8 +89,15 @@ Before you run it:
 ```sql
 SELECT payments_admin.confirm_late_payment('PAY-XXXXX', 'Daniel: rang the family; they want the paid order');
 ```
+Then email the family (3e).
 
-**3b. Refund.** For every reason except `payment_reused`, refund the case's payment intent in Stripe (in the case's
+**3b. Refund.** Before you refund:
+1. Run the case lookup in section 1 again, and check the case's `status` is still `open`. If it says `resolved`,
+   someone has already closed it (refunded or confirmed): don't refund.
+2. Tell the other payments contact that you are taking this case, so nobody confirms or refunds it while you refund
+   it.
+
+For every reason except `payment_reused`, refund the case's payment intent in Stripe (in the case's
 `stripe_account_id`), and nothing else.
 
 The one exception is `payment_reused`: the case's payment intent belongs to the other, confirmed order, so never
@@ -95,7 +109,8 @@ refund or confirm it again:
 ```sql
 SELECT payments_admin.close_exception('PAY-XXXXX', 'refunded', 're_...', 'Daniel: refunded the 3 Nov charge after checking');
 ```
-The database refuses an ID that doesn't look like `re_…`, so replace the `re_...` placeholder.
+The database refuses an ID that doesn't look like `re_…`, so replace the `re_...` placeholder. If the reason is one
+that showed the family message A, email the family next (3e).
 
 **3c. No action** (only `payment_failed`, where no money moved, and `payment_reused`, where Stripe shows no second
 charge and the payment belongs to the other order):
@@ -108,6 +123,15 @@ For a reused payment the note says what you saw, for example `'Daniel: Stripe sh
 ```sql
 SELECT payments_admin.close_exception('PAY-XXXXX', 'acknowledged', NULL, 'Daniel: organiser reconnected Stripe on 2 Nov');
 ```
+
+**3e. Email the family.** After closing any case that showed the family message A (`amount_mismatch`,
+`currency_mismatch`, `late_payment_conflict` and `order_not_payable`), whether by 3a or 3b, email the family yourself,
+at the `email` the case lookup in section 1 shows. Message A told them "Please don't pay again… We'll email you", and
+once the case is closed it disappears from their dashboard (the success page says only that the payment has been
+reviewed and to contact the organiser), so this email is the only word they get. Say what you
+did: confirmed, with the confirmation number, or refunded, and whether they need to register again. RunFeis never
+emails about a closed case, and while email is paused it sends nothing at all, not even the confirmation after 3a, so
+all contact with the family is by hand.
 
 ## 4. Emails
 
@@ -163,7 +187,7 @@ address>'` to the `SET`. If it fails again, no second delivery-failure email is 
 
 Environment variables on Vercel:
 - `SUPABASE_SERVICE_ROLE_KEY`
-- `PAYMENTS_ALERT_EMAIL` (comma-separated)
+- `PAYMENTS_ALERT_EMAIL` (comma-separated; leave it unset while email is paused, below)
 - `NOTIFICATIONS_CRON_SECRET` (`openssl rand -hex 32`)
 - `RESEND_API_KEY` and `EMAIL_FROM`
 - `STRIPE_SECRET_KEY` and `STRIPE_CONNECT_WEBHOOK_SECRET`
@@ -172,6 +196,26 @@ Environment variables on Vercel:
 - `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`
 
 Emails stay `pending` until Resend, the sender address and the payments contacts are all set.
+
+**Turning email on.** Until a sending domain is verified, email stays paused: `PAYMENTS_ALERT_EMAIL` is unset, so
+nothing is sent and the queue waits as `pending` without using any attempts. To turn it on, before the first real
+feis opens:
+1. In Resend, add and verify a sending domain.
+2. On Vercel, with `RESEND_API_KEY` already set, set `EMAIL_FROM` to an address on that domain and
+   `PAYMENTS_ALERT_EMAIL` to the payments contacts. Redeploy so the site picks them up.
+3. Everything queued then sends, up to 20 emails each time the email job runs (every 5 minutes): the confirmations for
+   every order paid while email was paused, and alerts for cases you may already have closed. Check the first ones
+   arrive (Resend dashboard → Emails), then run the stuck-emails query (section 4).
+
+**The Stripe webhook.** One endpoint on the platform account, listening to events on connected accounts (a Connect
+endpoint): `https://<site>/api/webhooks/stripe`, with its signing secret in `STRIPE_CONNECT_WEBHOOK_SECRET`. It must
+send these four events:
+- `checkout.session.completed`
+- `checkout.session.expired`
+- `checkout.session.async_payment_succeeded`
+- `checkout.session.async_payment_failed`
+
+The handler ignores any other event.
 
 Schedule the email job, once per environment. First add the secret in the Supabase dashboard rather than in a SQL
 snippet, because the editor saves snippets and a saved snippet would hold the secret: open Vault (under
