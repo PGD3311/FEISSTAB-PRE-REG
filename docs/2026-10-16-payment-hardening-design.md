@@ -310,6 +310,8 @@ Nothing is visible to other requests until the transaction commits, and nothing 
    - If the same session is already attached (a parallel click got there first), return the URL.
    - Anything else means the order moved on in the meantime: cancelled, expired or confirmed. Settle this session through §6a. An open session is expired and checked; a complete, paid one is confirmed or recorded as a case. Never assume a session can be expired.
 
+**A payment that may have gone through.** When settling the session (§6a) finds the checkout complete but not confirmed (complete but unpaid, or confirmation failed for now), Pay keeps the order and returns "checking". The entry page sends the family to the success page, which shows message C and checks again every 5 seconds, so message C never sits next to a live Pay button.
+
 The bound account in `checkout_config` is used for every later call about this checkout: retrieve, expire and confirm. It never switches to the listing's current account.
 
 ### 6a. Finding and settling a claim's session
@@ -324,7 +326,8 @@ Pay, Cancel and the success page all use the same two steps whenever they need t
    - **`open`:** resume it (Pay), or expire it and read it back to check it's expired (Cancel, or an order that moved on).
    - **`expired`:** it can't be paid. Bring the order's state in line with `expire_checkout` or `cancel_order`.
    - **`complete` and paid:** run confirmation (§9), which confirms the order or records the right case.
-   - **`complete` but unpaid, or an expiry Stripe won't confirm:** unknown. Keep the order and show message C.
+   - **`complete` but unpaid:** unknown, and a payment may have gone through. Keep the order and show message C: Pay and Cancel answer "checking" (§6, §7).
+   - **An expiry Stripe won't confirm:** unknown. Keep the order. Pay asks the family to try again shortly, and Cancel says it can't cancel yet because a payment may still be starting; neither shows message C. Only attached sessions ever reached a family, and Pay closes a session only when the order has moved on from it.
 
 An error never stands in for this lookup.
 
@@ -335,7 +338,8 @@ An error never stands in for this lookup.
 3. **An order with a claim** (a draft, with or without a session, or `pending_payment`): find and settle its session through §6a, with the intent to close it. Cancel never replays the create request.
    - **Closed and checked, or established that no session exists:** call `cancel_order` with the claim. If no row changes, re-read the order; the webhook may have confirmed it.
    - **Complete and paid:** the payment is confirmed, or recorded as a case, instead of the order being cancelled.
-   - **Unknown, including while a create request may still be running:** refuse ("We can't cancel this yet… try again in a few minutes") and keep the order.
+   - **A payment that may have gone through** (complete but unpaid, or confirmation failed for now): keep the order and return "checking". The entry page sends the family to the success page, which shows message C and checks again.
+   - **Unknown otherwise, including while a create request may still be running:** refuse ("We can't cancel this yet… try again in a few minutes") and keep the order.
 
 When a claim exists, `cancel_order` requires that exact claim, so one request can't cancel or finish another request's newer operation.
 
@@ -413,13 +417,13 @@ It runs as one transaction:
 |---|---|---|
 | `amount_mismatch`, `currency_mismatch`, `late_payment_conflict`, `order_not_payable` | The charge is verified, but the registration isn't resolved | Message A |
 | `payment_failed` | The payment failed | Message B |
-| `account_mismatch`, `claim_mismatch`, `session_mismatch`, `payment_reused`, `order_not_found` | The payer may not be this family | Nothing. Admin alert only. |
+| `account_mismatch`, `claim_mismatch`, `session_mismatch`, `payment_reused`, `order_not_found` | The payer may not be this family | No case view or reference; at most message C (below). Admin alert. |
 | `listing_account_changed` | Notice only; the order is confirmed | Nothing. Admin alert only. |
 
 **Parent messages:**
 - **A:** "Your payment went through, but we need to check your registration before confirming it. Please don't pay again. Your reference is PAY-7KQ2M. We'll email you."
 - **B:** "Your payment didn't go through, so this registration isn't confirmed. You can try again."
-- **C:** "We're checking your payment. Please don't try again until this updates." Message C has no case behind it. The success page and Pay show it when Stripe says the checkout is complete but confirmation hasn't finished yet, for example while a database retry is pending.
+- **C:** "We're checking your payment. Please don't try again until this updates." Message C usually has no case behind it. Pay, Cancel and the success page show it when Stripe says the checkout is complete but confirmation hasn't finished yet, for example while a database retry is pending. Pay and Cancel then answer "checking" and send the family to the success page, which checks again every 5 seconds. When Pay, Cancel or the success page records a case whose reason has no parent message, the family sees message C too, without a reference and without the refresh, since nothing will change by itself.
 
 **The parent view** is `get_my_payment_reviews(order_id)`. It's executable by `authenticated` and only returns orders in the caller's own household. It returns only:
 - `support_ref`

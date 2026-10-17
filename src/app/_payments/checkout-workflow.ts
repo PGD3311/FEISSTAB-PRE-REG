@@ -19,6 +19,7 @@ export type PayResult =
   | { kind: 'start_again'; message: string }
   | { kind: 'blocked'; message: string }
   | { kind: 'try_again'; message: string }
+  | { kind: 'checking'; message: string }
   | { kind: 'review'; message: string; supportRef: string | null }
   | { kind: 'error'; message: string }
 
@@ -26,8 +27,17 @@ export type CancelResult =
   | { kind: 'cancelled' }
   | { kind: 'paid'; confirmationNumber: string | null }
   | { kind: 'try_again'; message: string }
+  | { kind: 'checking'; message: string }
   | { kind: 'review'; message: string; supportRef: string | null }
   | { kind: 'error'; message: string }
+
+/**
+ * A payment may have gone through, but confirmation hasn't finished: message C. The family goes
+ * to the success page, which checks again, never back to a Pay button (spec §6, §7, §10).
+ */
+function checking(): Extract<PayResult, { kind: 'checking' }> {
+  return { kind: 'checking', message: reviewMessage('C', null) }
+}
 
 export const CHECKOUT_MESSAGES = {
   notFound: 'Registration not found.',
@@ -304,10 +314,9 @@ async function settleSession(
 }
 
 function unknownResult(settled: { paymentMayHaveHappened: boolean }): PayResult {
-  return {
-    kind: 'try_again',
-    message: settled.paymentMayHaveHappened ? reviewMessage('C', null) : CHECKOUT_MESSAGES.starting
-  }
+  return settled.paymentMayHaveHappened
+    ? checking()
+    : { kind: 'try_again', message: CHECKOUT_MESSAGES.starting }
 }
 
 // ─── Confirmation from a session the server fetched itself ───
@@ -323,7 +332,7 @@ export function payResultFromConfirmation(result: ConfirmResult): PayResult {
       return { kind: 'review', message: reviewMessage(code, supportRef), supportRef }
     }
     case 'not_paid':
-      return { kind: 'try_again', message: reviewMessage('C', null) }
+      return checking()
   }
 }
 
@@ -348,18 +357,27 @@ async function confirmFromSession(
       eventId: `sync:${session.id}`,
       source: 'sync'
     })
+    if (result.result === 'exception') {
+      // Every recorded case is logged, as the webhook does (spec §10)
+      console.error(`[PAYMENT_EXCEPTION] ${result.support_ref} ${result.reason} order ${order.id}`)
+    }
     return payResultFromConfirmation(result)
   } catch (err) {
     console.error(`[CHECKOUT] Confirming order ${order.id} from Stripe failed:`, err)
-    return { kind: 'try_again', message: reviewMessage('C', null) }
+    return checking()
   }
 }
 
 // ─── Cancel ───
 
 function cancelResultFrom(result: PayResult): CancelResult {
-  if (result.kind === 'paid' || result.kind === 'review' || result.kind === 'try_again' || result.kind === 'error') {
-    return result
+  switch (result.kind) {
+    case 'paid':
+    case 'review':
+    case 'checking':
+    case 'try_again':
+    case 'error':
+      return result
   }
   return { kind: 'try_again', message: CHECKOUT_MESSAGES.cancelLater }
 }
@@ -388,10 +406,9 @@ export async function cancel(
       const settled = await settleSession(deps, order, located.session, 'close')
       if (settled.kind === 'result') return cancelResultFrom(settled.result)
       if (settled.kind === 'unknown') {
-        return {
-          kind: 'try_again',
-          message: settled.paymentMayHaveHappened ? reviewMessage('C', null) : CHECKOUT_MESSAGES.cancelLater
-        }
+        return settled.paymentMayHaveHappened
+          ? checking()
+          : { kind: 'try_again', message: CHECKOUT_MESSAGES.cancelLater }
       }
     }
     // Stripe confirms the checkout can't be paid, or it is established that none was ever made

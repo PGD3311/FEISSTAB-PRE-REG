@@ -117,6 +117,17 @@ export class FakeStripe implements StripeGateway {
     return this.view(session)
   }
 
+  /**
+   * The family finishes Stripe's page, but the money hasn't arrived: what a delayed payment method
+   * does. Cards never do this, but Pay, Cancel and the sync must still keep the order and check.
+   */
+  completeUnpaid(sessionId: string): GatewaySession {
+    const session = this.sessions.get(sessionId)
+    if (!session || session.status !== 'open') throw new Error(`checkout ${sessionId} is not open`)
+    session.status = 'complete'
+    return this.view(session)
+  }
+
   /** Stripe expires the session on its own */
   expire(sessionId: string): GatewaySession {
     const session = this.sessions.get(sessionId)

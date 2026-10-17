@@ -7348,6 +7348,8 @@ In `src/components/registration/entry-page.tsx`, replace everything from `async 
           return
         case 'paid':
         case 'review':
+        case 'checking':
+          // Stripe has, or may have, the money: the success page says what happens next
           leaving = true
           window.location.href = successHref
           return
@@ -7384,7 +7386,8 @@ In `src/components/registration/entry-page.tsx`, replace everything from `async 
           return
         case 'paid':
         case 'review':
-          // The checkout was paid after all
+        case 'checking':
+          // The checkout was paid after all, or may have been
           leaving = true
           window.location.href = successHref
           return
@@ -7403,8 +7406,9 @@ In `src/components/registration/entry-page.tsx`, replace everything from `async 
 The page's price is worked out when the cart changes, so if the order Submit creates costs something other than the total the Pay button showed (a late tier started, or the organiser changed a fee, while the page was open), Pay keeps the held order, shows the new total and stops, and the next press, which has an order id, goes straight to Pay: no family reaches Stripe at a price they weren't shown.
 
 How each answer is handled:
-- **`review`** goes to the success page, because Stripe has the money. That page shows message A, with the reference, for a recorded case, or message C while confirmation is still unfinished. On the entry page, the family would see a Pay button next to "Please don't pay again".
-- **`try_again`** stays on the entry page. Its message is either "Payment is taking a moment to start" or message C.
+- **`review`** goes to the success page, because Stripe has the money. That page shows message A, with the reference, for a recorded case, or message C for a case only the payments contacts see. On the entry page, the family would see a Pay button next to "Please don't pay again".
+- **`checking`** goes to the success page too, from Pay or from Change entries: a payment may have gone through but isn't confirmed, so the family sees message C on a page that checks again every 5 seconds, not next to a live Pay button.
+- **`try_again`** stays on the entry page. Its message is "Payment is taking a moment to start", or Cancel's "We can't cancel this yet"; never message C, which comes as `checking`.
 - **The old `holdOver` workaround is gone.** Cancel answers `cancelled` for an order that has already expired.
 
 Then delete `parentPaymentMessage`. It turned the old Pay's error strings into parent wording, and nothing calls it now: every Pay answer carries its own message. Its "Stripe not connected" case is the workflow's `stripe_not_connected` block (Task 5), and its "expired" case is `start_again`. Replace:
@@ -7633,10 +7637,10 @@ async function viewFor(
     }
   }
 
-  // Stripe has the payment, but confirmation isn't finished, or it's a case only the payments
-  // contacts see: message C. Only an unfinished confirmation is worth checking again.
-  if (synced?.kind === 'try_again' || synced?.kind === 'review') {
-    return { kind: 'checking', message: synced.message, refresh: synced.kind === 'try_again' }
+  // Stripe has the payment, but confirmation isn't finished ('checking'), or it's a case only the
+  // payments contacts see: message C. Only an unfinished confirmation is worth checking again.
+  if (synced?.kind === 'checking' || synced?.kind === 'review') {
+    return { kind: 'checking', message: synced.message, refresh: synced.kind === 'checking' }
   }
 
   switch (order.status) {
@@ -7820,7 +7824,7 @@ export default async function SuccessPage({ params, searchParams }: SuccessPageP
 What the page shows, most important first:
 - **Paid**, from the order or from the sync: the redesigned receipt. It never says an email was sent. Sending is queued (Task 13), and parents can't read the queue, so at render time the page can't know whether the email has gone. When `emailIsConfigured` holds, it says one will follow. Until then confirmations wait unsent, so it says nothing about email. This fixes a known issue.
 - **An open case on this order:** message A, with its reference and a link to My entries; or message B, with "Try again". A case outranks the order's status: an expired order with a late payment shows A, not "Your hold ran out".
-- **Message C:** Stripe says the checkout is complete but confirmation isn't finished. The page checks again every 5 seconds. A case only the payments contacts see also shows C, but without the refresh, since nothing will change by itself.
+- **Message C:** Stripe says the checkout is complete but confirmation isn't finished. The page checks again every 5 seconds. A case only the payments contacts see also shows C, but without the refresh, since nothing will change by itself. The sync answers `checking` for an unfinished confirmation, the same answer that sends a family here from Pay or Change entries, and the page shows it as this view.
 - **Otherwise the order's own status:** the redesigned panels, with the same wording as before. `pending_payment` checks again every 5 seconds (it was 3; each check now also asks Stripe). Each refresh re-runs the sync, so the page catches up even if the webhook is slow.
 - **A query that fails:** the "couldn't load" panel, rather than a guess, which could hide message A.
 

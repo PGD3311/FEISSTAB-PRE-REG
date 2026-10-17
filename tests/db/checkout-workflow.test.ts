@@ -1,11 +1,23 @@
 import { randomUUID } from 'node:crypto'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { cancel, CHECKOUT_MESSAGES, pay, syncConfirmation, type CheckoutDeps } from '@/app/_payments/checkout-workflow'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import {
+  cancel,
+  CHECKOUT_MESSAGES,
+  pay,
+  payResultFromConfirmation,
+  syncConfirmation,
+  type CheckoutDeps
+} from '@/app/_payments/checkout-workflow'
 import { createOrderStore, type OrderStore } from '@/app/_payments/order-store'
 import { reviewMessage } from '@/lib/payment-review-messages'
-import { createTestDatabase, type TestDatabase } from './helpers/db'
+import { asService, createTestDatabase, type TestDatabase } from './helpers/db'
 import { FakeStripe } from './helpers/fake-stripe'
-import { checkoutConfigFor, createDraftOrder, type DraftOrderFixture } from './helpers/fixtures'
+import {
+  buildPayload,
+  checkoutConfigFor,
+  createDraftOrder,
+  type DraftOrderFixture
+} from './helpers/fixtures'
 import { pgRpc } from './helpers/pg-rpc'
 
 let db: TestDatabase
@@ -32,6 +44,9 @@ function deps(stripe: FakeStripe, overrides: Partial<CheckoutDeps> = {}): Checko
 const minutesLater = (minutes: number) => () => new Date(Date.now() + minutes * 60_000)
 
 const ids = (order: DraftOrderFixture) => ({ registrationId: order.registrationId, householdId: order.family.householdId })
+
+/** Stripe may have the money but confirmation isn't finished: message C, on the success page */
+const CHECKING = { kind: 'checking', message: reviewMessage('C', null) }
 
 /** What Pay returns for the nth checkout this fake Stripe made */
 const checkoutPage = (stripe: FakeStripe, n = 1) =>
@@ -184,6 +199,16 @@ describe('pay', () => {
     if (result.kind === 'paid') expect(result.confirmationNumber).toMatch(/^RF-/)
   })
 
+  it('says it is checking, and keeps the order, when the checkout completed unpaid', async () => {
+    const stripe = new FakeStripe()
+    const order = await createDraftOrder(db.pool)
+    await pay(deps(stripe), ids(order))
+    stripe.completeUnpaid(stripe.sessionId())
+    expect(await pay(deps(stripe), ids(order))).toEqual(CHECKING)
+    expect((await orderRow(order.registrationId)).status).toBe('pending_payment')
+    expect(stripe.createCalls).toBe(1)
+  })
+
   it('settles a session that was paid while the order moved on, instead of trying to expire it', async () => {
     const stripe = new FakeStripe()
     const order = await createDraftOrder(db.pool)
@@ -224,6 +249,28 @@ describe('cancel', () => {
     stripe.pay(stripe.sessionId())
     expect((await cancel(deps(stripe), ids(order))).kind).toBe('paid')
     expect((await orderRow(order.registrationId)).status).toBe('paid')
+  })
+
+  it('says it is checking, and keeps the order, when the checkout completed unpaid', async () => {
+    const stripe = new FakeStripe()
+    const order = await createDraftOrder(db.pool)
+    await pay(deps(stripe), ids(order))
+    stripe.completeUnpaid(stripe.sessionId())
+    expect(await cancel(deps(stripe), ids(order))).toEqual(CHECKING)
+    expect((await orderRow(order.registrationId)).status).toBe('pending_payment')
+  })
+
+  it('says it is checking, and keeps the order, when confirming fails for now', async () => {
+    const stripe = new FakeStripe()
+    const order = await createDraftOrder(db.pool)
+    await pay(deps(stripe), ids(order))
+    stripe.pay(stripe.sessionId())
+    const confirmOrderPayment = async () => {
+      throw new Error('database is down')
+    }
+    const broken = { ...deps(stripe), store: { ...store, confirmOrderPayment } }
+    expect(await cancel(broken, ids(order))).toEqual(CHECKING)
+    expect((await orderRow(order.registrationId)).status).toBe('pending_payment')
   })
 
   it('finds and closes a session that Pay never attached', async () => {
@@ -318,6 +365,58 @@ describe('syncConfirmation', () => {
     await pay(deps(stripe), ids(order))
     stripe.pay(stripe.sessionId())
     const broken = { ...deps(stripe), store: { ...store, confirmOrderPayment: async () => { throw new Error('database is down') } } }
-    expect(await pay(broken, ids(order))).toEqual({ kind: 'try_again', message: reviewMessage('C', null) })
+    expect(await pay(broken, ids(order))).toEqual(CHECKING)
+  })
+
+  it('says it is checking when the checkout completed unpaid', async () => {
+    const stripe = new FakeStripe()
+    const order = await createDraftOrder(db.pool)
+    await pay(deps(stripe), ids(order))
+    stripe.completeUnpaid(stripe.sessionId())
+    expect(await syncConfirmation(deps(stripe), ids(order))).toEqual(CHECKING)
+    expect((await orderRow(order.registrationId)).status).toBe('pending_payment')
+  })
+
+  it('logs every case it records, with its reference', async () => {
+    const stripe = new FakeStripe()
+    const order = await createDraftOrder(db.pool)
+    await pay(deps(stripe), ids(order))
+    stripe.pay(stripe.sessionId())
+    // Before the payment is confirmed, the hold passes and the family submits again
+    await asService(db.pool, (c) =>
+      c.query(
+        `UPDATE registrations SET hold_expires_at = now() - interval '1 minute' WHERE id = $1`,
+        [order.registrationId]
+      )
+    )
+    const newer = await store.createOrder(
+      order.family.householdId,
+      order.listing.listing.id,
+      buildPayload({ listing: order.listing, dancers: order.dancers, entries: order.entries })
+    )
+    expect(newer.status).toBe('created')
+
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    try {
+      const result = await syncConfirmation(deps(stripe), ids(order))
+      const { rows } = await db.pool.query(
+        'SELECT support_ref FROM payment_exceptions WHERE registration_id = $1',
+        [order.registrationId]
+      )
+      expect(rows).toHaveLength(1)
+      const ref = rows[0].support_ref
+      expect(result).toEqual({ kind: 'review', message: reviewMessage('A', ref), supportRef: ref })
+      expect(logged).toHaveBeenCalledWith(
+        `[PAYMENT_EXCEPTION] ${ref} late_payment_conflict order ${order.registrationId}`
+      )
+    } finally {
+      logged.mockRestore()
+    }
+  })
+})
+
+describe('payResultFromConfirmation', () => {
+  it('says it is checking, not to pay again, when Stripe does not call it paid yet', () => {
+    expect(payResultFromConfirmation({ result: 'not_paid' })).toEqual(CHECKING)
   })
 })
