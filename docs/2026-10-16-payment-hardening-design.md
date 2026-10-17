@@ -447,13 +447,14 @@ Resolutions are allowed by reason. No function marks an order paid by skipping c
 | Reason | Allowed resolutions |
 |---|---|
 | `late_payment_conflict` | (a) Refund the late payment in Stripe and record it. Or (b) `payments_admin.confirm_late_payment(support_ref, note)`, which is allowed only when **all** of these hold: the recorded evidence passes every check in §9.3; the payment intent isn't used by another order; and no other order for this family and feis can have a payment on the way. That means each other order either never reached checkout (no claim, so no payment can exist) or was cancelled through Cancel, which settles its checkout first (§7). In one transaction, under the household-and-feis lock and after re-checking those orders, it does four things: cancels the family's other unpaid orders that never reached checkout, confirms the late one through the same steps as §9.6, closes the case as `confirmed_late_payment`, and writes an audit row. If any other order is paid, or reached checkout and isn't cancelled, only (a) is allowed. A checkout that has since expired still counts, because a delayed payment for it could still arrive. |
-| `amount_mismatch`, `currency_mismatch`, `order_not_payable`, `payment_reused`, `account_mismatch`, `claim_mismatch`, `session_mismatch`, `order_not_found` | Check the payment in the Stripe dashboard, refund it there, and record the refund. The family starts a new order if they still want to enter. |
+| `amount_mismatch`, `currency_mismatch`, `order_not_payable`, `account_mismatch`, `claim_mismatch`, `session_mismatch`, `order_not_found` | Check the payment in the Stripe dashboard, refund it there, and record the refund. The family starts a new order if they still want to enter. |
+| `payment_reused` | The payment intent is the recorded payment of another order that is already paid and confirmed, so that payment is never refunded. If Stripe shows a genuine second charge, refund that charge and record the refund. If it shows none, close as `no_action`. |
 | `payment_failed` | No money moved. Close as `no_action`. |
 | `listing_account_changed` | Check that the new account is right, then close as `acknowledged`. |
 
 **Recording a resolution:**
 - Use `payments_admin.close_exception(support_ref, resolution, stripe_refund_id, note)`.
-- The resolution is one of `refunded`, `no_action` or `acknowledged`. A case closed by `confirm_late_payment` is marked `confirmed_late_payment`.
+- The resolution is one of `refunded`, `no_action` or `acknowledged`: `no_action` for `payment_failed` and `payment_reused`, `acknowledged` for `listing_account_changed`. A case closed by `confirm_late_payment` is marked `confirmed_late_payment`.
 - `refunded` requires the Stripe refund ID.
 - Every admin function writes an `admin_actions` audit row: who, when, what, and the evidence.
 

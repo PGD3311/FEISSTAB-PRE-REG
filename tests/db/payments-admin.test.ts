@@ -133,6 +133,39 @@ describe('payments_admin.close_exception', () => {
     const { rows } = await db.pool.query(`SELECT evidence FROM admin_actions WHERE support_ref = $1`, [wrong.support_ref])
     expect(rows[0].evidence).toEqual({ resolution: 'refunded', stripe_refund_id: 're_3QabcDEF' })
   })
+
+  it('closes a reused-payment case with no action when there is no second charge, and leaves both orders alone', async () => {
+    // The payment intent belongs to the first order, which is paid and confirmed: refunding it would refund that order
+    const first = await createDraftOrder(db.pool)
+    const firstReady = await readyToPay(db.pool, first)
+    await store.confirmOrderPayment(payment(first, firstReady))
+    const second = await createDraftOrder(db.pool)
+    const secondReady = await readyToPay(db.pool, second)
+    const reused = await store.confirmOrderPayment(
+      payment(second, secondReady, { paymentIntentId: `pi_${firstReady.sessionId}` }))
+    if (reused.result !== 'exception' || reused.reason !== 'payment_reused') throw new Error('expected a reused-payment case')
+
+    const note = 'Daniel: checked Stripe; one charge only, on the first order'
+    const { rows: [closed] } = await db.pool.query(
+      'SELECT payments_admin.close_exception($1, $2, $3, $4) AS result', [reused.support_ref, 'no_action', null, note])
+    expect(closed.result).toEqual({ result: 'resolved', resolution: 'no_action' })
+
+    const { rows: [caseRow] } = await db.pool.query(
+      'SELECT status, resolution, resolved_by FROM payment_exceptions WHERE support_ref = $1', [reused.support_ref])
+    expect(caseRow).toEqual({ status: 'resolved', resolution: 'no_action', resolved_by: 'postgres' })
+    const { rows: audit } = await db.pool.query(
+      'SELECT action, registration_id, actor, note, evidence FROM admin_actions WHERE support_ref = $1', [reused.support_ref])
+    expect(audit).toEqual([{ action: 'close_exception', registration_id: second.registrationId, actor: 'postgres', note,
+      evidence: { resolution: 'no_action', stripe_refund_id: null } }])
+
+    const { rows: orders } = await db.pool.query(
+      'SELECT id, status, stripe_payment_intent_id FROM registrations WHERE id = ANY($1) ORDER BY created_at', [[first.registrationId, second.registrationId]])
+    expect(orders).toEqual([
+      { id: first.registrationId, status: 'paid', stripe_payment_intent_id: `pi_${firstReady.sessionId}` },
+      { id: second.registrationId, status: 'pending_payment', stripe_payment_intent_id: null }])
+    expect(await refused(db.pool.query('SELECT payments_admin.close_exception($1, $2, $3, $4)', [reused.support_ref, 'no_action', null, note])))
+      .toMatch(/already resolved/)
+  })
 })
 
 describe('who can reach the admin functions', () => {

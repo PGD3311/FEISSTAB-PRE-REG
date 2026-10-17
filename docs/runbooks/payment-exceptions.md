@@ -1,11 +1,14 @@
 # Payment cases and emails: runbook
 
 Who: the payments contacts in `PAYMENTS_ALERT_EMAIL` (Daniel and Steve to start).
-Where: the Supabase SQL editor for the RunFeis project, and the feis's Stripe dashboard (the connected account).
+Where: the Supabase SQL editor for the RunFeis project, and the Stripe dashboard (the connected account named in the case).
 
 Every case has a reference like `PAY-7KQ2M`. The family sees it on the success page and their dashboard when
 their charge went through but their registration isn't confirmed. Alerts arrive by email, and the Vercel
 logs have a `[PAYMENT_EXCEPTION] PAY-…` line.
+
+During registration, run the open-cases query (section 1) and the stuck-emails query (section 4) routinely, for
+example every day. A payment-case alert that fails to send is found only by the second query.
 
 ## 1. Look up a case
 
@@ -24,8 +27,16 @@ SELECT support_ref, severity, reason, created_at FROM pre_registration.payment_e
 WHERE status = 'open' ORDER BY created_at;
 ```
 
-Then find the payment in Stripe: Dashboard → Connect → the feis's account → Payments → search for
-`stripe_payment_intent_id`, or open the checkout session `stripe_checkout_session_id`.
+Then find the payment in Stripe: Dashboard → Connect → the account named in the case's `stripe_account_id` →
+Payments → search for `stripe_payment_intent_id`, or open the checkout session `stripe_checkout_session_id`. That
+account is usually the feis's, but for `account_mismatch` it is a different one, so don't assume.
+
+For a `payment_reused` case, find the order that already holds the payment (use the case's `stripe_payment_intent_id`
+for `<pi>`):
+```sql
+SELECT id, status, confirmation_number FROM pre_registration.registrations
+WHERE stripe_payment_intent_id = '<pi>';
+```
 
 ## 2. What each reason means and what to do
 
@@ -34,9 +45,9 @@ Then find the payment in Stripe: Dashboard → Connect → the feis's account �
 | `late_payment_conflict` | The family paid after their order expired, and they have a newer order for the same feis. | Ring or email the family. If they want the paid order and the newer order never reached checkout, confirm it (3a). Otherwise refund the late payment (3b). Once recorded, the system never confirms this payment by itself, even if the newer order later ends: only 3a does. |
 | `amount_mismatch` | Stripe charged a different amount from the order total. | Refund it (3b). The family registers again. |
 | `currency_mismatch` | The charge wasn't in USD. | Refund it (3b). |
-| `order_not_payable` | A payment arrived for a cancelled order, or for an order already paid by a different checkout. | Refund it (3b). |
-| `payment_reused` | A payment that is already recorded on another order arrived for this one. | Check both orders in Stripe. Refund anything that was charged twice (3b). |
-| `account_mismatch` | A payment for this order arrived on a different Stripe account. The payer may not be this family. | Investigate in both accounts. Refund the charge (3b). |
+| `order_not_payable` | A payment arrived for a cancelled order, or for an order already paid by a different checkout. | Refund the case's payment intent (3b), never the order's own payment: if the order is paid, that payment is the family's genuine one. |
+| `payment_reused` | A payment that is already recorded on another order arrived for this one. That other order is paid and confirmed: use the lookup in section 1. | **Never refund this payment intent**: it is that order's payment. Look at this order's checkout session in Stripe. Refund only a genuine second charge, if it shows one (3b). If it shows none, close the case with no action (3c). |
+| `account_mismatch` | A payment for this order arrived on a different Stripe account. The payer may not be this family. | Open the case's `stripe_account_id`, not the feis's account: the charge is there. Investigate in both accounts. Refund the charge in the case's account (3b). |
 | `claim_mismatch` | A payment for this order came from a checkout this order didn't claim. The payer may not be this family. | Investigate. Refund the charge (3b). |
 | `session_mismatch` | A payment arrived for a checkout session this order doesn't own. The payer may not be this family. | Investigate. Refund the charge (3b). |
 | `order_not_found` | A payment named an order that doesn't exist. | Investigate. Refund the charge (3b). |
@@ -60,20 +71,29 @@ cancelled: a delayed payment for it could still arrive. Refund instead (3b).
 This function is the only way a payment recorded as a `late_payment_conflict` case is ever confirmed. The
 automatic confirmation never does it, not on the success page, not on a Stripe retry, and not after the family's
 other order ends, whether the case is open or already closed.
+
+Before you run it:
+1. In Stripe, in the case's connected account (`stripe_account_id`), open the case's `stripe_payment_intent_id`. It
+   must show Succeeded, with no refund and no dispute. If it shows a refund or a dispute, don't confirm.
+2. Tell the other payments contact that you are taking this case, so nobody refunds it while you confirm it.
 ```sql
 SELECT payments_admin.confirm_late_payment('PAY-XXXXX', 'Daniel: rang the family; they want the paid order');
 ```
 
-**3b. Refund.** Refund the payment in Stripe (on the connected account), copy the refund ID (`re_…`), then:
+**3b. Refund.** Refund the case's payment intent in Stripe (in the case's `stripe_account_id`), and nothing else.
+Copy the refund ID (`re_…`), then run this straight after refunding, so the case doesn't sit open for someone to
+refund or confirm it again:
 ```sql
 SELECT payments_admin.close_exception('PAY-XXXXX', 'refunded', 're_...', 'Daniel: refunded the 3 Nov charge after checking');
 ```
 The database refuses an ID that doesn't look like `re_…`, so replace the `re_...` placeholder.
 
-**3c. A failed payment:**
+**3c. No action** (only `payment_failed`, where no money moved, and `payment_reused`, where Stripe shows no second
+charge and the payment belongs to the other order):
 ```sql
 SELECT payments_admin.close_exception('PAY-XXXXX', 'no_action', NULL, 'Daniel: bank payment failed; nothing charged');
 ```
+For a reused payment the note says what you saw, for example `'Daniel: Stripe shows one charge only, on the other order'`.
 
 **3d. Acknowledge an account change:**
 ```sql
@@ -90,8 +110,18 @@ minutes, 15 minutes, 1 hour, 3 hours and 6 hours, so there are 6 attempts in tot
 | `pending` | Waiting for its next attempt (or for email to be set up). |
 | `sending` | A worker is sending it. If it's been more than 10 minutes, the worker stopped and it will be picked up again. |
 | `sent` | Accepted by Resend (`provider_message_id`). |
-| `failed` | Nothing went out: all 6 attempts were refused by Resend, or couldn't be built or addressed (see `last_error`). An alert was sent, unless it was itself an alert. |
-| `needs_check` | It may have gone out, and a person must check. It is never resent automatically, and an alert was sent (unless it was itself an alert). See below for how it gets here. |
+| `failed` | Nothing went out: all 6 attempts were refused by Resend, or couldn't be built or addressed (see `last_error`). |
+| `needs_check` | It may have gone out, and a person must check. It is never resent automatically. See below for how it gets here. |
+
+Only a failed or stuck `registration_confirmation` sends you a delivery-failure email. A payment-case alert (or a
+delivery-failure email) that fails or gets stuck is only logged: look for `[NOTIFICATION_FAILED]` lines in the Vercel
+logs (an alert held at the 23-hour mark is logged by the database instead). So run this routinely, for example every
+day during registration, along with the open-cases query in section 1:
+```sql
+SELECT id, kind, dedupe_key, status, recipient, first_attempt_at, last_error
+FROM pre_registration.notifications
+WHERE status IN ('needs_check','failed') ORDER BY created_at;
+```
 
 A notification becomes `needs_check` in any of three ways. Resend remembers a provider key for 24 hours and won't
 send the same key twice, so retrying is only safe inside that window:
@@ -102,17 +132,21 @@ send the same key twice, so retrying is only safe inside that window:
   nothing, so it counts as uncertain and the provider key is kept, which means no second copy can go out. It then
   keeps retrying like any uncertain send and ends here at the 6th attempt or the 23 hours.
 
-For `needs_check` or `failed`: search the Resend dashboard (Emails) for the recipient around `first_attempt_at`.
-If it was delivered, leave it. If it wasn't, resend it with a new provider key:
+For each row from that query: search the Resend dashboard (Emails) for the recipient around `first_attempt_at`.
+If it was delivered, leave it. If it wasn't, resend it with a new provider key. This works for any kind: put the
+row's `id` in:
 ```sql
 UPDATE pre_registration.notifications
 SET status = 'pending', last_outcome = NULL, send_generation = send_generation + 1,
     first_attempt_at = NULL, attempts = 0, next_attempt_at = now(), claim_token = NULL
-WHERE dedupe_key = 'confirmation:<order id>';
+WHERE id = '<id from the query>' AND status IN ('needs_check','failed')
+RETURNING id, status;
 ```
-For any other kind, use the `Notification` line of the delivery-failure email as the `dedupe_key`. The resend sends the same
-message to the same address; if the address was wrong, add `recipient = '<corrected address>'` to the `SET`. If it
-fails again, no second alert is sent, so watch the row.
+It returns one row, with `pending`. No row means the notification isn't `needs_check` or `failed` (it was sent, or
+is being sent right now): leave it, because resending it would send a duplicate.
+
+The resend sends the same message to the same address; if the address was wrong, add `recipient = '<corrected
+address>'` to the `SET`. If it fails again, no second delivery-failure email is sent, so run the query above again.
 
 ## 5. Setting up an environment
 
@@ -123,14 +157,19 @@ Environment variables on Vercel:
 - `RESEND_API_KEY` and `EMAIL_FROM`
 - `STRIPE_SECRET_KEY` and `STRIPE_CONNECT_WEBHOOK_SECRET`
 - `STRIPE_APPLICATION_FEE_PERCENT` (without it Submit refuses to price an order)
-- `NEXT_PUBLIC_BASE_URL` (the site's real URL; without it the links in emails point to localhost)
+- `NEXT_PUBLIC_BASE_URL` (the site's real URL; without it the links in emails and Stripe's checkout return URLs point to localhost)
+- `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`
 
 Emails stay `pending` until Resend, the sender address and the payments contacts are all set.
 
-Schedule the email job, once per environment, in the SQL editor. Use the site's real URL and the same secret:
+Schedule the email job, once per environment. First add the secret in the Supabase dashboard rather than in a SQL
+snippet, because the editor saves snippets and a saved snippet would hold the secret: open Vault (under
+Integrations; older dashboards list it under Database), choose Add new secret, name it `notifications_cron_secret`,
+and paste the same value as `NOTIFICATIONS_CRON_SECRET`. (If you create it with `SELECT vault.create_secret(...)` in
+the SQL editor instead, delete that snippet straight afterwards.) Then run this in the SQL editor, with the site's
+real URL:
 ```sql
-CREATE EXTENSION IF NOT EXISTS pg_net;
-SELECT vault.create_secret('<NOTIFICATIONS_CRON_SECRET>', 'notifications_cron_secret');
+CREATE EXTENSION IF NOT EXISTS pg_net WITH SCHEMA extensions;
 SELECT cron.schedule('process-notifications', '*/5 * * * *', $$
   SELECT net.http_post(
     url := 'https://<site>/api/notifications/process',
@@ -144,7 +183,8 @@ $$);
 ```
 
 Then check it runs. `succeeded` means the request was sent; the site's answer is in `net._http_response`
-(`200` is working, `401` means the secret doesn't match, and the body says `"paused":true` until email is set up):
+(`200` is working, `401` means the secret is missing from Vault or doesn't match, and the body says
+`"paused":true` until email is set up):
 ```sql
 SELECT status, return_message, start_time FROM cron.job_run_details d JOIN cron.job j USING (jobid)
 WHERE j.jobname = 'process-notifications' ORDER BY start_time DESC LIMIT 3;
@@ -161,34 +201,68 @@ every role: the service role and the table owner included (the guard triggers fr
 order, or let it expire, instead.
 
 Removing test orders, for example after trying things out on a test feis, is the one exception. The table owner
-(`postgres`, in the SQL editor) has to do it on purpose, in one transaction that switches the row guards off
-and back on before it commits. Never do this to a real family's order. Put the test feis's id in the first query:
-```sql
-BEGIN;
-CREATE TEMP TABLE reset_orders ON COMMIT DROP AS
-  SELECT id FROM pre_registration.registrations WHERE feis_listing_id = '<test feis id>';
-ALTER TABLE pre_registration.registrations DISABLE TRIGGER guard_registrations;
-ALTER TABLE pre_registration.registration_entries DISABLE TRIGGER guard_registration_entries;
-ALTER TABLE pre_registration.registration_snapshots DISABLE TRIGGER guard_registration_snapshots;
-DELETE FROM pre_registration.notifications
-WHERE registration_id IN (SELECT id FROM reset_orders)
-   OR exception_id IN (SELECT id FROM pre_registration.payment_exceptions
-                       WHERE registration_id IN (SELECT id FROM reset_orders));
-DELETE FROM pre_registration.admin_actions WHERE registration_id IN (SELECT id FROM reset_orders);
-DELETE FROM pre_registration.payment_exceptions WHERE registration_id IN (SELECT id FROM reset_orders);
-DELETE FROM pre_registration.competitor_numbers WHERE registration_id IN (SELECT id FROM reset_orders);
-DELETE FROM pre_registration.registration_snapshots WHERE registration_id IN (SELECT id FROM reset_orders);
--- The entries go with their orders (ON DELETE CASCADE)
-DELETE FROM pre_registration.registrations WHERE id IN (SELECT id FROM reset_orders);
-ALTER TABLE pre_registration.registrations ENABLE TRIGGER guard_registrations;
-ALTER TABLE pre_registration.registration_entries ENABLE TRIGGER guard_registration_entries;
-ALTER TABLE pre_registration.registration_snapshots ENABLE TRIGGER guard_registration_snapshots;
-COMMIT;
-```
-If any line fails, nothing is changed: the whole block rolls back, guards included. If the editor then says the
-transaction is aborted, run `ROLLBACK;` on its own.
+(`postgres`, in the SQL editor) has to do it on purpose. It cannot be undone, and a wrong feis id would delete a real
+family's orders, snapshots, competitor numbers, cases and audit rows, so the steps below check the feis twice and
+stop if anything is off. Never do this to a real family's order.
 
-Check afterwards that every guard is back on (`tgenabled` is `O` on all six rows):
+**Step 1: preview.** This only reads. Put the test feis's id in it:
+```sql
+SELECT l.name, r.status, count(r.id) AS orders, sum(count(r.id)) OVER () AS all_orders
+FROM pre_registration.feis_listings l
+LEFT JOIN pre_registration.registrations r ON r.feis_listing_id = l.id
+WHERE l.id = '<test feis id>'
+GROUP BY l.name, r.status
+ORDER BY r.status;
+```
+Read it before going on. No rows means the id is wrong. Check that `name` is the test feis and that its orders look
+like test orders. Note the exact name and the `all_orders` figure.
+
+**Step 2: delete.** Fill in the id, the exact name from the preview (double any apostrophe: `O''Brien`), and the `all_orders` figure as the
+expected count. The whole
+block is one statement, so it does everything or nothing. It stops with an error, before changing anything, if the
+id and name don't match one feis or the number of orders isn't the number you typed. An error part-way rolls
+back everything, the guards included, and there is no `BEGIN` to leave a session open holding locks:
+```sql
+DO $$
+DECLARE
+  v_listing constant uuid := '<test feis id>';
+  v_name constant text := '<exact test feis name>';
+  v_expected constant integer := <all_orders from the preview>;
+  v_ids uuid[];
+BEGIN
+  SET LOCAL lock_timeout = '10s'; -- give up rather than make other work queue behind the table changes below
+
+  IF NOT EXISTS (SELECT 1 FROM pre_registration.feis_listings WHERE id = v_listing AND name = v_name) THEN
+    RAISE EXCEPTION 'no feis has that id and that exact name: nothing was deleted';
+  END IF;
+  SELECT coalesce(array_agg(r.id), '{}') INTO v_ids
+  FROM pre_registration.registrations r
+  JOIN pre_registration.feis_listings l ON l.id = r.feis_listing_id
+  WHERE l.id = v_listing AND l.name = v_name;
+  IF cardinality(v_ids) <> v_expected THEN
+    RAISE EXCEPTION 'expected % orders but this feis has %: nothing was deleted', v_expected, cardinality(v_ids);
+  END IF;
+
+  ALTER TABLE pre_registration.registrations DISABLE TRIGGER guard_registrations;
+  ALTER TABLE pre_registration.registration_entries DISABLE TRIGGER guard_registration_entries;
+  ALTER TABLE pre_registration.registration_snapshots DISABLE TRIGGER guard_registration_snapshots;
+  DELETE FROM pre_registration.notifications
+  WHERE registration_id = ANY (v_ids)
+     OR exception_id IN (SELECT id FROM pre_registration.payment_exceptions WHERE registration_id = ANY (v_ids));
+  DELETE FROM pre_registration.admin_actions WHERE registration_id = ANY (v_ids);
+  DELETE FROM pre_registration.payment_exceptions WHERE registration_id = ANY (v_ids);
+  DELETE FROM pre_registration.competitor_numbers WHERE registration_id = ANY (v_ids);
+  DELETE FROM pre_registration.registration_snapshots WHERE registration_id = ANY (v_ids);
+  -- The entries go with their orders (ON DELETE CASCADE)
+  DELETE FROM pre_registration.registrations WHERE id = ANY (v_ids);
+  ALTER TABLE pre_registration.registrations ENABLE TRIGGER guard_registrations;
+  ALTER TABLE pre_registration.registration_entries ENABLE TRIGGER guard_registration_entries;
+  ALTER TABLE pre_registration.registration_snapshots ENABLE TRIGGER guard_registration_snapshots;
+END $$;
+```
+Run the preview again: `all_orders` should now be 0.
+
+**Step 3: check the guards are back on** (`tgenabled` is `O` on all six rows):
 ```sql
 SELECT tgrelid::regclass AS table_name, tgname, tgenabled FROM pg_trigger
 WHERE tgrelid IN ('pre_registration.registrations'::regclass, 'pre_registration.registration_entries'::regclass,
