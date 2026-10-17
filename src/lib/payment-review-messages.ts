@@ -51,3 +51,21 @@ export function openReviewsByOrder(reviews: PaymentReview[]): Map<string, Paymen
   }
   return open
 }
+
+/** What the family sees in place of message A once the payments contacts have closed that case */
+export const REVIEWED_MESSAGE =
+  'This payment has been reviewed. If you have questions, contact the organiser.'
+
+/**
+ * Whether the payments contacts have closed a message-A case on this order (refunded it, for
+ * example) and left no case open on it. Message A's "don't pay again" and "we'll email you" no
+ * longer hold then, so REVIEWED_MESSAGE replaces it. A closed message-B case needs no words: no
+ * money moved, and the order's own status says the rest.
+ */
+export function messageAWasResolved(reviews: PaymentReview[], registrationId: string): boolean {
+  const mine = reviews.filter((review) => review.registration_id === registrationId)
+  return (
+    mine.some((review) => review.resolved && review.message_code === 'A') &&
+    mine.every((review) => review.resolved)
+  )
+}

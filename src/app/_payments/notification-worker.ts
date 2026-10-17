@@ -87,70 +87,87 @@ export async function processNotifications(
   let sent = 0
 
   for (const row of rows) {
-    let frozen: { recipient: string; payload: StoredEmail } | null =
-      row.recipient && row.payload ? { recipient: row.recipient, payload: row.payload } : null
-
-    if (!frozen) {
-      // First attempt: render once, then freeze the recipient and message for every later attempt
-      const content = render(row, await deps.store.context(row.id), config)
-      const recipient =
-        row.kind === 'registration_confirmation' ? row.recipient : config.alertRecipients.join(',')
-      if (!content || !recipient) {
-        await deps.store.complete({
-          id: row.id,
-          claimToken: row.claim_token,
-          outcome: 'explicit_failure',
-          providerMessageId: null,
-          error: content ? 'no recipient' : 'nothing to render',
-          now: deps.now()
-        })
-        continue
-      }
-      frozen = await deps.store.freeze(row.id, row.claim_token, recipient, {
-        from: config.from,
-        subject: content.subject,
-        html: content.html
-      })
-      if (!frozen) {
-        deps.log(`[NOTIFICATIONS] claim on ${row.id} went stale before sending`)
-        continue
-      }
-    }
-
-    const outcome = await sender.send(
-      {
-        from: frozen.payload.from,
-        to: frozen.recipient
-          .split(',')
-          .map((address) => address.trim())
-          .filter(Boolean),
-        subject: frozen.payload.subject,
-        html: frozen.payload.html
-      },
-      `${row.dedupe_key}:${row.send_generation}`
-    )
-    const result = await deps.store.complete({
-      id: row.id,
-      claimToken: row.claim_token,
-      outcome:
-        outcome.kind === 'accepted'
-          ? 'sent'
-          : outcome.kind === 'rejected'
-            ? 'explicit_failure'
-            : 'uncertain',
-      providerMessageId: outcome.kind === 'accepted' ? outcome.id : null,
-      error: outcome.kind === 'accepted' ? null : outcome.message,
-      now: deps.now()
-    })
-    if (outcome.kind === 'accepted') sent++
-    if (result === 'stale_claim') {
-      deps.log(`[NOTIFICATIONS] ${row.id} was claimed again while sending; the newer claim stands`)
-    }
-    if (result === 'failed') deps.log(`[NOTIFICATION_FAILED] ${row.kind} ${row.id}`)
-    if (result === 'needs_check') {
-      deps.log(`[NOTIFICATION_FAILED] ${row.kind} ${row.id} may have been sent; a person must check`)
+    // One row that throws must not stall the rest. Its claim is left as it is: after 10 minutes a
+    // later run takes it over, as it would a worker that stopped, and keeps its provider key
+    try {
+      if (await processRow(deps, sender, config, row)) sent++
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      deps.log(`[NOTIFICATION_FAILED] ${row.id} ${message}`)
     }
   }
 
   return { paused: false, claimed: rows.length, sent }
+}
+
+/** One claimed row: render and freeze it on its first attempt, send it, record the outcome */
+async function processRow(
+  deps: WorkerDeps,
+  sender: EmailSender,
+  config: WorkerConfig,
+  row: NotificationRow
+): Promise<boolean> {
+  let frozen: { recipient: string; payload: StoredEmail } | null =
+    row.recipient && row.payload ? { recipient: row.recipient, payload: row.payload } : null
+
+  if (!frozen) {
+    // First attempt: render once, then freeze the recipient and message for every later attempt
+    const content = render(row, await deps.store.context(row.id), config)
+    const recipient =
+      row.kind === 'registration_confirmation' ? row.recipient : config.alertRecipients.join(',')
+    if (!content || !recipient) {
+      await deps.store.complete({
+        id: row.id,
+        claimToken: row.claim_token,
+        outcome: 'explicit_failure',
+        providerMessageId: null,
+        error: content ? 'no recipient' : 'nothing to render',
+        now: deps.now()
+      })
+      return false
+    }
+    frozen = await deps.store.freeze(row.id, row.claim_token, recipient, {
+      from: config.from,
+      subject: content.subject,
+      html: content.html
+    })
+    if (!frozen) {
+      deps.log(`[NOTIFICATIONS] claim on ${row.id} went stale before sending`)
+      return false
+    }
+  }
+
+  const outcome = await sender.send(
+    {
+      from: frozen.payload.from,
+      to: frozen.recipient
+        .split(',')
+        .map((address) => address.trim())
+        .filter(Boolean),
+      subject: frozen.payload.subject,
+      html: frozen.payload.html
+    },
+    `${row.dedupe_key}:${row.send_generation}`
+  )
+  const result = await deps.store.complete({
+    id: row.id,
+    claimToken: row.claim_token,
+    outcome:
+      outcome.kind === 'accepted'
+        ? 'sent'
+        : outcome.kind === 'rejected'
+          ? 'explicit_failure'
+          : 'uncertain',
+    providerMessageId: outcome.kind === 'accepted' ? outcome.id : null,
+    error: outcome.kind === 'accepted' ? null : outcome.message,
+    now: deps.now()
+  })
+  if (result === 'stale_claim') {
+    deps.log(`[NOTIFICATIONS] ${row.id} was claimed again while sending; the newer claim stands`)
+  }
+  if (result === 'failed') deps.log(`[NOTIFICATION_FAILED] ${row.kind} ${row.id}`)
+  if (result === 'needs_check') {
+    deps.log(`[NOTIFICATION_FAILED] ${row.kind} ${row.id} may have been sent; a person must check`)
+  }
+  return outcome.kind === 'accepted'
 }

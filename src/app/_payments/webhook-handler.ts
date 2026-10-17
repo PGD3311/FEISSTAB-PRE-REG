@@ -81,6 +81,10 @@ export async function handleStripeEvent(
         if (result.result === 'recorded') {
           const ref = result.support_ref
           deps.log(`[PAYMENT_EXCEPTION] ${ref} payment_failed order ${registrationId}`)
+        } else {
+          // It fails the order's checks, so it changes nothing; no money moved (spec §8)
+          const why = 'no order with this claim, account and session'
+          deps.log(`[WEBHOOK] payment failure of ${session.id} ignored: ${why}`)
         }
         return ok(registrationId, result)
       }

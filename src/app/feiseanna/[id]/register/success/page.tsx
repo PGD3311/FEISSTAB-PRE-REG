@@ -2,7 +2,9 @@ import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { emailIsConfigured } from '@/lib/email/email-config'
 import {
+  messageAWasResolved,
   openReviewsByOrder,
+  REVIEWED_MESSAGE,
   reviewMessage,
   type PaymentReview
 } from '@/lib/payment-review-messages'
@@ -27,11 +29,12 @@ type View =
   | { kind: 'paid'; confirmationNumber: string | null }
   | { kind: 'case'; code: PaymentReview['message_code']; message: string }
   | { kind: 'checking'; message: string; refresh: boolean }
-  | { kind: 'paying' | 'unpaid' | 'expired' | 'cancelled' | 'unavailable' }
+  | { kind: 'reviewed' | 'paying' | 'unpaid' | 'expired' | 'cancelled' | 'unavailable' }
 
 const TITLES: Record<Exclude<View['kind'], 'case'>, string> = {
   paid: 'You’re entered',
   checking: 'Checking your payment',
+  reviewed: 'Payment reviewed',
   paying: 'Taking your payment',
   unpaid: 'Not paid yet',
   expired: 'Your hold ran out',
@@ -129,7 +132,8 @@ async function viewFor(
     console.error('Success page: payment reviews failed to load:', reviewsError)
     return { kind: 'unavailable' }
   }
-  const review = openReviewsByOrder((reviewRows ?? []) as PaymentReview[]).get(order.id)
+  const reviews = (reviewRows ?? []) as PaymentReview[]
+  const review = openReviewsByOrder(reviews).get(order.id)
   if (review) {
     return {
       kind: 'case',
@@ -137,6 +141,10 @@ async function viewFor(
       message: reviewMessage(review.message_code, review.support_ref)
     }
   }
+  // The payments contacts have closed this order's message-A case (refunded it, for example), so
+  // "don't pay again" and "we'll email you" no longer hold. The sync above still returns that same
+  // case as message A, so this comes before the sync's answer
+  if (messageAWasResolved(reviews, order.id)) return { kind: 'reviewed' }
 
   // Stripe has the payment, but confirmation isn't finished ('checking'), or it's a case only the
   // payments contacts see: message C. Only an unfinished confirmation is worth checking again.
@@ -252,6 +260,17 @@ export default async function SuccessPage({ params, searchParams }: SuccessPageP
                 Try again
               </Link>
             )}
+          </div>
+        )}
+
+        {view.kind === 'reviewed' && (
+          <div className="feis-sticker rounded px-5 py-5">
+            <p role="status" className="text-[15px]">
+              {REVIEWED_MESSAGE}
+            </p>
+            <Link href="/dashboard" className="feis-btn feis-btn-outline mt-4">
+              All my entries
+            </Link>
           </div>
         )}
 

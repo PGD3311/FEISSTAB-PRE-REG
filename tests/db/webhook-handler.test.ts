@@ -92,6 +92,22 @@ describe('handleStripeEvent', () => {
     expect(await status(order.registrationId)).toBe('expired')
   })
 
+  it('logs a failure notice that does not match the order, and changes nothing', async () => {
+    const order = await createDraftOrder(db.pool)
+    const ready = await readyToPay(db.pool, order)
+    const log: string[] = []
+    const before = await db.pool.query(
+      'SELECT (SELECT count(*)::int FROM payment_exceptions) AS cases, (SELECT count(*)::int FROM notifications) AS alerts')
+    const outcome = await handleStripeEvent(deps(log), event('checkout.session.async_payment_failed',
+      sessionFor(order, ready, { id: 'cs_old', payment_status: 'unpaid' })))
+    expect(outcome).toMatchObject({ status: 200, body: { result: 'ignored' } })
+    expect(log).toEqual([`[WEBHOOK] payment failure of cs_old ignored: no order with this claim, account and session`])
+    const after = await db.pool.query(
+      'SELECT (SELECT count(*)::int FROM payment_exceptions) AS cases, (SELECT count(*)::int FROM notifications) AS alerts')
+    expect(after.rows[0]).toEqual(before.rows[0])
+    expect(await status(order.registrationId)).toBe('pending_payment')
+  })
+
   it("expires only the order's own checkout, and never a paid order", async () => {
     const order = await createDraftOrder(db.pool)
     const ready = await readyToPay(db.pool, order)

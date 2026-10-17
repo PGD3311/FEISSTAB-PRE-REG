@@ -67,7 +67,7 @@ export default async function DashboardPage() {
   const detailsComplete = isHouseholdComplete(household)
 
   // Dancers, registrations and the family's view of any payment cases, in parallel
-  const [{ data: dancers }, { data: registrations }, reviews] = await Promise.all([
+  const [dancersRead, registrationsRead, reviews] = await Promise.all([
     supabase
       .from('dancers')
       .select('id, first_name, last_name')
@@ -87,22 +87,27 @@ export default async function DashboardPage() {
       .order('created_at', { ascending: false }),
     supabase.rpc('get_my_payment_reviews', { p_registration_id: null })
   ])
+  if (dancersRead.error) console.error('Dancers failed to load:', dancersRead.error)
+  if (registrationsRead.error) console.error('Entries failed to load:', registrationsRead.error)
   if (reviews.error) console.error('Payment reviews failed to load:', reviews.error)
+  // A failed read must not look like "No entries yet": that would hide a paid entry, or the
+  // message A that tells the family not to pay again
+  const entriesFailed = dancersRead.error !== null || registrationsRead.error !== null
   const openReviews = openReviewsByOrder((reviews.data ?? []) as PaymentReview[])
 
   // Released and expired holds never became entries, so they stay off the list, unless the order
   // has an open payment case: then it shows, so its message A or B reaches the family
   // `unknown` first: the client types a to-one embed (feis_listings) as an array, but each registration has one feis
   const typedRegistrations = (
-    (registrations ?? []) as unknown as (Registration & {
+    (registrationsRead.data ?? []) as unknown as (Registration & {
       feis_listings: { name: string; feis_date: string; venue_name: string }
       registration_entries: { dancer_id: string; feis_competitions: { display_name: string } }[]
     })[]
   ).filter((reg) => LISTED_STATUSES.includes(reg.status) || openReviews.has(reg.id))
 
-  const typedDancers = (dancers ?? []) as Pick<Dancer, 'id' | 'first_name' | 'last_name'>[]
+  const typedDancers = (dancersRead.data ?? []) as Pick<Dancer, 'id' | 'first_name' | 'last_name'>[]
 
-  const hasRegistrations = typedRegistrations.length > 0
+  const hasRegistrations = !entriesFailed && typedRegistrations.length > 0
 
   return (
     <div>
@@ -127,7 +132,7 @@ export default async function DashboardPage() {
         </div>
       )}
 
-      {reviews.error && (
+      {reviews.error && !entriesFailed && (
         <p
           role="status"
           className="mb-6 max-w-3xl border-l-4 border-[var(--color-feis-orange)] bg-[var(--color-feis-orange-light)] px-4 py-2.5 text-sm text-[var(--color-feis-orange-ink)]"
@@ -150,7 +155,14 @@ export default async function DashboardPage() {
         </p>
       )}
 
-      {!hasRegistrations ? (
+      {entriesFailed ? (
+        <p
+          role="status"
+          className="mb-6 max-w-3xl border-l-4 border-[var(--color-feis-orange)] bg-[var(--color-feis-orange-light)] px-4 py-2.5 text-sm text-[var(--color-feis-orange-ink)]"
+        >
+          We couldn&apos;t load your entries. Please refresh.
+        </p>
+      ) : !hasRegistrations ? (
         <div className="feis-sticker max-w-3xl rounded px-5 py-5">
           <p className="font-bold">No entries yet</p>
           <p className="mt-1 text-sm text-muted-foreground">

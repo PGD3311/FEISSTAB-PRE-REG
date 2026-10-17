@@ -437,6 +437,8 @@ It runs as one transaction:
 
 No Stripe IDs, amounts, details or notes are included.
 
+**Once a message-A case is closed**, message A's "don't pay again" and "we'll email you" no longer hold. For an order whose message-A case is resolved and that has no open case, the success page says instead: "This payment has been reviewed. If you have questions, contact the organiser." The dashboard shows nothing for a resolved case, so the payments contacts email the family themselves when they close it (runbook).
+
 **When any case is recorded:**
 - An alert to the payments contacts is queued (key `exception:<id>`).
 - `[PAYMENT_EXCEPTION] <support_ref>` is logged.
@@ -487,6 +489,8 @@ Resolutions are allowed by reason. No function marks an order paid by skipping c
 - it's `sending` with a claim more than 10 minutes old (from a worker that crashed).
 
 `complete_notification(id, claim_token, …)` only works if the token still matches, so an old worker can never finish a newer worker's claim.
+
+One row that throws (its context, freeze, send or completion) doesn't stop the rest of the batch: the worker logs `[NOTIFICATION_FAILED] <id> <error>` and carries on. The row stays `sending`, so a later run takes it over after 10 minutes as it would a crashed worker's claim, with the same key.
 
 These claim, backoff and outcome rules are database functions (migration 016), so each step is atomic. Classifying a Resend error is a pure function in `src/lib/engine/email-errors.ts`.
 

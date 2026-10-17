@@ -246,6 +246,46 @@ describe('the notification queue', () => {
     expect(await row('registration_confirmation')).toMatchObject({ status: 'sent', provider_message_id: 'em_new' })
   })
 
+  it('sends the rest of the batch when one row throws, and a later run takes that row over', async () => {
+    const first = await confirmedOrder()
+    const second = await confirmedOrder()
+    const confirmations = async () => (await db.pool.query(
+      `SELECT id, registration_id, status, attempts, send_generation FROM notifications
+       WHERE kind = 'registration_confirmation' ORDER BY created_at`)).rows
+    const [{ id: firstId, registration_id: claimedFirst }] = await confirmations()
+    expect(claimedFirst).toBe(first.registrationId)
+
+    // The first row's context step throws, as a dropped database connection would
+    const failing: NotificationStore = {
+      ...notifications,
+      context: async (id) => {
+        if (id === firstId) throw new Error('connection terminated unexpectedly')
+        return notifications.context(id)
+      }
+    }
+    const email = new FakeEmail()
+    const log: string[] = []
+    expect(await processNotifications(worker(email, { store: failing, log: (line) => log.push(line) })))
+      .toEqual({ paused: false, claimed: 2, sent: 1 })
+
+    expect(log).toEqual([`[NOTIFICATION_FAILED] ${firstId} connection terminated unexpectedly`])
+    expect(email.delivered.map((d) => d.email.to)).toEqual([[second.family.email]])
+    expect(await confirmations()).toMatchObject([
+      { registration_id: first.registrationId, status: 'sending', attempts: 0 },
+      { registration_id: second.registrationId, status: 'sent', attempts: 1 }
+    ])
+
+    // Its claim goes stale after 10 minutes; the next run takes it over and sends it, on the same key
+    advance(11)
+    expect(await processNotifications(worker(email))).toEqual({ paused: false, claimed: 1, sent: 1 })
+    expect(email.delivered.map((d) => d.key)).toEqual([
+      `confirmation:${second.registrationId}:0`, `confirmation:${first.registrationId}:0`])
+    expect(await confirmations()).toMatchObject([
+      { registration_id: first.registrationId, status: 'sent', attempts: 1, send_generation: 0 },
+      { registration_id: second.registrationId, status: 'sent', attempts: 1 }
+    ])
+  })
+
   it('pauses without using attempts while email is not set up', async () => {
     await confirmedOrder()
     expect(await processNotifications(worker(new FakeEmail(), { config: null, sender: null })))

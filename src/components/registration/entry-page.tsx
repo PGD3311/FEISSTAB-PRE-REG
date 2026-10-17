@@ -100,6 +100,16 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
     observer.observe(receipt)
     return () => observer.disconnect()
   }, [])
+
+  // Back from Stripe: the browser can restore this page exactly as it was left, still busy from
+  // the Pay click, which would leave Pay and Change entries disabled. Make them work again
+  useEffect(() => {
+    function onPageShow(event: PageTransitionEvent) {
+      if (event.persisted) setLoading(false)
+    }
+    window.addEventListener('pageshow', onPageShow)
+    return () => window.removeEventListener('pageshow', onPageShow)
+  }, [])
   const [error, setError] = useState<string | null>(null)
 
   const paid = paidRegistration !== null

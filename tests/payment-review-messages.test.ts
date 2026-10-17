@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  messageAWasResolved,
   openReviewsByOrder,
+  REVIEWED_MESSAGE,
   reviewCodeForReason,
   reviewMessage,
   type PaymentReview
@@ -32,17 +34,18 @@ describe('parent review messages', () => {
   })
 })
 
-describe('openReviewsByOrder', () => {
-  function review(overrides: Partial<PaymentReview> = {}): PaymentReview {
-    return {
-      registration_id: 'r1',
-      support_ref: 'PAY-7KQ2M',
-      message_code: 'A',
-      created_at: '2026-10-16T12:00:00+00:00',
-      resolved: false,
-      ...overrides
-    }
+function review(overrides: Partial<PaymentReview> = {}): PaymentReview {
+  return {
+    registration_id: 'r1',
+    support_ref: 'PAY-7KQ2M',
+    message_code: 'A',
+    created_at: '2026-10-16T12:00:00+00:00',
+    resolved: false,
+    ...overrides
   }
+}
+
+describe('openReviewsByOrder', () => {
 
   it("keeps each order's newest unresolved case, whatever order the rows come in", () => {
     const older = review({ support_ref: 'PAY-OLDER' })
@@ -62,5 +65,28 @@ describe('openReviewsByOrder', () => {
     const resolvedLater = review({ created_at: '2026-10-16T13:00:00+00:00', resolved: true })
     expect(openReviewsByOrder([review({ resolved: true })]).size).toBe(0)
     expect(openReviewsByOrder([review(), resolvedLater]).get('r1')).toEqual(review())
+  })
+})
+
+describe('messageAWasResolved', () => {
+  it('says so once the payments contacts have closed the order\'s message-A case', () => {
+    expect(messageAWasResolved([review({ resolved: true })], 'r1')).toBe(true)
+    expect(REVIEWED_MESSAGE).toBe(
+      'This payment has been reviewed. If you have questions, contact the organiser.'
+    )
+  })
+
+  it('keeps message A while any case on the order is still open', () => {
+    expect(messageAWasResolved([review()], 'r1')).toBe(false)
+    const openLater = review({ support_ref: 'PAY-NEWER', created_at: '2026-10-16T13:00:00+00:00' })
+    expect(messageAWasResolved([review({ resolved: true }), openLater], 'r1')).toBe(false)
+    const openB = review({ support_ref: 'PAY-FAILD', message_code: 'B' })
+    expect(messageAWasResolved([review({ resolved: true }), openB], 'r1')).toBe(false)
+  })
+
+  it('says nothing for a closed message-B case, or for another order\'s case', () => {
+    expect(messageAWasResolved([review({ message_code: 'B', resolved: true })], 'r1')).toBe(false)
+    expect(messageAWasResolved([review({ registration_id: 'r2', resolved: true })], 'r1')).toBe(false)
+    expect(messageAWasResolved([], 'r1')).toBe(false)
   })
 })
