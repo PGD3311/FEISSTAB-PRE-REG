@@ -98,3 +98,13 @@ export function formatDeadline(isoString: string, timeZone: string): string {
     .toLowerCase()
   return `${day}, ${time}`
 }
+
+/**
+ * Whether an order was an add-on: its price counted the family's earlier paid orders (spec §14). Orders made
+ * before add-ons, and every family's first order, have no counted orders.
+ */
+export function isAddOnOrder(order: {
+  purchase_snapshot: { pricing?: { prior?: unknown } } | null
+}): boolean {
+  return order.purchase_snapshot?.pricing?.prior != null
+}

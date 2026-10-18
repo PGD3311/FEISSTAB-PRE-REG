@@ -1,15 +1,23 @@
 import { createClient, getSignedInUser } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
+import { canStartOrder } from '@/lib/engine/order-validation'
+import { isAddOnOrder } from '@/lib/entry-display'
 import { formatDate, formatCents } from '@/lib/format'
 import { REGISTRATION_COLUMNS } from '@/lib/registration-columns'
 import { isHouseholdComplete } from '@/lib/household'
 import {
+  openMessageAFor,
   openReviewsByOrder,
   reviewMessage,
   type PaymentReview
 } from '@/lib/payment-review-messages'
-import type { Registration, Dancer, RegistrationStatus } from '@/lib/types/feis-listing'
+import type {
+  Registration,
+  Dancer,
+  FeisListing,
+  RegistrationStatus
+} from '@/lib/types/feis-listing'
 import { PageTitle } from '@/components/page-title'
 
 export const dynamic = 'force-dynamic'
@@ -79,7 +87,7 @@ export default async function DashboardPage() {
       .select(
         `
         ${REGISTRATION_COLUMNS},
-        feis_listings(name, feis_date, venue_name),
+        feis_listings(name, feis_date, venue_name, status, reg_opens_at, reg_closes_at, late_reg_closes_at),
         registration_entries(dancer_id, feis_competitions(display_name))
       `
       )
@@ -93,17 +101,45 @@ export default async function DashboardPage() {
   // A failed read must not look like "No entries yet": that would hide a paid entry, or the
   // message A that tells the family not to pay again
   const entriesFailed = dancersRead.error !== null || registrationsRead.error !== null
-  const openReviews = openReviewsByOrder((reviews.data ?? []) as PaymentReview[])
+  const reviewRows = (reviews.data ?? []) as PaymentReview[]
+  const openReviews = openReviewsByOrder(reviewRows)
+
+  // `unknown` first: the client types a to-one embed (feis_listings) as an array, but each registration has one feis
+  const allRegistrations = (registrationsRead.data ?? []) as unknown as (Registration & {
+    feis_listings: Pick<
+      FeisListing,
+      'name' | 'feis_date' | 'venue_name' | 'status' | 'reg_opens_at' | 'reg_closes_at' | 'late_reg_closes_at'
+    >
+    registration_entries: { dancer_id: string; feis_competitions: { display_name: string } }[]
+  })[]
+
+  // Whether each feis can take a new order now (spec §14): the feis's newest paid order offers Add dances
+  // then. Newest first, so the first paid order found for a feis is its newest
+  const now = new Date()
+  const addDancesOn = new Set<string>()
+  for (const feisId of new Set(allRegistrations.map((reg) => reg.feis_listing_id))) {
+    const forFeis = allRegistrations.filter((reg) => reg.feis_listing_id === feisId)
+    const newestPaid = forFeis.find((reg) => reg.status === 'paid')
+    if (!newestPaid) continue
+    const hasUnpaidOrder = forFeis.some(
+      (reg) =>
+        (reg.status === 'draft' || reg.status === 'pending_payment') &&
+        (reg.hold_expires_at === null || new Date(reg.hold_expires_at) > now)
+    )
+    const canAdd = canStartOrder({
+      listing: newestPaid.feis_listings,
+      now,
+      hasUnpaidOrder,
+      hasOpenMessageA: openMessageAFor(reviewRows, forFeis.map((reg) => reg.id)) !== null
+    })
+    if (canAdd) addDancesOn.add(newestPaid.id)
+  }
 
   // Released and expired holds never became entries, so they stay off the list, unless the order
   // has an open payment case: then it shows, so its message A or B reaches the family
-  // `unknown` first: the client types a to-one embed (feis_listings) as an array, but each registration has one feis
-  const typedRegistrations = (
-    (registrationsRead.data ?? []) as unknown as (Registration & {
-      feis_listings: { name: string; feis_date: string; venue_name: string }
-      registration_entries: { dancer_id: string; feis_competitions: { display_name: string } }[]
-    })[]
-  ).filter((reg) => LISTED_STATUSES.includes(reg.status) || openReviews.has(reg.id))
+  const typedRegistrations = allRegistrations.filter(
+    (reg) => LISTED_STATUSES.includes(reg.status) || openReviews.has(reg.id)
+  )
 
   const typedDancers = (dancersRead.data ?? []) as Pick<Dancer, 'id' | 'first_name' | 'last_name'>[]
 
@@ -180,11 +216,8 @@ export default async function DashboardPage() {
             const status = review ? REVIEW_STYLES[review.message_code] : STATUS_STYLES[reg.status]
             // Message A says not to pay again, so nothing offers another payment beside it
             const canPayAgain = review?.message_code !== 'A'
-            // Name the session only when there is one (never `session_id=null`); the success
-            // page finds the family's order without it too
-            const receiptHref = `/feiseanna/${reg.feis_listing_id}/register/success${
-              reg.stripe_checkout_session_id ? `?session_id=${reg.stripe_checkout_session_id}` : ''
-            }`
+            // Each receipt names its own order: a family can have several for one feis
+            const receiptHref = `/feiseanna/${reg.feis_listing_id}/register/success?order=${reg.id}`
             const dancerIds = [...new Set(reg.registration_entries.map((e) => e.dancer_id))]
             const dancerNames = dancerIds
               .map((id) => typedDancers.find((d) => d.id === id))
@@ -205,6 +238,11 @@ export default async function DashboardPage() {
                     <span className={`rounded-[2px] px-1.5 py-0.5 text-xs font-bold ${status.tag}`}>
                       {status.label}
                     </span>
+                    {isAddOnOrder(reg) && (
+                      <span className="rounded-[2px] border border-[var(--color-feis-charcoal)] px-1.5 py-0.5 text-xs font-bold">
+                        Added
+                      </span>
+                    )}
                   </div>
                   <p className="mt-0.5 text-sm text-muted-foreground">
                     {formatDate(reg.feis_listings.feis_date, { month: 'short' })}
@@ -241,6 +279,14 @@ export default async function DashboardPage() {
                   {reg.status === 'paid' && (
                     <Link href={receiptHref} className="feis-btn feis-btn-outline">
                       See receipt
+                    </Link>
+                  )}
+                  {addDancesOn.has(reg.id) && (
+                    <Link
+                      href={`/feiseanna/${reg.feis_listing_id}/register`}
+                      className="feis-btn feis-btn-outline"
+                    >
+                      Add dances
                     </Link>
                   )}
                   {(reg.status === 'draft' || reg.status === 'pending_payment') && canPayAgain && (

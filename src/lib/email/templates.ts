@@ -1,3 +1,4 @@
+import { isAddOnOrder } from '@/lib/entry-display'
 import { formatCents, formatDate } from '@/lib/format'
 import type { PurchaseSnapshot } from '@/lib/engine/purchase-snapshot'
 
@@ -64,6 +65,8 @@ export interface ConfirmationEmailData {
   confirmationNumber: string | null
   contactEmail: string | null
   baseUrl: string
+  /** An add-on: these dances were added to the family's entry, and its dancers keep their numbers */
+  addedToEntry?: boolean
 }
 
 /** The "you're entered" email: each dancer's competitor number and dances, and what was paid. */
@@ -76,13 +79,17 @@ export function renderConfirmationEmail(data: ConfirmationEmailData): string {
     totalCents,
     confirmationNumber,
     contactEmail,
-    baseUrl
+    baseUrl,
+    addedToEntry = false
   } = data
+  const intro = addedToEntry
+    ? "These dances were added to your entry. Each dancer keeps the competitor number they already had. Keep this email with your first one; you'll need the numbers on the day."
+    : "Here are your competitor numbers and dances. Keep this email; you'll need the numbers on the day."
   return `<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="color-scheme" content="light"><title>You're entered</title></head>
 <body style="margin:0;padding:0;background-color:#FBF9F4;font-family:Arial,Helvetica,sans-serif;">
-<div style="display:none;max-height:0;overflow:hidden;opacity:0;">Your competitor numbers for ${escapeHtml(feisName)}.</div>
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;">${addedToEntry ? 'Dances added to your entry for' : 'Your competitor numbers for'} ${escapeHtml(feisName)}.</div>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#FBF9F4;">
 <tr><td align="center" style="padding:32px 16px;">
   <table role="presentation" width="560" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%;">
@@ -97,7 +104,7 @@ export function renderConfirmationEmail(data: ConfirmationEmailData): string {
     <tr>
       <td>
         <p style="margin:0 0 16px;font-size:15px;line-height:1.6;color:#3F4441;">
-          Here are your competitor numbers and dances. Keep this email; you'll need the numbers on the day.
+          ${intro}
         </p>
         ${dancers.map(dancerBlock).join('')}
       </td>
@@ -189,8 +196,10 @@ export function confirmationEmail(ctx: ConfirmationEmailContext): EmailContent {
   }
 
   const feisName = ctx.listing.name ?? 'your feis'
+  // An add-on's email lists only its own dances (the purchase is this order's), and says they were added
+  const addedToEntry = isAddOnOrder({ purchase_snapshot: ctx.purchase })
   return {
-    subject: `You're entered: ${feisName}`,
+    subject: addedToEntry ? `Dances added: ${feisName}` : `You're entered: ${feisName}`,
     html: renderConfirmationEmail({
       feisName,
       feisDate: formatDate(ctx.listing.feis_date, {
@@ -202,7 +211,8 @@ export function confirmationEmail(ctx: ConfirmationEmailContext): EmailContent {
       totalCents: ctx.order.total_cents,
       confirmationNumber: ctx.order.confirmation_number,
       contactEmail: ctx.listing.contact_email,
-      baseUrl: ctx.baseUrl
+      baseUrl: ctx.baseUrl,
+      addedToEntry
     })
   }
 }

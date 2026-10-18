@@ -3,15 +3,17 @@
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { formatCents, parseLocalDate } from '@/lib/format'
-import { calculateFees, getActiveLateTier } from '@/lib/engine/fee-calculator'
+import { calculateFees, getActiveLateTier, summarisePaidOrders } from '@/lib/engine/fee-calculator'
 import { calculateAgeOnDate, getEligibleCompetitions } from '@/lib/engine/eligibility'
 import {
   ageCutoffDateFor,
+  canStartOrder,
   toDancerProfile,
   type RequestedEntry
 } from '@/lib/engine/order-validation'
-import { feeEntriesFor } from '@/lib/engine/purchase-snapshot'
+import { feeEntriesFor, paidOrdersFrom } from '@/lib/engine/purchase-snapshot'
 import { dancerLevelSummary, entryDeadline, entryFeesPerDancer } from '@/lib/entry-display'
+import { reviewMessage, type PaymentReview } from '@/lib/payment-review-messages'
 import {
   createDraftRegistration,
   createCheckoutSession,
@@ -49,9 +51,12 @@ export type EntryPageData = {
   competitions: FeisCompetition[]
   dancers: DancerWithLevels[]
   heldRegistration: RegistrationWithEntries | null
-  paidRegistration: RegistrationWithEntries | null
+  /** Orders already paid for this feis, oldest first; anything chosen now is added on top */
+  paidRegistrations: RegistrationWithEntries[]
   numbers: Record<string, number>
   expiredHold: boolean
+  /** An open message-A case on one of the family's orders for this feis: no new order can start */
+  openMessageA: PaymentReview | null
 }
 
 function cartFrom(registration: RegistrationWithEntries | null): Cart {
@@ -63,13 +68,15 @@ function cartFrom(registration: RegistrationWithEntries | null): Cart {
 }
 
 export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: string }) {
-  const { listing, feeSchedule, competitions, dancers, paidRegistration, numbers } = data
+  const { listing, feeSchedule, competitions, dancers, paidRegistrations, numbers, openMessageA } =
+    data
   const levels = listing.syllabus_snapshot?.levels ?? []
   // The cutoff Submit uses: the organiser's date, otherwise January 1 of the feis year
   const ageCutoffDate = useMemo(() => ageCutoffDateFor(listing, new Date()), [listing])
   const deadline = entryDeadline(listing)
 
-  const [cart, setCart] = useState<Cart>(() => cartFrom(paidRegistration ?? data.heldRegistration))
+  // Only what's being bought now: dances already paid for show as entered, not in the cart
+  const [cart, setCart] = useState<Cart>(() => cartFrom(data.heldRegistration))
   const [editingId, setEditingId] = useState<string | null>(null)
   const [registrationId, setRegistrationId] = useState<string | null>(
     data.heldRegistration?.id ?? null
@@ -112,11 +119,39 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
   }, [])
   const [error, setError] = useState<string | null>(null)
 
-  const paid = paidRegistration !== null
+  const paid = paidRegistrations.length > 0
   const held = registrationId !== null
-  const canEdit = !paid && !held && !deadline.closed && feeSchedule !== null
+  // The one gate for a new order, a first order or an add-on (spec §14): registration is open, the family
+  // holds no unpaid order, and no message-A case is open for this feis
+  const canStart = canStartOrder({
+    listing,
+    now: new Date(),
+    hasUnpaidOrder: held,
+    hasOpenMessageA: openMessageA !== null
+  })
+  const canEdit = canStart && feeSchedule !== null
 
   const competitionById = useMemo(() => new Map(competitions.map((c) => [c.id, c])), [competitions])
+
+  // Dances already entered and paid for, per dancer, across every paid order
+  const entered: Cart = useMemo(() => {
+    const map: Cart = {}
+    for (const registration of paidRegistrations) {
+      for (const [dancerId, ids] of Object.entries(cartFrom(registration))) {
+        map[dancerId] = [...(map[dancerId] ?? []), ...ids]
+      }
+    }
+    return map
+  }, [paidRegistrations])
+  const paidTotalCents = paidRegistrations.reduce((sum, r) => sum + r.total_cents, 0)
+  const latestPaid = paidRegistrations[paidRegistrations.length - 1] ?? null
+
+  // What the paid orders already covered, counted as Submit counts them, so the estimate doesn't charge the
+  // family fee twice and the family max runs across orders. Submit's own price is the one that counts.
+  const prior = useMemo(
+    () => summarisePaidOrders(paidOrdersFrom(paidRegistrations, competitions)),
+    [paidRegistrations, competitions]
+  )
 
   const eligibleByDancer = useMemo(() => {
     const map: Record<string, EligibleCompetition[]> = {}
@@ -147,9 +182,14 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
   const cartBreakdown = useMemo(
     () =>
       feeSchedule && requestedEntries.length > 0
-        ? calculateFees(feeSchedule, feeEntriesFor(requestedEntries, competitionById))
+        ? calculateFees(
+            feeSchedule,
+            feeEntriesFor(requestedEntries, competitionById),
+            new Date(),
+            prior
+          )
         : null,
-    [feeSchedule, requestedEntries, competitionById]
+    [feeSchedule, requestedEntries, competitionById, prior]
   )
   const breakdown = orderBreakdown ?? cartBreakdown
 
@@ -199,9 +239,10 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
     })
   }
 
-  // Where a family goes once Stripe has taken a payment for the order: the success page
-  // confirms it, or says what happens next
-  const successHref = `/feiseanna/${feisId}/register/success`
+  // Where a family goes once an order is paid or confirmed, or Stripe may have taken the payment: the
+  // success page for that order confirms it, or says what happens next
+  const successHref = (orderId: string) =>
+    `/feiseanna/${feisId}/register/success?order=${encodeURIComponent(orderId)}`
 
   // The order can't be paid any more: forget it, keep the cart, and Pay submits a fresh one
   function startAgain(message: string) {
@@ -256,9 +297,10 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
         case 'paid':
         case 'review':
         case 'checking':
-          // Stripe has, or may have, the money: the success page says what happens next
+          // Confirmed (a $0 order is confirmed without Stripe), or Stripe has or may have the money: the
+          // success page says what happens next
           leaving = true
-          window.location.href = successHref
+          window.location.href = successHref(regId)
           return
         case 'start_again':
           startAgain(payment.message)
@@ -296,7 +338,7 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
         case 'checking':
           // The checkout was paid after all, or may have been
           leaving = true
-          window.location.href = successHref
+          window.location.href = successHref(registrationId)
           return
         default:
           // try_again or error: the order stays as it is
@@ -372,13 +414,18 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
                     selected={(cart[dancer.id] ?? [])
                       .map((id) => competitionById.get(id))
                       .filter((c): c is FeisCompetition => c !== undefined)}
+                    entered={(entered[dancer.id] ?? [])
+                      .map((id) => competitionById.get(id))
+                      .filter((c): c is FeisCompetition => c !== undefined)}
                     feeSchedule={feeSchedule}
                     editing={canEdit && editingId === dancer.id}
                     canEdit={canEdit}
                     lockedNote={
-                      held
-                        ? 'To add dances, choose Change entries under the family total.'
-                        : undefined
+                      openMessageA
+                        ? 'No new entries while we check your payment.'
+                        : held
+                          ? 'To add dances, choose Change entries under the family total.'
+                          : undefined
                     }
                     onEdit={() => setEditingId(dancer.id)}
                     onDone={() => setEditingId(null)}
@@ -399,14 +446,27 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
           )}
         </section>
 
-        {paid ? (
+        {openMessageA ? (
+          // Message A says not to pay again: nothing here offers a new order, or Pay for a held one
+          <aside className="feis-receipt px-[18px] py-5">
+            <h2 className="text-[22px] font-extrabold [font-stretch:75%]">
+              We&apos;re checking your registration
+            </h2>
+            <p role="status" className="mt-2 text-sm">
+              {reviewMessage('A', openMessageA.support_ref)}
+            </p>
+            <Link href="/dashboard" className="feis-btn feis-btn-outline mt-4">
+              All my entries
+            </Link>
+          </aside>
+        ) : paid && dancesChosen === 0 && !held ? (
           <PaidReceipt
             familyName={data.familyName}
-            totalCents={paidRegistration.total_cents}
-            confirmationNumber={paidRegistration.confirmation_number}
+            totalCents={paidTotalCents}
+            confirmationNumber={latestPaid?.confirmation_number ?? null}
             contactEmail={listing.contact_email}
             cardsHref={`/dashboard/numbers/${feisId}`}
-            canAdd={false}
+            canAdd={canEdit}
           />
         ) : deadline.closed && !held ? (
           <aside className="feis-receipt px-[18px] py-5">
@@ -430,6 +490,12 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
           <div className="lg:sticky lg:top-6">
             <FamilyReceipt
               familyName={data.familyName}
+              title={paid ? 'Adding to your entry' : undefined}
+              note={
+                paid
+                  ? `You've already paid ${formatCents(paidTotalCents)} for this feis. This is only for what you're adding.`
+                  : undefined
+              }
               lines={receiptLines}
               totalCents={totalCents}
               termsUrl={listing.terms_url}
@@ -444,7 +510,7 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
         )}
       </main>
 
-      {!paid && dancesChosen > 0 && !receiptVisible && (
+      {dancesChosen > 0 && !receiptVisible && !openMessageA && (
         <div className="fixed inset-x-0 bottom-0 flex items-center justify-between gap-3 bg-[var(--color-feis-charcoal)] px-4 pt-3 pb-[max(12px,env(safe-area-inset-bottom))] text-white lg:hidden">
           <div>
             <span className="block text-xs opacity-70">
@@ -459,7 +525,7 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
             href="#family-total"
             className="rounded-[3px] bg-[#E9C77F] px-3.5 py-2.5 font-extrabold text-[var(--color-feis-charcoal)]"
           >
-            Review and pay
+            {totalCents === 0 ? 'Review and confirm' : 'Review and pay'}
           </a>
         </div>
       )}

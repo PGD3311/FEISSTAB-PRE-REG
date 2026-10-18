@@ -7,6 +7,7 @@ import { useSupabase } from '@/hooks/use-supabase'
 import { REGISTRATION_COLUMNS } from '@/lib/registration-columns'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { isHouseholdComplete } from '@/lib/household'
+import { openMessageAFor, type PaymentReview } from '@/lib/payment-review-messages'
 import { getExistingRegistration } from './actions'
 import {
   EntryPage,
@@ -71,42 +72,54 @@ export default function RegisterPage() {
           return
         }
 
-        const [listingResult, feesResult, competitions, dancersResult, heldResult, paidResult] =
-          await Promise.all([
+        const [
+          listingResult,
+          feesResult,
+          competitions,
+          dancersResult,
+          heldResult,
+          paidResult,
+          ordersResult,
+          reviewsResult
+        ] = await Promise.all([
+          supabase.from('feis_listings').select('*').eq('id', feisId).eq('status', 'open').single(),
+          supabase.from('fee_schedules').select('*').eq('feis_listing_id', feisId).single(),
+          // Every enabled competition, read in pages: PostgREST returns at most 1000 rows per
+          // request, and Submit judges eligibility against the feis's whole list
+          fetchAllRows<FeisCompetition>((from, to) =>
             supabase
-              .from('feis_listings')
-              .select('*')
-              .eq('id', feisId)
-              .eq('status', 'open')
-              .single(),
-            supabase.from('fee_schedules').select('*').eq('feis_listing_id', feisId).single(),
-            // Every enabled competition, read in pages: PostgREST returns at most 1000 rows per
-            // request, and Submit judges eligibility against the feis's whole list
-            fetchAllRows<FeisCompetition>((from, to) =>
-              supabase
-                .from('feis_competitions')
-                .select('*', { count: 'exact' })
-                .eq('feis_listing_id', feisId)
-                .eq('enabled', true)
-                .order('sort_order', { ascending: true })
-                .order('id', { ascending: true })
-                .range(from, to)
-            ),
-            supabase
-              .from('dancers')
-              .select('*, dance_levels:dancer_dance_levels(*)')
-              .eq('household_id', household.id)
-              .eq('is_active', true)
-              .order('date_of_birth', { ascending: true }),
-            getExistingRegistration(feisId),
-            supabase
-              .from('registrations')
-              .select(`${REGISTRATION_COLUMNS}, registration_entries(*)`)
+              .from('feis_competitions')
+              .select('*', { count: 'exact' })
               .eq('feis_listing_id', feisId)
-              .eq('household_id', household.id)
-              .eq('status', 'paid')
-              .maybeSingle()
-          ])
+              .eq('enabled', true)
+              .order('sort_order', { ascending: true })
+              .order('id', { ascending: true })
+              .range(from, to)
+          ),
+          supabase
+            .from('dancers')
+            .select('*, dance_levels:dancer_dance_levels(*)')
+            .eq('household_id', household.id)
+            .eq('is_active', true)
+            .order('date_of_birth', { ascending: true }),
+          getExistingRegistration(feisId),
+          // Every paid order for this feis, oldest first: anything chosen now is added on top
+          supabase
+            .from('registrations')
+            .select(`${REGISTRATION_COLUMNS}, registration_entries(*)`)
+            .eq('feis_listing_id', feisId)
+            .eq('household_id', household.id)
+            .eq('status', 'paid')
+            .order('paid_at', { ascending: true }),
+          // The family's orders for this feis, and its payment cases: while a message-A case is
+          // open on one of them, no new order starts (Decision 13)
+          supabase
+            .from('registrations')
+            .select('id')
+            .eq('feis_listing_id', feisId)
+            .eq('household_id', household.id),
+          supabase.rpc('get_my_payment_reviews', { p_registration_id: null })
+        ])
 
         if (listingResult.error || !listingResult.data) {
           setLoadState({
@@ -115,7 +128,7 @@ export default function RegisterPage() {
           })
           return
         }
-        for (const result of [dancersResult, paidResult]) {
+        for (const result of [dancersResult, paidResult, ordersResult, reviewsResult]) {
           if (result.error) throw result.error
         }
         if ('error' in heldResult) throw new Error(heldResult.error)
@@ -146,9 +159,13 @@ export default function RegisterPage() {
             competitions,
             dancers,
             heldRegistration: (heldResult.registration as RegistrationWithEntries | null) ?? null,
-            paidRegistration: (paidResult.data as RegistrationWithEntries | null) ?? null,
+            paidRegistrations: (paidResult.data ?? []) as RegistrationWithEntries[],
             numbers,
-            expiredHold: heldResult.expired === true
+            expiredHold: heldResult.expired === true,
+            openMessageA: openMessageAFor(
+              (reviewsResult.data ?? []) as PaymentReview[],
+              (ordersResult.data ?? []).map((order) => order.id)
+            )
           }
         })
       } catch (err) {

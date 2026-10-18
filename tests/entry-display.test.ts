@@ -4,7 +4,8 @@ import {
   groupForEntryForm,
   entryFeesPerDancer,
   entryDeadline,
-  formatDeadline
+  formatDeadline,
+  isAddOnOrder
 } from '@/lib/entry-display'
 import type {
   EligibleCompetition,
@@ -140,5 +141,17 @@ describe('entryDeadline', () => {
 describe('formatDeadline', () => {
   it('shows the deadline in the feis time zone', () => {
     expect(formatDeadline('2027-02-27T04:59:00Z', 'America/New_York')).toBe('Fri 26 Feb, 11:59 pm')
+  })
+})
+
+describe('isAddOnOrder', () => {
+  it('is an add-on when its price counted earlier paid orders', () => {
+    expect(isAddOnOrder({ purchase_snapshot: { pricing: { prior: { orders: [] } } } })).toBe(true)
+  })
+
+  it("isn't for a first order, or an order made before purchase snapshots or add-ons", () => {
+    expect(isAddOnOrder({ purchase_snapshot: { pricing: { prior: null } } })).toBe(false)
+    expect(isAddOnOrder({ purchase_snapshot: { pricing: {} } })).toBe(false)
+    expect(isAddOnOrder({ purchase_snapshot: null })).toBe(false)
   })
 })

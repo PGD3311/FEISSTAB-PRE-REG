@@ -52,6 +52,23 @@ export function openReviewsByOrder(reviews: PaymentReview[]): Map<string, Paymen
   return open
 }
 
+/**
+ * The family's open message-A case for a feis: the newest unresolved case with message A on any of the feis's
+ * orders (`registrationIds`). While one is open, no new order for the feis can start (Decision 13).
+ */
+export function openMessageAFor(
+  reviews: PaymentReview[],
+  registrationIds: string[]
+): PaymentReview | null {
+  const ids = new Set(registrationIds)
+  let newest: PaymentReview | null = null
+  for (const review of reviews) {
+    if (review.resolved || review.message_code !== 'A' || !ids.has(review.registration_id)) continue
+    if (!newest || Date.parse(review.created_at) > Date.parse(newest.created_at)) newest = review
+  }
+  return newest
+}
+
 /** What the family sees in place of message A once the payments contacts have closed that case */
 export const REVIEWED_MESSAGE =
   'This payment has been reviewed. If you have questions, contact the organiser.'

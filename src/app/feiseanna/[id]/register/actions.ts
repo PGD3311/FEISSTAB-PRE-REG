@@ -1,12 +1,13 @@
 'use server'
 
 import { headers } from 'next/headers'
+import { after } from 'next/server'
 import { createClient, getSignedInUser } from '@/lib/supabase/server'
 import { createServiceClient, type ServiceClient } from '@/lib/supabase/service'
 import {
-  belowCardMinimum,
   CHECKOUT_BLOCK_MESSAGES,
-  PAID_ORDERS_CHANGED_MESSAGE
+  PAID_ORDERS_CHANGED_MESSAGE,
+  tooSmallToCharge
 } from '@/lib/engine/checkout-policy'
 import { clientIpFrom } from '@/lib/engine/consent'
 import {
@@ -16,13 +17,17 @@ import {
 } from '@/lib/engine/order-validation'
 import {
   buildCreateOrderPayload,
+  paidOrdersFrom,
   priceOrder,
-  type CreateOrderPayload
+  type CreateOrderPayload,
+  type PaidOrderRow
 } from '@/lib/engine/purchase-snapshot'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { isHouseholdComplete, REQUIRED_HOUSEHOLD_FIELDS } from '@/lib/household'
 import { checkoutDeps } from '@/app/_payments/checkout-deps'
 import { cancel, pay, type CancelResult, type PayResult } from '@/app/_payments/checkout-workflow'
+import { notificationDeps } from '@/app/_payments/notification-deps'
+import { processNotifications } from '@/app/_payments/notification-worker'
 import { REGISTRATION_COLUMNS } from '@/lib/registration-columns'
 import { createOrderStore, type CreateOrderResult } from '@/app/_payments/order-store'
 import { supabaseRpc } from '@/app/_payments/rpc'
@@ -110,7 +115,7 @@ export async function getExistingRegistration(feisListingId: string): Promise<
 
 /** What Submit checks and prices an order against, read fresh with the service role */
 async function loadOrderInputs(service: ServiceClient, feisListingId: string, householdId: string) {
-  const [listing, feeSchedule, dancers, competitions] = await Promise.all([
+  const [listing, feeSchedule, dancers, competitions, paidOrders] = await Promise.all([
     service.from('feis_listings').select('*').eq('id', feisListingId).maybeSingle(),
     service.from('fee_schedules').select('*').eq('feis_listing_id', feisListingId).maybeSingle(),
     service
@@ -126,15 +131,25 @@ async function loadOrderInputs(service: ServiceClient, feisListingId: string, ho
         .eq('feis_listing_id', feisListingId)
         .order('id', { ascending: true })
         .range(from, to)
-    )
+    ),
+    // The family's paid orders for this feis: a new order is priced on top of them (spec §4)
+    service
+      .from('registrations')
+      .select(
+        'id, confirmation_number, event_fee_cents, purchase_snapshot, registration_entries(dancer_id, feis_competition_id, base_fee_cents, late_fee_cents)'
+      )
+      .eq('feis_listing_id', feisListingId)
+      .eq('household_id', householdId)
+      .eq('status', 'paid')
   ])
-  const failed = listing.error ?? feeSchedule.error ?? dancers.error
+  const failed = listing.error ?? feeSchedule.error ?? dancers.error ?? paidOrders.error
   if (failed) throw new Error(failed.message)
   return {
     listing: listing.data as FeisListing | null,
     feeSchedule: feeSchedule.data as FeeSchedule | null,
     dancers: (dancers.data ?? []) as OrderDancer[],
-    competitions
+    competitions,
+    paidOrderRows: (paidOrders.data ?? []) as unknown as PaidOrderRow[]
   }
 }
 
@@ -168,19 +183,22 @@ export async function createDraftRegistration(
     }
   )
   if (!loaded) return { error: 'The feis details could not be loaded. Please try again.' }
-  const { listing, feeSchedule, dancers, competitions } = loaded
+  const { listing, feeSchedule, dancers, competitions, paidOrderRows } = loaded
   if (!listing) return { error: 'This feis could not be found.' }
   if (!feeSchedule) return { error: "This feis hasn't set its fees yet, so entries can't be paid." }
 
   const now = new Date()
   const levels = listing.syllabus_snapshot?.levels ?? []
+  // What the family's paid orders covered, each entry with its own order's family-max flag
+  const paidOrders = paidOrdersFrom(paidOrderRows, competitions)
   const validation = validateOrderRequest({
     now,
     householdId: ctx.household.id,
     listing: { ...listing, levels },
     dancers,
     competitions,
-    entries: input.entries
+    entries: input.entries,
+    paidOrders
   })
   if (!validation.ok) return { error: validation.error }
 
@@ -195,7 +213,8 @@ export async function createDraftRegistration(
       dancers,
       competitions,
       entries: input.entries,
-      feeSchedule
+      feeSchedule,
+      paidOrders
     })
     payload = buildCreateOrderPayload(priced, {
       // parseFloat keeps a fractional percent. Missing, it parses as NaN, which the engine refuses
@@ -209,9 +228,9 @@ export async function createDraftRegistration(
     return { error: 'Your entries could not be priced. Please try again later.' }
   }
 
-  // Stripe can't take a card payment this small, so no order is made that could never be paid.
-  // Pay's claim blocks such an order too, with the same message.
-  if (belowCardMinimum(payload.total_cents)) {
+  // Stripe can't take a card payment of 1 to 49 cents, so no order is made that could never be paid
+  // (Decision 10); create_order refuses it too. A $0 order is made: Pay confirms it without Stripe.
+  if (tooSmallToCharge(payload.total_cents)) {
     return { error: CHECKOUT_BLOCK_MESSAGES.amount_too_small }
   }
 
@@ -239,7 +258,17 @@ export async function createCheckoutSession(registrationId: string): Promise<Pay
   const ctx = await currentHousehold()
   if ('error' in ctx) return { kind: 'error', message: ctx.error }
   try {
-    return await pay(checkoutDeps(), { registrationId, householdId: ctx.household.id })
+    const result = await pay(checkoutDeps(), { registrationId, householdId: ctx.household.id })
+    if (result.kind === 'paid') {
+      // A confirmation queues its email. Send it now as a best effort, as the webhook does: a $0 order
+      // has no webhook, and the 5-minute job retries anything that fails
+      after(() =>
+        processNotifications(notificationDeps(), { limit: 5 }).catch((err) =>
+          console.error('[NOTIFICATIONS] immediate send failed:', err)
+        )
+      )
+    }
+    return result
   } catch (err) {
     console.error('Pay failed:', err)
     return { kind: 'error', message: "Payment couldn't start. Please try again in a moment." }

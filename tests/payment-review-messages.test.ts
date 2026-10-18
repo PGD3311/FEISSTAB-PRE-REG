@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   messageAWasResolved,
+  openMessageAFor,
   openReviewsByOrder,
   REVIEWED_MESSAGE,
   reviewCodeForReason,
@@ -88,5 +89,24 @@ describe('messageAWasResolved', () => {
     expect(messageAWasResolved([review({ message_code: 'B', resolved: true })], 'r1')).toBe(false)
     expect(messageAWasResolved([review({ registration_id: 'r2', resolved: true })], 'r1')).toBe(false)
     expect(messageAWasResolved([], 'r1')).toBe(false)
+  })
+})
+
+// Decision 13: while the family has an open message-A case for a feis, no new order for it starts
+describe('openMessageAFor', () => {
+  it("finds the newest open message-A case on one of the feis's orders", () => {
+    const newer = review({ registration_id: 'r2', support_ref: 'PAY-NEWER', created_at: '2026-10-16T13:00:00+00:00' })
+    expect(openMessageAFor([review(), newer], ['r1', 'r2'])).toEqual(newer)
+  })
+
+  it("ignores message B, resolved cases and other feiseanna's orders", () => {
+    expect(openMessageAFor([review({ message_code: 'B' })], ['r1'])).toBeNull()
+    expect(openMessageAFor([review({ resolved: true })], ['r1'])).toBeNull()
+    expect(openMessageAFor([review()], ['r9'])).toBeNull()
+  })
+
+  it('finds an open message-A case even when a newer open case on the same order is message B', () => {
+    const newerB = review({ message_code: 'B', support_ref: 'PAY-B', created_at: '2026-10-16T13:00:00+00:00' })
+    expect(openMessageAFor([review(), newerB], ['r1'])).toEqual(review())
   })
 })

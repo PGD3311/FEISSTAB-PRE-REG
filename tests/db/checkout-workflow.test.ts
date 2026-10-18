@@ -9,6 +9,7 @@ import {
   type CheckoutDeps
 } from '@/app/_payments/checkout-workflow'
 import { createOrderStore, type OrderStore } from '@/app/_payments/order-store'
+import { CHECKOUT_BLOCK_MESSAGES } from '@/lib/engine/checkout-policy'
 import { reviewMessage } from '@/lib/payment-review-messages'
 import { asService, createTestDatabase, type TestDatabase } from './helpers/db'
 import { FakeStripe } from './helpers/fake-stripe'
@@ -16,6 +17,7 @@ import {
   buildPayload,
   checkoutConfigFor,
   createDraftOrder,
+  createListing,
   type DraftOrderFixture
 } from './helpers/fixtures'
 import { pgRpc } from './helpers/pg-rpc'
@@ -257,6 +259,51 @@ describe('pay', () => {
     }
     expect((await pay({ ...deps(stripe), store: racing }, ids(order))).kind).toBe('paid')
     expect((await orderRow(order.registrationId)).status).toBe('paid')
+  })
+})
+
+// Spec §6 step 3a: a $0 order is confirmed by the database, with no Stripe call and no claim
+describe('pay for a $0 order', () => {
+  /** A draft order at a feis where the family fee and every dance cost nothing */
+  async function freeOrder(): Promise<DraftOrderFixture> {
+    const created = await createListing(db.pool)
+    await db.pool.query(
+      'UPDATE fee_schedules SET event_fee_cents = 0, solo_fee_cents = 0 WHERE feis_listing_id = $1',
+      [created.listing.id]
+    )
+    const listing = { ...created, feeSchedule: { ...created.feeSchedule, event_fee_cents: 0, solo_fee_cents: 0 } }
+    const order = await createDraftOrder(db.pool, { listing })
+    expect(order.payload.total_cents).toBe(0)
+    return order
+  }
+
+  it('confirms it without Stripe, and a second click hears it is paid', async () => {
+    const stripe = new FakeStripe()
+    const order = await freeOrder()
+    const first = await pay(deps(stripe), ids(order))
+    if (first.kind !== 'paid') throw new Error(`expected paid, got ${first.kind}`)
+    expect(first.confirmationNumber).toMatch(/^RF-\d{4}-[A-HJKMNP-Z2-9]{5}$/)
+    expect(await pay(deps(stripe), ids(order))).toEqual(first)
+    expect(stripe.createCalls).toBe(0)
+    expect(await orderRow(order.registrationId)).toMatchObject({
+      status: 'paid', checkout_claim_id: null, stripe_checkout_session_id: null
+    })
+  })
+
+  it('is blocked once the organiser stops registration, and starts again once its hold has passed', async () => {
+    const stripe = new FakeStripe()
+    const stopped = await freeOrder()
+    await db.pool.query(`UPDATE feis_listings SET status = 'closed' WHERE id = $1`, [stopped.listing.listing.id])
+    expect(await pay(deps(stripe), ids(stopped)))
+      .toEqual({ kind: 'blocked', message: CHECKOUT_BLOCK_MESSAGES.organiser_stopped })
+
+    const lapsed = await freeOrder()
+    await db.pool.query(`UPDATE registrations SET hold_expires_at = now() - interval '1 minute' WHERE id = $1`,
+      [lapsed.registrationId])
+    expect(await pay(deps(stripe), ids(lapsed)))
+      .toEqual({ kind: 'start_again', message: CHECKOUT_MESSAGES.expired })
+    expect(stripe.createCalls).toBe(0)
+    for (const order of [stopped, lapsed]) expect((await orderRow(order.registrationId)).status).toBe('draft')
   })
 })
 

@@ -36,6 +36,32 @@ describe('email templates', () => {
     expect(email.html).toContain('https://runfeis.test/dashboard')
   })
 
+  it("says an add-on's dances were added to the family's entry, and lists only its own dances", () => {
+    const addOn = {
+      ...purchase,
+      pricing: { prior: { orders: [{ id: 'o1' }] } }
+    } as unknown as PurchaseSnapshot
+    const email = confirmationEmail({
+      order: { confirmation_number: 'RF-2026-ADD22', total_cents: 0 },
+      listing,
+      purchase: addOn,
+      numbers: [{ dancer_id: 'd1', competitor_number: 214 }],
+      baseUrl: 'https://runfeis.test'
+    })
+    expect(email.subject).toBe('Dances added: Newport Feis')
+    expect(email.html).toContain('These dances were added to your entry')
+    expect(email.html).toContain('>214<')
+    expect(email.html.match(/>210R</g)).toHaveLength(1)
+    // A $0 add-on shows what was paid: nothing
+    expect(email.html).toContain('$0.00')
+  })
+
+  it("keeps a first order's wording", () => {
+    const email = confirmationEmail({ order, listing, purchase, numbers: [], baseUrl: 'https://runfeis.test' })
+    expect(email.html).not.toContain('added to your entry')
+    expect(email.html).toContain('Here are your competitor numbers and dances')
+  })
+
   it('shows a dash for a dancer whose number has not been assigned', () => {
     const email = confirmationEmail({ order, listing, purchase, numbers: [], baseUrl: 'https://runfeis.test' })
     expect(email.html).toContain('&ndash;')

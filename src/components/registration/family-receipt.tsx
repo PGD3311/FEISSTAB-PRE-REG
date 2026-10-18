@@ -95,6 +95,8 @@ export function FamilyReceipt({
   const [agreed, setAgreed] = useState(false)
   const held = holdExpiresAt !== null
   const nothingChosen = lines.length === 0
+  // An order that costs nothing (typically an add-on once the family max is reached) is confirmed, not paid
+  const free = !nothingChosen && totalCents === 0
 
   return (
     <aside id="family-total" className="feis-receipt scroll-mt-6 px-[18px] pt-5 pb-[18px]">
@@ -165,6 +167,12 @@ export function FamilyReceipt({
         </p>
       )}
 
+      {free && (
+        <p className="mt-3.5 text-[13px]">
+          There&apos;s nothing to pay for these dances. Confirm them to enter.
+        </p>
+      )}
+
       {held && <HoldCountdown holdExpiresAt={holdExpiresAt} />}
 
       <button
@@ -175,10 +183,14 @@ export function FamilyReceipt({
         className="mt-3 w-full rounded-[3px] bg-primary py-3 text-[17px] font-extrabold text-primary-foreground [font-stretch:85%] hover:bg-[var(--color-feis-green-600)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-feis-gold)] disabled:opacity-50"
       >
         {loading
-          ? 'Opening payment…'
+          ? free
+            ? 'Confirming…'
+            : 'Opening payment…'
           : paymentStarted
             ? 'Return to payment'
-            : `Pay ${formatCents(totalCents)}`}
+            : free
+              ? 'Confirm entries'
+              : `Pay ${formatCents(totalCents)}`}
       </button>
 
       {error && (
@@ -198,7 +210,7 @@ export function FamilyReceipt({
         </button>
       )}
 
-      {!held && !nothingChosen && (
+      {!held && !nothingChosen && !free && (
         <p className="mt-2.5 text-[12.5px] text-muted-foreground">
           Payment is by card on a secure Stripe page. Competitor numbers are given out as soon as it
           goes through.

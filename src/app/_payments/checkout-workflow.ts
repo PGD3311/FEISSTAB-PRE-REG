@@ -1,5 +1,9 @@
 import { buildCheckoutConfig, type CheckoutConfig } from '@/lib/engine/checkout-config'
-import { CHECKOUT_BLOCK_MESSAGES, checkoutBlockReason } from '@/lib/engine/checkout-policy'
+import {
+  CHECKOUT_BLOCK_MESSAGES,
+  checkoutBlockReason,
+  PAID_ORDERS_CHANGED_MESSAGE
+} from '@/lib/engine/checkout-policy'
 import { reviewCodeForReason, reviewMessage } from '@/lib/payment-review-messages'
 import type { CheckoutOrder, ConfirmResult, OrderStore } from './order-store'
 import type { GatewaySession, StripeGateway } from './stripe-gateway'
@@ -101,6 +105,8 @@ async function payOrder(deps: CheckoutDeps, order: CheckoutOrder): Promise<PayRe
     case 'pending_payment':
       break
   }
+  // A $0 order is confirmed by the database without Stripe, and never claims a checkout (spec §6 step 3a)
+  if (order.status === 'draft' && order.total_cents === 0) return confirmFree(deps, order)
   if (isClaimed(order)) return resumeClaim(deps, order)
   if (order.status !== 'draft') return { kind: 'error', message: CHECKOUT_MESSAGES.notFound }
 
@@ -149,6 +155,24 @@ async function payOrder(deps: CheckoutDeps, order: CheckoutOrder): Promise<PayRe
       return claim.hold_expired
         ? { kind: 'start_again', message: CHECKOUT_MESSAGES.expired }
         : reread(deps, order)
+    case 'not_found':
+      return { kind: 'error', message: CHECKOUT_MESSAGES.notFound }
+  }
+}
+
+/** Pay for an order that costs nothing: confirm_free_order, and what each answer means for the family */
+async function confirmFree(deps: CheckoutDeps, order: CheckoutOrder): Promise<PayResult> {
+  const result = await deps.store.confirmFreeOrder(order.id, order.household_id)
+  switch (result.result) {
+    case 'confirmed':
+    case 'already_confirmed':
+      return { kind: 'paid', confirmationNumber: result.confirmation_number }
+    case 'blocked':
+      return { kind: 'blocked', message: CHECKOUT_BLOCK_MESSAGES[result.reason] }
+    case 'paid_orders_changed':
+      return { kind: 'start_again', message: PAID_ORDERS_CHANGED_MESSAGE }
+    case 'not_confirmable':
+      return { kind: 'start_again', message: CHECKOUT_MESSAGES.expired }
     case 'not_found':
       return { kind: 'error', message: CHECKOUT_MESSAGES.notFound }
   }

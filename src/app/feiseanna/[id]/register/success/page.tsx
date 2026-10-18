@@ -1,6 +1,8 @@
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { emailIsConfigured } from '@/lib/email/email-config'
+import type { PurchaseSnapshot } from '@/lib/engine/purchase-snapshot'
+import { isAddOnOrder } from '@/lib/entry-display'
 import {
   messageAWasResolved,
   openReviewsByOrder,
@@ -18,15 +20,21 @@ export const dynamic = 'force-dynamic'
 
 interface SuccessPageProps {
   params: Promise<{ id: string }>
-  searchParams: Promise<{ session_id?: string }>
+  searchParams: Promise<{ session_id?: string; order?: string }>
 }
 
 type ServerClient = Awaited<ReturnType<typeof createClient>>
-type OrderSummary = { id: string; status: RegistrationStatus; confirmation_number: string | null }
+type OrderSummary = {
+  id: string
+  status: RegistrationStatus
+  confirmation_number: string | null
+  total_cents: number
+  purchase_snapshot: Pick<PurchaseSnapshot, 'pricing'> | null
+}
 
 /** What the page tells the family, most important first */
 type View =
-  | { kind: 'paid'; confirmationNumber: string | null }
+  | { kind: 'paid'; confirmationNumber: string | null; addedToEntry: boolean; totalCents: number }
   | { kind: 'case'; code: PaymentReview['message_code']; message: string }
   | { kind: 'checking'; message: string; refresh: boolean }
   | { kind: 'reviewed' | 'paying' | 'unpaid' | 'expired' | 'cancelled' | 'unavailable' }
@@ -48,23 +56,31 @@ function titleOf(view: View): string {
 }
 
 /**
- * The order this page is about: the one this checkout belongs to, otherwise the family's latest
- * for this feis. The session id from the URL only picks which of the family's own orders to show
- * (their own client can't read anyone else's); the sync never uses it.
+ * The order this page is about: the one named by `order` (a registration id, from the entry page and My
+ * entries), or on the return from Stripe the one this checkout belongs to, otherwise the family's latest for
+ * this feis. Either id only picks which of the family's own orders to show (their own client can't read
+ * anyone else's); the sync never uses them.
  */
 async function findOrder(
   supabase: ServerClient,
   householdId: string,
   feisId: string,
-  sessionId: string | null
+  picked: { orderId: string | null; sessionId: string | null }
 ): Promise<OrderSummary | null | 'error'> {
   const orders = () =>
     supabase
       .from('registrations')
-      .select('id, status, confirmation_number')
+      .select('id, status, confirmation_number, total_cents, purchase_snapshot')
       .eq('household_id', householdId)
       .eq('feis_listing_id', feisId)
 
+  // A registration id is a uuid; anything else in the URL picks nothing
+  if (picked.orderId && /^[0-9a-f-]{36}$/i.test(picked.orderId)) {
+    const { data, error } = await orders().eq('id', picked.orderId).maybeSingle()
+    if (error) return 'error'
+    if (data) return data as OrderSummary
+  }
+  const sessionId = picked.sessionId
   if (sessionId) {
     const { data, error } = await orders()
       .eq('stripe_checkout_session_id', sessionId)
@@ -84,7 +100,7 @@ async function viewFor(
   supabase: ServerClient,
   userId: string,
   feisId: string,
-  sessionId: string | null
+  picked: { orderId: string | null; sessionId: string | null }
 ): Promise<View> {
   const { data: household, error: householdError } = await supabase
     .from('households')
@@ -97,15 +113,19 @@ async function viewFor(
   }
   if (!household) redirect(`/feiseanna/${feisId}`)
 
-  const order = await findOrder(supabase, household.id, feisId, sessionId)
+  const order = await findOrder(supabase, household.id, feisId, picked)
   if (order === 'error') {
     console.error('Success page: the order failed to load')
     return { kind: 'unavailable' }
   }
   if (!order) redirect(`/feiseanna/${feisId}`)
-  if (order.status === 'paid') {
-    return { kind: 'paid', confirmationNumber: order.confirmation_number }
-  }
+  const paidView = (confirmationNumber: string | null): View => ({
+    kind: 'paid',
+    confirmationNumber,
+    addedToEntry: isAddOnOrder(order),
+    totalCents: order.total_cents
+  })
+  if (order.status === 'paid') return paidView(order.confirmation_number)
 
   // Don't wait for the webhook: if Stripe says this order's checkout is complete, confirm it now
   // (spec §9). The sync finds the order's own session by its claim; it never reads the URL.
@@ -120,9 +140,7 @@ async function viewFor(
       console.error('Success page sync failed:', err)
     }
   }
-  if (synced?.kind === 'paid') {
-    return { kind: 'paid', confirmationNumber: synced.confirmationNumber }
-  }
+  if (synced?.kind === 'paid') return paidView(synced.confirmationNumber)
 
   // A case on this order outranks its status: it tells the family not to pay again, or to retry
   const { data: reviewRows, error: reviewsError } = await supabase.rpc('get_my_payment_reviews', {
@@ -166,17 +184,24 @@ async function viewFor(
 
 export default async function SuccessPage({ params, searchParams }: SuccessPageProps) {
   const { id: feisId } = await params
-  const { session_id: sessionId } = await searchParams
+  const { session_id: sessionId, order: orderId } = await searchParams
 
   const supabase = await createClient()
   const user = await getSignedInUser(supabase)
   if (!user) {
-    const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''
+    const query = orderId
+      ? `?order=${encodeURIComponent(orderId)}`
+      : sessionId
+        ? `?session_id=${encodeURIComponent(sessionId)}`
+        : ''
     const back = `/feiseanna/${feisId}/register/success${query}`
     redirect(`/auth/login?redirect=${encodeURIComponent(back)}`)
   }
 
-  const view = await viewFor(supabase, user.id, feisId, sessionId ?? null)
+  const view = await viewFor(supabase, user.id, feisId, {
+    orderId: orderId ?? null,
+    sessionId: sessionId ?? null
+  })
   const entryHref = `/feiseanna/${feisId}/register`
   // Confirmation emails wait unsent until email is set up, so only promise one when it is
   const emailOn = emailIsConfigured(process.env)
@@ -193,7 +218,11 @@ export default async function SuccessPage({ params, searchParams }: SuccessPageP
           <h1 className="feis-cover-title text-[clamp(34px,6vw,56px)]">{titleOf(view)}</h1>
           {view.kind === 'paid' && (
             <p className="mt-1.5 max-w-[52ch] opacity-85">
-              Payment received. Your dancers&apos; competitor numbers are ready.
+              {view.addedToEntry
+                ? 'These dances were added to your entry. Your dancers keep their competitor numbers.'
+                : view.totalCents === 0
+                  ? 'Your entries are confirmed. There was nothing to pay.'
+                  : 'Payment received. Your dancers’ competitor numbers are ready.'}
             </p>
           )}
         </div>
@@ -210,7 +239,7 @@ export default async function SuccessPage({ params, searchParams }: SuccessPageP
               <div className="flex items-baseline justify-between border-t-[3px] border-[var(--color-feis-gold)] pt-2.5">
                 <span className="font-bold">Status</span>
                 <span className="rounded-[2px] bg-[var(--color-feis-green-light)] px-1.5 py-0.5 text-xs font-bold text-[var(--color-feis-green-700)]">
-                  Paid in full
+                  {view.totalCents === 0 ? 'Confirmed, nothing to pay' : 'Paid in full'}
                 </span>
               </div>
               {view.confirmationNumber && (
