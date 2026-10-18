@@ -1,6 +1,6 @@
 import Link from 'next/link'
 import { createClient, getSignedInUser } from '@/lib/supabase/server'
-import { parseLocalDate } from '@/lib/format'
+import { parseLocalDate, siteName, websiteHref } from '@/lib/format'
 import { entryDeadline, formatDeadline } from '@/lib/entry-display'
 import { CoverBand, type CoverLink } from '@/components/feis-cover'
 import type { FeisListing } from '@/lib/types/feis-listing'
@@ -15,14 +15,6 @@ function formatPlace(venueName: string | null, venueAddress: string | null): str
   const town =
     parts.length >= 2 ? `${parts[parts.length - 2]}, ${parts[parts.length - 1]}` : venueAddress
   return venueName ? `${venueName}, ${town}` : town
-}
-
-function siteName(url: string): string {
-  try {
-    return new URL(url.startsWith('http') ? url : `https://${url}`).hostname.replace(/^www\./, '')
-  } catch {
-    return url
-  }
 }
 
 type FeisRowListing = Pick<
@@ -106,9 +98,7 @@ function FeisRow({ feis, now }: { feis: FeisRowListing; now: Date }) {
         )}
         {feis.website_url && (
           <a
-            href={
-              feis.website_url.startsWith('http') ? feis.website_url : `https://${feis.website_url}`
-            }
+            href={websiteHref(feis.website_url)}
             target="_blank"
             rel="noopener noreferrer"
             className="mt-1 inline-block text-[13px] text-muted-foreground underline underline-offset-2 hover:text-foreground"

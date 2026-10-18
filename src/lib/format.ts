@@ -10,7 +10,7 @@ const TIMEZONE_LABELS: Record<string, string> = {
   'America/Toronto': 'Eastern (Toronto)',
   'Europe/Dublin': 'Ireland (Dublin)',
   'Europe/London': 'United Kingdom (London)',
-  'Australia/Sydney': 'Australia (Sydney)',
+  'Australia/Sydney': 'Australia (Sydney)'
 }
 
 export function formatTimezone(tz: string): string {
@@ -49,7 +49,7 @@ export function formatDate(
     weekday: options?.weekday,
     month: options?.month ?? 'long',
     day: 'numeric',
-    year: 'numeric',
+    year: 'numeric'
   })
 }
 
@@ -63,7 +63,7 @@ export function formatDateTime(isoString: string | null, fallback = ''): string 
     day: 'numeric',
     year: 'numeric',
     hour: 'numeric',
-    minute: '2-digit',
+    minute: '2-digit'
   })
 }
 
@@ -81,5 +81,21 @@ export function formatLateTier(tier: LateFeeTier, timeZone: string): string {
 
 /** Late tiers in the order they start. */
 export function sortLateTiers(tiers: LateFeeTier[]): LateFeeTier[] {
-  return [...tiers].sort((a, b) => new Date(a.starts_at).getTime() - new Date(b.starts_at).getTime())
+  return [...tiers].sort(
+    (a, b) => new Date(a.starts_at).getTime() - new Date(b.starts_at).getTime()
+  )
+}
+
+/** An organiser's website as a link, adding https:// when they typed a bare domain. */
+export function websiteHref(url: string): string {
+  return url.startsWith('http') ? url : `https://${url}`
+}
+
+/** e.g. "goodwinfeis.com" for https://www.goodwinfeis.com/entries */
+export function siteName(url: string): string {
+  try {
+    return new URL(websiteHref(url)).hostname.replace(/^www\./, '')
+  } catch {
+    return url
+  }
 }

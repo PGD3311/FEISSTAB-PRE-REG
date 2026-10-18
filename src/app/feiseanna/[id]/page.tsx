@@ -2,7 +2,7 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { createClient, getSignedInUser } from '@/lib/supabase/server'
 import { getActiveLateTier } from '@/lib/engine/fee-calculator'
-import { formatCents, sortLateTiers } from '@/lib/format'
+import { formatCents, siteName, sortLateTiers, websiteHref } from '@/lib/format'
 import { entryDeadline } from '@/lib/entry-display'
 import { joinWithAnd, syllabusOutline } from '@/lib/syllabus-summary'
 import { FeisCover } from '@/components/feis-cover'
@@ -100,14 +100,29 @@ export default async function FeisDetailPage({ params }: PageParams) {
 
       <main className="mx-auto grid max-w-6xl items-start gap-7 px-4 py-7 sm:px-7 lg:grid-cols-[minmax(0,1fr)_300px]">
         <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-7">
-          {listing.description && (
+          {(listing.description || listing.website_url) && (
             <section>
               <h2 className="mb-2 text-[22px] font-extrabold [font-stretch:75%]">
                 About this feis
               </h2>
-              <p className="max-w-[65ch] text-[15px] leading-relaxed whitespace-pre-line">
-                {listing.description}
-              </p>
+              {listing.description && (
+                <p className="max-w-[65ch] text-[15px] leading-relaxed whitespace-pre-line">
+                  {listing.description}
+                </p>
+              )}
+              {listing.website_url && (
+                <p className={`text-[15px] ${listing.description ? 'mt-3' : ''}`}>
+                  Feis website:{' '}
+                  <a
+                    href={websiteHref(listing.website_url)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="font-semibold text-primary underline underline-offset-[3px]"
+                  >
+                    {siteName(listing.website_url)}
+                  </a>
+                </p>
+              )}
             </section>
           )}
 
