@@ -34,12 +34,25 @@ export default async function FamilyDetailsPage({
     console.error('Failed to load household:', error.message)
   }
 
+  // A family with no dancers yet goes straight on to adding one after saving
+  let hasDancers = true
+  if (household) {
+    const { count, error: dancersError } = await supabase
+      .from('dancers')
+      .select('id', { count: 'exact', head: true })
+      .eq('household_id', household.id)
+      .eq('is_active', true)
+    if (dancersError) console.error('Failed to count dancers:', dancersError.message)
+    else hasDancers = (count ?? 0) > 0
+  }
+  const destination = safeNext(next) ?? (hasDancers ? null : '/dashboard/dancers/new')
+
   return (
     <div className="max-w-2xl">
       <PageTitle
         title={welcome ? 'Welcome to RunFeis' : 'Family details'}
         intro={
-          welcome
+          welcome || !hasDancers
             ? 'First, tell us who you are. Next you will add your dancers.'
             : 'Who the feis contacts about your entries.'
         }
@@ -47,7 +60,7 @@ export default async function FamilyDetailsPage({
       <HouseholdForm
         household={household as Household | null}
         email={user.email ?? ''}
-        next={safeNext(next)}
+        next={destination}
       />
     </div>
   )

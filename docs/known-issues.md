@@ -29,3 +29,4 @@ The `loading.tsx` files added during the restyle wrapped pages in a loading boun
 - **Team dances (ceili, figure) have no team entry.** They were offered to each dancer at the solo price, so they're switched off in the demo feis until Steve says how teams are entered.
 - **The pinned total bar on phones stays visible while the receipt is on screen**, so the total shows twice and the bar can cover the form's Done button until you scroll.
 - **Organiser late entries and changes after paying** wait on the payment-hardening order step (its Task 6), so they're built once on the new model.
+- **Adding to a feis after paying** works (add-on orders, migration 019): parents add dances or dancers and pay only for what's new. Dropping a dance after paying still goes through the organiser. When payment hardening lands, its add-on model replaces this one.

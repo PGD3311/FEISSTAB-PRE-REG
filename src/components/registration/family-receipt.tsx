@@ -13,6 +13,10 @@ export interface ReceiptLine {
 
 interface FamilyReceiptProps {
   familyName: string
+  /** Heading, "Family total" unless the family is adding to a paid entry */
+  title?: string
+  /** A line under the family name, e.g. what was already paid */
+  note?: string
   lines: ReceiptLine[]
   totalCents: number
   termsUrl: string | null
@@ -32,9 +36,7 @@ function Line({ label, cents, quiet }: ReceiptLine) {
     >
       <span>{label}</span>
       <span className="feis-leader" />
-      <span className="tabular-nums">
-        {formatCents(cents)}
-      </span>
+      <span className="tabular-nums">{formatCents(cents)}</span>
     </div>
   )
 }
@@ -78,6 +80,8 @@ function HoldCountdown({ holdExpiresAt }: { holdExpiresAt: string }) {
 /** The family's running total, drawn as a printed receipt, with the agreement and Pay. */
 export function FamilyReceipt({
   familyName,
+  title = 'Family total',
+  note,
   lines,
   totalCents,
   termsUrl,
@@ -94,8 +98,9 @@ export function FamilyReceipt({
 
   return (
     <aside id="family-total" className="feis-receipt scroll-mt-6 px-[18px] pt-5 pb-[18px]">
-      <h2 className="text-[22px] leading-tight font-extrabold [font-stretch:75%]">Family total</h2>
+      <h2 className="text-[22px] leading-tight font-extrabold [font-stretch:75%]">{title}</h2>
       <p className="mb-3 text-[13px] text-muted-foreground">{familyName}</p>
+      {note && <p className="mb-3 text-[13px]">{note}</p>}
 
       {nothingChosen ? (
         <p className="text-sm text-muted-foreground">
@@ -209,6 +214,8 @@ interface PaidReceiptProps {
   confirmationNumber: string | null
   contactEmail: string | null
   cardsHref: string
+  /** Entries are still open, so the family can add dances or dancers */
+  canAdd: boolean
 }
 
 /** Shown once the family has paid: what they paid and how to change anything. */
@@ -217,7 +224,8 @@ export function PaidReceipt({
   totalCents,
   confirmationNumber,
   contactEmail,
-  cardsHref
+  cardsHref,
+  canAdd
 }: PaidReceiptProps) {
   return (
     <aside id="family-total" className="feis-receipt px-[18px] pt-5 pb-[18px]">
@@ -238,7 +246,14 @@ export function PaidReceipt({
         Print number cards
       </Link>
       <p className="mt-3 text-[13px] text-muted-foreground">
-        To add or drop a dance, contact the feis organiser
+        {canAdd && (
+          <>
+            Forgot a dance or a dancer? Choose <span className="font-semibold">Add dances</span>{' '}
+            next to a dancer, or <span className="font-semibold">Add another dancer</span>, and pay
+            only for what you add.{' '}
+          </>
+        )}
+        To {canAdd ? 'drop' : 'add or drop'} a dance, contact the feis organiser
         {contactEmail ? (
           <>
             {' '}
