@@ -905,7 +905,7 @@ This runs with the real Stripe setup, using test keys and a connected test accou
 10. **1–49 cents:** an order priced at 1 to 49 cents, add-ons included, is refused with "contact the organiser", both at Submit and in `create_order`.
 11. **The family fee is charged once:** an add-on charges the event fee only if no earlier paid order charged one (`main`'s rule: any paid order with `event_fee_cents > 0`).
 12. **Late payments after a newer order expired:** `payments_admin.confirm_late_payment` may confirm a late payment when a newer order of the family reached checkout and then expired unpaid. Rule (b) turns any later payment on that newer order into a case.
-13. **No new order while message A is open:** while the family has an open message-A case for a feis, no new order for that feis can start. That covers a first order as well as an add-on. The entry page blocks choosing and paying, and "Add dances" is hidden on the entry page and in My entries. This extension to a first order is the controller's ruling.
+13. **No new order while message A is open:** while the family has an open message-A case for a feis, no new order for that feis can start. That covers a first order as well as an add-on. The entry page blocks choosing and paying, and "Add dances" is hidden on the entry page and in My entries. Submit and Pay also refuse on the server, with message A and its reference, so an entry page opened before the case existed (another tab, or Back from Stripe) can't start or pay an order; if the open-case check can't be read, they refuse and ask the family to try again. This extension to a first order, and the server check, are the controller's rulings.
 
 ## Dependencies
 
