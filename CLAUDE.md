@@ -107,11 +107,13 @@ npx vitest run tests/engine/  # engine tests only
 - Don't commit `any` types in new code or dead code
 - Don't modify FeisTab Phase 1 tables or schema
 - Don't let template edits mutate existing listings — frozen snapshots are immutable
-- Only `confirm_order_payment` marks an order paid or, for a late-payment case, a person running `payments_admin.confirm_late_payment`. The webhook and the success-page sync both call `confirm_order_payment` with data they fetched from Stripe themselves; never trust payment data from a URL
-- Order state changes go through the Postgres functions in migrations 012–017 (via `src/app/_payments/`). Never write `registrations`, `registration_entries` or `registration_snapshots` directly
-- A submitted order never changes. To change entries, cancel it and create a new one
+- Only three functions mark an order paid, all through `_fulfil_order` (migration 012 refuses any other move into `paid`): `confirm_order_payment` for a Stripe payment, `confirm_free_order` for a $0 order (Pay calls it; no Stripe), and, for a late-payment case, a person running `payments_admin.confirm_late_payment`. The webhook and the success-page sync both call `confirm_order_payment` with data they fetched from Stripe themselves; never trust payment data from a URL
+- Order state changes go through the Postgres functions in migrations 012–017 (via `src/app/_payments/`); 020 checks 019's unpaid-order index. Never write `registrations`, `registration_entries` or `registration_snapshots` directly
+- A submitted order never changes. To change entries, cancel it and create a new one. A paid order never changes either: adding dances or dancers after paying is a new add-on order for just what's added
+- A family holds at most one unpaid order per feis and any number of paid ones. Every new order is priced on top of the family's paid orders for the feis (`paidOrdersFrom()` and `priceOrder({ paidOrders })` in `src/lib/engine/purchase-snapshot.ts`), and `create_order` refuses a price whose counted orders aren't exactly the paid orders now. Whether a new order may start is `canStartOrder()` (`src/lib/engine/order-validation.ts`), everywhere
+- Submit and Pay also enforce the message-A part of that gate on the server: `newOrderGate()` (`src/lib/payment-review-messages.ts`, read by `newOrderGateFor` in the register `actions.ts`) refuses with message A while the family has an open message-A case for the feis, even from a page opened before the case existed, and refuses if that can't be checked
 - Reads of `registrations` with a user's client select `REGISTRATION_COLUMNS` (`src/lib/registration-columns.ts`) or a subset of it, never `*`. `consent_ip` and `checkout_config` are private: the database refuses them to a user's client, so a new `registrations` column stays private until a migration grants it and it is added to that list
-- Submit refuses an order under Stripe's 50-cent card minimum (`belowCardMinimum()` in `src/lib/engine/checkout-policy.ts`), so no order is made that could never be paid
+- Submit refuses an order of 1 to 49 cents (`tooSmallToCharge()` in `src/lib/engine/checkout-policy.ts`), below Stripe's card minimum, and `create_order` refuses it too, so no order is made that could never be paid. A $0 order is allowed: Pay confirms it without Stripe
 - Eligibility engine is pure — no Supabase, no side effects
 
 ---

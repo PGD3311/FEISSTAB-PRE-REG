@@ -17,7 +17,7 @@ Found during the October 2026 restyle and left for later. RunFeis is for Northea
 - **The entry page links to `/terms` and `/privacy`, which don't exist yet.**
 
 ## Already tracked elsewhere
-Payment and Stripe webhook problems, and changing entries after paying, are being handled on the `payment-hardening` branch.
+Payment and Stripe webhook problems are handled by the payment hardening work (`docs/2026-10-16-payment-hardening-design.md`). Dropping or swapping a dance after paying waits on Steve's refund and withdrawal policy.
 
 ## Fixed: signed-out pages crashed in development ("frame.join is not a function")
 React 19.2's dev mode records the value of every `await` in a server component. For a signed-out visitor, `supabase.auth.getUser()` resolves to an "Auth session missing" error object. When a page also passed whole feis listings (including the full syllabus) to small components, React's dev data budget ran out, the error's stack was replaced with an "omitted" note, and Next 16.2.0's dev tools crashed reading it. Fixed by reading the user through `getSignedInUser()` in `src/lib/supabase/server.ts` and passing components only the fields they show. Keep both habits on public pages.
@@ -29,4 +29,4 @@ The `loading.tsx` files added during the restyle wrapped pages in a loading boun
 - **Team dances (ceili, figure) have no team entry.** They were offered to each dancer at the solo price, so they're switched off in the demo feis until Steve says how teams are entered.
 - **The pinned total bar on phones stays visible while the receipt is on screen**, so the total shows twice and the bar can cover the form's Done button until you scroll.
 - **Organiser late entries and changes after paying** wait on the payment-hardening order step (its Task 6), so they're built once on the new model.
-- **Adding to a feis after paying** works (add-on orders, migration 019): parents add dances or dancers and pay only for what's new. Dropping a dance after paying still goes through the organiser. When payment hardening lands, its add-on model replaces this one.
+- **Adding to a feis after paying** works: each visit after paying is a new order for just what's added, priced on top of what the family already paid (payment hardening's add-on orders, spec §14). Dropping or swapping a dance after paying still goes through the organiser.

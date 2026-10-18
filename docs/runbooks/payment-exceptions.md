@@ -1,22 +1,27 @@
 # Payment cases and emails: runbook
 
-Who: the payments contacts, Daniel and Steve to start (their addresses go in `PAYMENTS_ALERT_EMAIL` once email is on).
+Who: the payments contacts, Daniel and Steve to start (their addresses are in `PAYMENTS_ALERT_EMAIL`).
 Where: the Supabase SQL editor for the RunFeis project, and the Stripe dashboard (the connected account named in the case).
 
 Every case has a reference like `PAY-7KQ2M`. The family sees it on the success page and their dashboard when
-their charge went through but their registration isn't confirmed. Alerts arrive by email once email is turned on (it's paused for now; see below), and the Vercel
+their charge went through but their registration isn't confirmed.
+
+A family can have several orders for one feis: their first, then an add-on order each time they come back to add
+dances or dancers after paying. Any number can be paid, but only one can be unpaid at a time. Each order's price
+counted the family's paid orders at the time (no second family fee, the family max across orders, no second late
+fee for a dancer), and the order's `purchase_snapshot -> 'pricing' -> 'prior'` records which ones. An order that
+costs nothing (typically an add-on once the family max is reached) is confirmed without Stripe: it has no checkout,
+no payment and never a case. Alerts arrive by email (to `PAYMENTS_ALERT_EMAIL`, from `entries@runfeis.com`), and the Vercel
 logs always have a `[PAYMENT_EXCEPTION] PAY-…` line.
 
 During registration, run the open-cases query (section 1) and the stuck-emails query (section 4) routinely, for
 example every day. A payment-case alert that fails to send is found only by the second query. Also watch the Vercel
 logs for `[NOTIFICATION_FAILED]` lines: they mean an email failed or needs checking.
 
-**Email is paused for now.** Resend's sender is still its sandbox address, which only delivers to the Resend account
-owner, so until a sending domain is verified `PAYMENTS_ALERT_EMAIL` stays unset and RunFeis sends no email at all:
-no alerts to you and no confirmations to families. The emails wait in the queue as `pending`. Meanwhile you find
-cases with the open-cases query (section 1) and the stuck-emails query (section 4), and the `[PAYMENT_EXCEPTION]` and
-`[NOTIFICATION_FAILED]` lines in the Vercel logs. Run both queries every day during registration: Vercel keeps its
-logs only for a short time, so the queries are the record. Turning email on is in section 5.
+**Email.** RunFeis sends from `entries@runfeis.com`: confirmations to families, and payment-case alerts to
+`PAYMENTS_ALERT_EMAIL`. An alert that fails to send is found only by the stuck-emails query (section 4), so keep
+running both queries every day during registration: Vercel keeps its logs only for a short time, so the queries are
+the record. If email stops, see "If email stops" in section 5.
 
 ## 1. Look up a case
 
@@ -35,6 +40,18 @@ SELECT support_ref, severity, reason, created_at FROM pre_registration.payment_e
 WHERE status = 'open' ORDER BY created_at;
 ```
 
+The family's orders for the feis, oldest first, with what each one's price counted (put the case's
+`household_id` and `feis_listing_id` in):
+```sql
+SELECT r.id, r.status, r.total_cents, r.event_fee_cents, r.confirmation_number, r.created_at, r.paid_at,
+       r.checkout_claim_id IS NOT NULL AS reached_checkout,
+       (SELECT coalesce(jsonb_agg(o ->> 'id'), '[]') FROM jsonb_array_elements(
+          coalesce(r.purchase_snapshot -> 'pricing' -> 'prior' -> 'orders', '[]')) AS o) AS counted_orders
+FROM pre_registration.registrations r
+WHERE r.household_id = '<household_id>' AND r.feis_listing_id = '<feis_listing_id>'
+ORDER BY r.created_at;
+```
+
 Then find the payment in Stripe: Dashboard → Connect → the account named in the case's `stripe_account_id` →
 Payments → search for `stripe_payment_intent_id`, or open the checkout session `stripe_checkout_session_id`. That
 account is usually the feis's, but for `account_mismatch` it is a different one, so don't assume.
@@ -50,7 +67,7 @@ WHERE stripe_payment_intent_id = '<pi>';
 
 | Reason | What happened | Do this |
 |---|---|---|
-| `late_payment_conflict` | The family paid after their order expired, and they have a newer order for the same feis. | Ring or email the family. If they want the paid order and the newer order never reached checkout, confirm it (3a). Otherwise refund the late payment (3b). Once recorded, the system never confirms this payment by itself, even if the newer order later ends: only 3a does. |
+| `late_payment_conflict` | The family paid for an order after it expired (or, rarely, for one awaiting payment), and another of their orders for the feis gets in the way. The case's `details -> 'why'` lists each rule that failed, with the orders involved: `unpaid_order_exists` (they hold another unpaid order, which may repeat these dances) and `paid_orders_changed` (another order was paid after this one was priced, so its price may be wrong). | Ring or email the family. Use the family's-orders query in section 1. If they want the paid order and 3a's conditions hold, confirm it (3a). Otherwise refund the late payment (3b). Once recorded, the system never confirms this payment by itself, even if the other order later ends: only 3a does. |
 | `amount_mismatch` | Stripe charged a different amount from the order total. | Refund it (3b). The family registers again. |
 | `currency_mismatch` | The charge wasn't in USD. | Refund it (3b). |
 | `order_not_payable` | A payment arrived for a cancelled order, or for an order already paid by a different checkout. | Refund the case's payment intent (3b), never the order's own payment: if the order is paid, that payment is the family's genuine one. |
@@ -60,6 +77,7 @@ WHERE stripe_payment_intent_id = '<pi>';
 | `session_mismatch` | A payment arrived for a checkout session this order doesn't own. The payer may not be this family. | Investigate. Refund the charge (3b). |
 | `order_not_found` | A payment named an order that doesn't exist. | Investigate. Refund the charge (3b). |
 | `payment_failed` | A delayed payment failed. No money moved. | Close it with no action (3c). The family can register again. |
+| (none: a $0 order) | An order that cost nothing was confirmed without Stripe. It has no checkout session or payment intent, and the snapshot's payment shows an amount of 0. | Nothing. It never raises a case. |
 | `listing_account_changed` (notice) | The order is confirmed, but the feis has switched Stripe accounts since checkout. | Check the new account is right, then acknowledge it (3d). |
 
 ## 3. Resolve it
@@ -70,11 +88,20 @@ Every function needs a note saying what you checked and decided. Each one writes
 call (`admin_actions.actor` and `payment_exceptions.resolved_by` say `postgres` for anything run in the SQL editor),
 never the person, so the note is the only record of who decided.
 
-**3a. Confirm a late payment** (only `late_payment_conflict`). This cancels the family's newer unpaid order, then
-confirms the paid one: confirmation number, snapshot, competitor numbers and confirmation email. The order's
-`paid_at` becomes the time of this confirmation, so its competitor numbers come after every family confirmed
-before now. It refuses if any other order for the family and feis is paid, or reached checkout and isn't
-cancelled: a delayed payment for it could still arrive. Refund instead (3b).
+**3a. Confirm a late payment** (only `late_payment_conflict`). This cancels the family's unpaid drafts for the feis
+that never reached checkout (they were priced without the late payment), then confirms the paid order: confirmation
+number, snapshot, competitor numbers and confirmation email. The order's `paid_at` becomes the time of this
+confirmation, so its competitor numbers come after every family confirmed before now.
+
+It confirms only when every other order of the family for the feis is one of these:
+- paid, and counted by this order's price (it's in this order's `counted_orders` in the family's-orders query)
+- cancelled or expired, including a newer order that reached checkout and then expired unpaid: if a payment for that
+  one arrives later, it becomes a case of its own
+- an unpaid draft that never reached checkout, which it cancels
+
+It refuses, and you refund instead (3b), when another order was paid that this one didn't count (`why` says
+`paid_orders_changed`: its price no longer holds), or when another order is at checkout right now (a draft that
+reached checkout, or one awaiting payment), since a payment for it may arrive at any moment.
 
 This function is the only way a payment recorded as a `late_payment_conflict` case is ever confirmed. The
 automatic confirmation never does it, not on the success page, not on a Stripe retry, and not after the family's
@@ -130,8 +157,8 @@ at the `email` the case lookup in section 1 shows. Message A told them "Please d
 once the case is closed it disappears from their dashboard (the success page says only that the payment has been
 reviewed and to contact the organiser), so this email is the only word they get. Say what you
 did: confirmed, with the confirmation number, or refunded, and whether they need to register again. RunFeis never
-emails about a closed case, and while email is paused it sends nothing at all, not even the confirmation after 3a, so
-all contact with the family is by hand.
+emails about a closed case. After 3a the family also gets the usual confirmation email, but it doesn't explain the
+case, so write to them anyway.
 
 ## 4. Emails
 
@@ -187,7 +214,7 @@ address>'` to the `SET`. If it fails again, no second delivery-failure email is 
 
 Environment variables on Vercel:
 - `SUPABASE_SERVICE_ROLE_KEY`
-- `PAYMENTS_ALERT_EMAIL` (comma-separated; leave it unset while email is paused, below)
+- `PAYMENTS_ALERT_EMAIL` (the payments contacts, comma-separated: Daniel and Steve)
 - `NOTIFICATIONS_CRON_SECRET` (`openssl rand -hex 32`)
 - `RESEND_API_KEY` and `EMAIL_FROM`
 - `STRIPE_SECRET_KEY` and `STRIPE_CONNECT_WEBHOOK_SECRET`
@@ -197,15 +224,10 @@ Environment variables on Vercel:
 
 Emails stay `pending` until Resend, the sender address and the payments contacts are all set.
 
-**Turning email on.** Until a sending domain is verified, email stays paused: `PAYMENTS_ALERT_EMAIL` is unset, so
-nothing is sent and the queue waits as `pending` without using any attempts. To turn it on, before the first real
-feis opens:
-1. In Resend, add and verify a sending domain.
-2. On Vercel, with `RESEND_API_KEY` already set, set `EMAIL_FROM` to an address on that domain and
-   `PAYMENTS_ALERT_EMAIL` to the payments contacts. Redeploy so the site picks them up.
-3. Everything queued then sends, up to 20 emails each time the email job runs (every 5 minutes): the confirmations for
-   every order paid while email was paused, and alerts for cases you may already have closed. Check the first ones
-   arrive (Resend dashboard → Emails), then run the stuck-emails query (section 4).
+**If email stops.** The email job's answer (below) says `"paused":true` when `RESEND_API_KEY`, `EMAIL_FROM` or
+`PAYMENTS_ALERT_EMAIL` is missing: set them on Vercel and redeploy. Queued emails then send, up to 20 each time the
+job runs (every 5 minutes). If the job isn't paused but emails stay `pending` with attempts used, check the domain is
+still verified in Resend (Resend dashboard → Domains) and look for `[NOTIFICATION_FAILED]` in the Vercel logs.
 
 **The Stripe webhook.** One endpoint on the platform account, listening to events on connected accounts (a Connect
 endpoint): `https://<site>/api/webhooks/stripe`, with its signing secret in `STRIPE_CONNECT_WEBHOOK_SECRET`. It must
@@ -241,7 +263,7 @@ $$);
 
 Then check it runs. `succeeded` means the request was sent; the site's answer is in `net._http_response`
 (`200` is working, `401` means the secret is missing from Vault or doesn't match, and the body says
-`"paused":true` until email is set up):
+`"paused":false`; `"paused":true` means an email setting is missing, see "If email stops" above):
 ```sql
 SELECT status, return_message, start_time FROM cron.job_run_details d JOIN cron.job j USING (jobid)
 WHERE j.jobname = 'process-notifications' ORDER BY start_time DESC LIMIT 3;
