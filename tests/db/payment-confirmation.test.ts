@@ -10,7 +10,13 @@ import {
   type DbRole,
   type TestDatabase
 } from './helpers/db'
-import { buildPayload, createDraftOrder, readyToPay, type DraftOrderFixture } from './helpers/fixtures'
+import {
+  buildPayload,
+  createDraftOrder,
+  createListing,
+  readyToPay,
+  type DraftOrderFixture
+} from './helpers/fixtures'
 import { pgRpc } from './helpers/pg-rpc'
 
 let db: TestDatabase
@@ -491,6 +497,52 @@ describe('what parents can see', () => {
 
     expect(await orderRow(order.registrationId)).toEqual(before)
     expect(await paymentTables()).toEqual(tables)
+  })
+
+  it('keeps the counted-orders steps from every API role, and confirm_free_order from parents and anon', async () => {
+    // A $0 draft, so confirm_free_order would confirm it if a role could run it
+    const created = await createListing(db.pool)
+    await db.pool.query(
+      'UPDATE fee_schedules SET event_fee_cents = 0, solo_fee_cents = 0 WHERE feis_listing_id = $1',
+      [created.listing.id]
+    )
+    const free = await createDraftOrder(db.pool, {
+      listing: {
+        ...created,
+        feeSchedule: { ...created.feeSchedule, event_fee_cents: 0, solo_fee_cents: 0 }
+      }
+    })
+    expect(free.payload.total_cents).toBe(0)
+    const id = free.registrationId
+    const household = free.family.householdId
+    const feis = free.listing.listing.id
+    const before = await orderRow(id)
+    const tables = await paymentTables()
+
+    const roles: DbRole[] = ['authenticated', 'anon', 'service_role']
+    const attempts: [DbRole, string, RegExp][] = [
+      ...roles.flatMap((role): [DbRole, string, RegExp][] => [
+        [role, `SELECT _counted_orders('${household}', '${feis}')`, /permission denied for function _counted_orders/],
+        [role, `SELECT _uncounted_paid_orders('${id}')`, /permission denied for function _uncounted_paid_orders/]
+      ]),
+      ...roles.slice(0, 2).map((role): [DbRole, string, RegExp] => [
+        role,
+        `SELECT confirm_free_order('${id}', '${household}')`,
+        /permission denied for function confirm_free_order/
+      ])
+    ]
+    for (const [role, sql, denied] of attempts) {
+      const userId = role === 'authenticated' ? free.family.userId : null
+      expect(await refused(asRole(db.pool, role, userId, (c) => c.query(sql))), `${role}: ${sql}`).toMatch(denied)
+    }
+    expect(await orderRow(id)).toEqual(before)
+    expect(await counts(id)).toEqual({ snapshots: 0, emails: 0, numbers: 0, cases: 0 })
+    expect(await paymentTables()).toEqual(tables)
+
+    // The service role may run it, so the refusals above came from the grants and not from the order
+    const { rows } = await asRole(db.pool, 'service_role', null, (c) =>
+      c.query(`SELECT confirm_free_order('${id}', '${household}') AS result`))
+    expect(rows[0].result).toMatchObject({ result: 'confirmed' })
   })
 })
 

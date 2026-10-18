@@ -54,6 +54,22 @@ async function statusOf(id: string) {
   return rows[0].status
 }
 
+/** Runs statements in one transaction with triggers off, as the superuser the tests connect as */
+async function withTriggersOff(...statements: string[]): Promise<void> {
+  const client = await db.pool.connect()
+  try {
+    await client.query('BEGIN')
+    await client.query('SET LOCAL session_replication_role = replica')
+    for (const statement of statements) await client.query(statement)
+    await client.query('COMMIT')
+  } catch (err) {
+    await client.query('ROLLBACK')
+    throw err
+  } finally {
+    client.release()
+  }
+}
+
 const confirmLate = (ref: string, note = 'Family paid late; spoke to them by phone') =>
   db.pool.query('SELECT payments_admin.confirm_late_payment($1, $2) AS result', [ref, note])
 
@@ -106,6 +122,30 @@ describe('payments_admin.confirm_late_payment', () => {
       const before = await stateOf([order.registrationId, newerId], supportRef)
       expect(await refused(confirmLate(supportRef)), newer).toMatch(/is at checkout, so a payment for it may still arrive/)
       expect(await stateOf([order.registrationId, newerId], supportRef)).toEqual(before)
+    }
+  })
+
+  it("refuses while another order has a status this rule doesn't know, such as a 011 confirmed order", async () => {
+    const statusCheck = (statuses: string) =>
+      `ALTER TABLE registrations DROP CONSTRAINT registrations_status_check;
+       ALTER TABLE registrations ADD CONSTRAINT registrations_status_check CHECK (status IN (${statuses}))`
+    const { order, newerId, supportRef } = await lateConflict()
+    // The live database may still carry 011's status check and a confirmed order, which nothing in the app
+    // makes any more, so this one is made with triggers off
+    await withTriggersOff(
+      statusCheck(`'draft', 'pending_payment', 'confirmed', 'paid', 'expired', 'cancelled'`),
+      `UPDATE registrations SET status = 'confirmed' WHERE id = '${newerId}'`
+    )
+    try {
+      const before = await stateOf([order.registrationId, newerId], supportRef)
+      expect(await refused(confirmLate(supportRef))).toMatch(/is confirmed; refund the late payment instead/)
+      expect(await stateOf([order.registrationId, newerId], supportRef)).toEqual(before)
+    } finally {
+      // Back to 002's status check for the rest of this file
+      await withTriggersOff(
+        `UPDATE registrations SET status = 'cancelled' WHERE id = '${newerId}'`,
+        statusCheck(`'draft', 'pending_payment', 'paid', 'expired', 'cancelled'`)
+      )
     }
   })
 

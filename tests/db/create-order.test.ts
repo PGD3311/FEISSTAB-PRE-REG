@@ -152,6 +152,29 @@ describe('create_order', () => {
     }
   })
 
+  it('refuses a payload whose frozen fee schedule lacks the family fee or the family max', async () => {
+    const { family, payload, submit } = await oneDanceOrder()
+    const schedule = payload.purchase_snapshot.pricing.fee_schedule as unknown as Record<string, unknown>
+    // A feis with no family max freezes null, which is allowed; a missing key is not
+    expect(schedule.family_cap_cents).toBeNull()
+    const cases: [string, unknown, RegExp][] = [
+      ['event_fee_cents', undefined, /order is missing the frozen family fee/],
+      ['event_fee_cents', null, /order is missing the frozen family fee/],
+      ['event_fee_cents', '1000', /order is missing the frozen family fee/],
+      ['family_cap_cents', undefined, /order is missing the frozen family max/],
+      ['family_cap_cents', '1500', /order is missing the frozen family max/]
+    ]
+    for (const [key, broken, message] of cases) {
+      const original = schedule[key]
+      if (broken === undefined) delete schedule[key]
+      else schedule[key] = broken
+      expect(await refused(submit()), `${key}: ${String(broken)}`).toMatch(message)
+      schedule[key] = original
+      expect(await createdFor(family.householdId)).toEqual({ orders: 0, entries: 0 })
+    }
+    expect((await submit()).status).toBe('created')
+  })
+
   it('expires a draft whose hold has passed instead of being blocked by it', async () => {
     const old = await createDraftOrder(db.pool)
     // Lapsed drafts that aren't this family's order for this feis: another family's at the same

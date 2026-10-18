@@ -6,7 +6,8 @@ import {
   type ConfirmPaymentInput,
   type OrderStore
 } from '@/app/_payments/order-store'
-import type { PaidOrder } from '@/lib/types/feis-listing'
+import { countedOrdersRecord } from '@/lib/engine/purchase-snapshot'
+import type { FeeSchedule, PaidOrder } from '@/lib/types/feis-listing'
 import { createTestDatabase, refused, type TestDatabase } from './helpers/db'
 import {
   buildPayload,
@@ -40,6 +41,12 @@ afterAll(async () => {
 const UNPAID_INDEX =
   'CREATE UNIQUE INDEX idx_registrations_active_unique ON pre_registration.registrations USING btree ' +
   "(feis_listing_id, household_id) WHERE (status = ANY (ARRAY['draft'::text, 'pending_payment'::text]))"
+
+/** claim_checkout's update (all four claim columns, the hold moved out): set directly, since it never claims a $0 order */
+const CLAIM_SQL = `UPDATE registrations SET checkout_claim_id = gen_random_uuid(), checkout_config = '{}',
+    checkout_claimed_at = now(), checkout_expires_at = now() + interval '60 minutes',
+    hold_expires_at = now() + interval '75 minutes'
+  WHERE id = $1`
 
 type Ready = Awaited<ReturnType<typeof readyToPay>>
 
@@ -135,6 +142,24 @@ async function freeListing(): Promise<ListingFixture> {
   }
 }
 
+/** A feis whose $25.00 late fee started yesterday, so an order's first dance for a dancer carries it */
+async function lateListing(): Promise<ListingFixture> {
+  const created = await createListing(db.pool)
+  return {
+    ...created,
+    feeSchedule: {
+      ...created.feeSchedule,
+      late_fee_tiers: [
+        {
+          starts_at: new Date(Date.now() - 86_400_000).toISOString(),
+          fee_cents: 2500,
+          family_max_cents: null
+        }
+      ]
+    }
+  }
+}
+
 /** Marks a competition as outside the family max, in the database and in the fixture */
 async function excludeFromFamilyMax(
   listing: ListingFixture,
@@ -194,10 +219,14 @@ describe('the unpaid-order index (019) and its check (020)', () => {
         null
       ]) {
         await client.query('BEGIN')
-        await client.query('DROP INDEX idx_registrations_active_unique')
-        if (replacement) await client.query(replacement)
-        expect(await refused(client.query(check))).toMatch(/must be 019's one-unpaid-order index/)
-        await client.query('ROLLBACK')
+        try {
+          await client.query('DROP INDEX idx_registrations_active_unique')
+          if (replacement) await client.query(replacement)
+          expect(await refused(client.query(check))).toMatch(/must be 019's one-unpaid-order index/)
+        } finally {
+          // Even when an expectation fails, the index is put back for the tests that follow
+          await client.query('ROLLBACK')
+        }
       }
     } finally {
       client.release()
@@ -400,21 +429,7 @@ describe('create_order with paid orders (add-on orders)', () => {
     ).toMatch(/order family max saving does not match the counted orders/)
 
     // A second late fee for a dancer the paid order already charged one
-    const created = await createListing(db.pool)
-    const lateListing = {
-      ...created,
-      feeSchedule: {
-        ...created.feeSchedule,
-        late_fee_tiers: [
-          {
-            starts_at: new Date(Date.now() - 86_400_000).toISOString(),
-            fee_cents: 2500,
-            family_max_cents: null
-          }
-        ]
-      }
-    }
-    const late = await familyWithPaidOrder(lateListing)
+    const late = await familyWithPaidOrder(await lateListing())
     const lateAddOn = buildPayload({
       ...late.base,
       entries: [{ dancerId: late.aoife.id, competitionId: late.trebleJig.id }],
@@ -433,6 +448,46 @@ describe('create_order with paid orders (add-on orders)', () => {
 
     for (const family of [fee, max, late])
       expect(await ordersOf(family.base.family.householdId)).toBe(1)
+  })
+
+  it('refuses two late fees for one dancer within one order, whose totals still add up', async () => {
+    // Niamh has no entry in the paid order, so she has paid no late fee; the add-on charges her one, on her first dance
+    const late = await familyWithPaidOrder(await lateListing())
+    const payload = buildPayload({
+      ...late.base,
+      entries: [
+        { dancerId: late.niamh.id, competitionId: late.reel.id },
+        { dancerId: late.niamh.id, competitionId: late.slipJig.id }
+      ],
+      paidOrders: await paidOrdersOf(db.pool, late.base.family.householdId, late.base.listing)
+    })
+    expect(payload.purchase_snapshot.entries.map((e) => e.late_fee_cents)).toEqual([2500, 0])
+    // A second late fee on her second dance
+    payload.entries[1].late_fee_cents = 2500
+    payload.purchase_snapshot.entries[1].late_fee_cents = 2500
+    payload.total_cents += 2500
+    payload.purchase_snapshot.pricing.breakdown.grand_total_cents += 2500
+    expect(
+      await refused(
+        store.createOrder(late.base.family.householdId, late.base.listing.listing.id, payload)
+      )
+    ).toMatch(/order late fees do not match the counted orders/)
+    expect(await ordersOf(late.base.family.householdId)).toBe(1)
+  })
+
+  it('refuses an add-on whose frozen fee schedule has no family fee, though a paid order paid it', async () => {
+    const { base, aoife, trebleJig } = await familyWithPaidOrder()
+    const payload = buildPayload({
+      ...base,
+      entries: [{ dancerId: aoife.id, competitionId: trebleJig.id }],
+      paidOrders: await paidOrdersOf(db.pool, base.family.householdId, base.listing)
+    })
+    expect(payload.event_fee_cents).toBe(0)
+    delete (payload.purchase_snapshot.pricing.fee_schedule as Partial<FeeSchedule>).event_fee_cents
+    expect(
+      await refused(store.createOrder(base.family.householdId, base.listing.listing.id, payload))
+    ).toMatch(/order is missing the frozen family fee/)
+    expect(await ordersOf(base.family.householdId)).toBe(1)
   })
 
   it('refuses a Submit priced before a late payment was confirmed (paid_orders_changed)', async () => {
@@ -647,6 +702,41 @@ describe('confirm_free_order', () => {
     expect((await orderRow(order.registrationId)).status).toBe('draft')
   })
 
+  it('confirms only an unclaimed draft: an expired or cancelled $0 order, or a claimed one, is left as it is', async () => {
+    const expired = await createDraftOrder(db.pool, { listing: await freeListing() })
+    await db.pool.query(`UPDATE registrations SET status = 'expired' WHERE id = $1`, [
+      expired.registrationId
+    ])
+    const cancelled = await createDraftOrder(db.pool, { listing: await freeListing() })
+    await db.pool.query(`UPDATE registrations SET status = 'cancelled' WHERE id = $1`, [
+      cancelled.registrationId
+    ])
+    // claim_checkout never claims a $0 order, so the claim is set directly
+    const claimed = await createDraftOrder(db.pool, { listing: await freeListing() })
+    await db.pool.query(CLAIM_SQL, [claimed.registrationId])
+
+    for (const [order, status] of [
+      [expired, 'expired'],
+      [cancelled, 'cancelled'],
+      [claimed, 'draft']
+    ] as const) {
+      const before = await orderRow(order.registrationId)
+      expect(before.total_cents).toBe(0)
+      expect(new Date(before.hold_expires_at).getTime()).toBeGreaterThan(Date.now())
+      expect(
+        await store.confirmFreeOrder(order.registrationId, order.family.householdId),
+        status
+      ).toEqual({ result: 'not_confirmable', status, hold_expired: false })
+      expect(await orderRow(order.registrationId)).toEqual(before)
+      expect(await counts(order.registrationId)).toEqual({
+        snapshots: 0,
+        emails: 0,
+        numbers: 0,
+        cases: 0
+      })
+    }
+  })
+
   it('cancels a $0 draft whose counted orders no longer hold, with no case: no money moved', async () => {
     const { base, aoife, trebleJig } = await familyWithPaidOrder(await cappedListing(3000))
     const addOn = await createAddOnOrder(db.pool, base, [
@@ -670,6 +760,145 @@ describe('confirm_free_order', () => {
       numbers: 0,
       cases: 0
     })
+  })
+})
+
+describe("the counted orders create_order rebuilds equal the engine's", () => {
+  /**
+   * What Submit would freeze as pricing.prior (countedOrdersRecord over the paid orders as Submit reads them)
+   * against _counted_orders over the same rows, compared as jsonb
+   */
+  async function expectRebuildMatchesEngine(householdId: string, listing: ListingFixture) {
+    const record = countedOrdersRecord(await paidOrdersOf(db.pool, householdId, listing))
+    const {
+      rows: [row]
+    } = await db.pool.query(
+      `SELECT pre_registration._counted_orders($1, $2) AS rebuilt,
+         pre_registration._counted_orders($1, $2) IS NOT DISTINCT FROM nullif($3::jsonb, 'null'::jsonb) AS same`,
+      [householdId, listing.listing.id, JSON.stringify(record)]
+    )
+    expect(row.same).toBe(true)
+    expect(row.rebuilt).toEqual(record)
+    return record
+  }
+
+  /** A paid order with no confirmation number, which the database allowed before 012 */
+  async function clearConfirmationNumber(id: string): Promise<void> {
+    const client = await db.pool.connect()
+    try {
+      await client.query('BEGIN')
+      await client.query('SET LOCAL session_replication_role = replica')
+      await client.query('UPDATE registrations SET confirmation_number = NULL WHERE id = $1', [id])
+      await client.query('COMMIT')
+    } catch (err) {
+      await client.query('ROLLBACK')
+      throw err
+    } finally {
+      client.release()
+    }
+  }
+
+  it('is null for a family with no paid order, and a first order is created', async () => {
+    const listing = await createListing(db.pool)
+    const family = await createFamily(db.pool)
+    expect(await expectRebuildMatchesEngine(family.householdId, listing)).toBeNull()
+    await createDraftOrder(db.pool, { family, listing })
+  })
+
+  it('matches for three paid orders, three dancers, one dancer with late fees in two orders, and no confirmation number', async () => {
+    // A $65.00 family max, with Treble Jig outside it
+    const created = await createListing(db.pool, { familyCapCents: 6500 })
+    const listing = await excludeFromFamilyMax(created, created.competitions[2].id)
+    const [reel, slipJig, trebleJig] = listing.competitions
+    const family = await createFamily(db.pool)
+    const aoife = await createDancer(db.pool, family.householdId, { firstName: 'Aoife' })
+    const niamh = await createDancer(db.pool, family.householdId, { firstName: 'Niamh' })
+    const siobhan = await createDancer(db.pool, family.householdId, { firstName: 'Siobhan' })
+    const feis = listing.listing.id
+
+    await insertLegacyPaidOrder(
+      db.pool,
+      family.householdId,
+      feis,
+      [
+        { dancerId: aoife.id, competitionId: reel.id, lateFeeCents: 500 },
+        { dancerId: siobhan.id, competitionId: reel.id }
+      ],
+      { eventFeeCents: 1000 }
+    )
+    await insertLegacyPaidOrder(
+      db.pool,
+      family.householdId,
+      feis,
+      [
+        { dancerId: aoife.id, competitionId: slipJig.id, lateFeeCents: 500 },
+        { dancerId: niamh.id, competitionId: reel.id, lateFeeCents: 250 }
+      ],
+      { eventFeeCents: 0 }
+    )
+    const noNumber = await insertLegacyPaidOrder(
+      db.pool,
+      family.householdId,
+      feis,
+      [{ dancerId: niamh.id, competitionId: trebleJig.id }],
+      { eventFeeCents: 0 }
+    )
+    await clearConfirmationNumber(noNumber)
+
+    const record = await expectRebuildMatchesEngine(family.householdId, listing)
+    expect(record).toMatchObject({
+      event_fee_paid: true,
+      // Treble Jig is outside the family max, so only the four Reels and Slip Jigs count
+      cappable_paid_cents: 6000,
+      late_fee_dancer_ids: [aoife.id, niamh.id].sort(),
+      late_fees_paid_cents: 1250
+    })
+    expect(record?.orders).toHaveLength(3)
+    expect(record?.orders.find((o) => o.id === noNumber)).toHaveProperty('confirmation_number', null)
+
+    // create_order accepts a price that counted them: $15.00 with $5.00 of the max left costs $5.00
+    const addOn = await createAddOnOrder(db.pool, { family, listing, dancers: [aoife, niamh, siobhan] }, [
+      { dancerId: siobhan.id, competitionId: slipJig.id }
+    ])
+    expect(addOn.payload.purchase_snapshot.pricing.prior).toEqual(record)
+    expect(addOn.payload.total_cents).toBe(500)
+  })
+
+  it('matches for two orders paid through confirmation, which froze their own family-max flags', async () => {
+    const { base, aoife, niamh, reel, trebleJig } = await familyWithPaidOrder()
+    await payOrder(
+      db.pool,
+      await createAddOnOrder(db.pool, base, [{ dancerId: niamh.id, competitionId: reel.id }])
+    )
+    const record = await expectRebuildMatchesEngine(base.family.householdId, base.listing)
+    expect(record?.orders).toHaveLength(2)
+
+    const addOn = await createAddOnOrder(db.pool, base, [
+      { dancerId: aoife.id, competitionId: trebleJig.id }
+    ])
+    expect(addOn.payload.purchase_snapshot.pricing.prior).toEqual(record)
+  })
+
+  it('matches for a paid order with no entries and no confirmation number: empty lists and zero sums', async () => {
+    const listing = await createListing(db.pool)
+    const family = await createFamily(db.pool)
+    const dancer = await createDancer(db.pool, family.householdId)
+    const emptyId = await insertLegacyPaidOrder(db.pool, family.householdId, listing.listing.id, [], {
+      eventFeeCents: 0
+    })
+    await clearConfirmationNumber(emptyId)
+
+    const record = await expectRebuildMatchesEngine(family.householdId, listing)
+    expect(record).toEqual({
+      orders: [{ id: emptyId, confirmation_number: null, event_fee_cents: 0, entries: [] }],
+      event_fee_paid: false,
+      cappable_paid_cents: 0,
+      late_fee_dancer_ids: [],
+      late_fees_paid_cents: 0
+    })
+    await createAddOnOrder(db.pool, { family, listing, dancers: [dancer] }, [
+      { dancerId: dancer.id, competitionId: listing.competitions[0].id }
+    ])
   })
 })
 

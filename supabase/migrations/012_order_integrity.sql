@@ -35,8 +35,8 @@ ALTER TABLE registrations ADD CONSTRAINT registrations_unpaid_needs_hold
 
 -- ─── Uniqueness that confirmation relies on ───
 -- One unpaid order per family per feis is 019's idx_registrations_active_unique (draft and pending_payment
--- only). 012–017 never create or drop it, so they apply the same before 019 (live) or after it (the tests);
--- 020 checks it is 019's.
+-- only). 012–017 never create or drop it, so they apply the same whether 019 runs before them (live) or after
+-- them (the tests); 020 checks it is 019's.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_registrations_checkout_session_unique
   ON registrations (stripe_checkout_session_id) WHERE stripe_checkout_session_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_registrations_payment_intent_unique

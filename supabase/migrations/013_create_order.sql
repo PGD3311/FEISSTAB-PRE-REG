@@ -100,6 +100,17 @@ DECLARE
   v_capped integer;
   v_cap integer;
 BEGIN
+  -- The frozen fee schedule must carry the two figures the once-per-family rules below read. A payload without
+  -- them is malformed, so it is refused outright, with a clear message: a missing family fee would otherwise
+  -- pass whenever a counted order had already paid it. Submit freezes the whole fee_schedule row, so both keys
+  -- are always there; family_cap_cents is null for a feis with no family max.
+  IF coalesce(jsonb_typeof(v_schedule -> 'event_fee_cents'), '') <> 'number' THEN
+    RAISE EXCEPTION 'order is missing the frozen family fee (pricing.fee_schedule.event_fee_cents)';
+  END IF;
+  IF coalesce(jsonb_typeof(v_schedule -> 'family_cap_cents'), '') NOT IN ('number', 'null') THEN
+    RAISE EXCEPTION 'order is missing the frozen family max (pricing.fee_schedule.family_cap_cents, null for no max)';
+  END IF;
+
   PERFORM lock_household_feis(p_household_id, p_feis_listing_id);
 
   SELECT * INTO v_listing FROM feis_listings WHERE id = p_feis_listing_id;

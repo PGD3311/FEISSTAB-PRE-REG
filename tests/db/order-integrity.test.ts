@@ -908,6 +908,21 @@ describe('payment evidence', () => {
       ['no confirmation number', (id) => asService(db.pool, async (c) => {
         await c.query(`SELECT set_config('pre_registration.fulfilling_order', $1, true)`, [id])
         return c.query(`UPDATE registrations SET status = 'paid', paid_at = now() WHERE id = $1`, [id])
+      })],
+      // Without a payment time
+      ['no payment time', (id) => asService(db.pool, async (c) => {
+        await c.query(`SELECT set_config('pre_registration.fulfilling_order', $1, true)`, [id])
+        return c.query(
+          `UPDATE registrations SET status = 'paid', confirmation_number = 'RF-FREE-' || substr($1::text, 1, 8)
+           WHERE id = $1`, [id])
+      })],
+      // With a checkout session but no claim, set in the same update as the move into paid
+      ['a session without a claim', (id) => asService(db.pool, async (c) => {
+        await c.query(`SELECT set_config('pre_registration.fulfilling_order', $1, true)`, [id])
+        return c.query(
+          `UPDATE registrations SET status = 'paid', paid_at = now(),
+             confirmation_number = 'RF-FREE-' || substr($1::text, 1, 8), stripe_checkout_session_id = 'cs_free'
+           WHERE id = $1`, [id])
       })]
     ]
     for (const [label, attempt] of refusals) {
