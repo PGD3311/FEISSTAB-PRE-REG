@@ -3,7 +3,8 @@ import { notFound } from 'next/navigation'
 import { createClient, getSignedInUser } from '@/lib/supabase/server'
 import { competitionFeeCents, getActiveLateTier } from '@/lib/engine/fee-calculator'
 import { formatCents, sortLateTiers } from '@/lib/format'
-import { entryDeadline, groupForEntryForm } from '@/lib/entry-display'
+import { entryDeadline } from '@/lib/entry-display'
+import { ageRange, summariseSyllabus } from '@/lib/syllabus-summary'
 import { FeisCover } from '@/components/feis-cover'
 import type {
   FeeSchedule,
@@ -39,10 +40,6 @@ function tierStart(tier: LateFeeTier, timeZone: string): string {
   })
 }
 
-function competitionName(comp: FeisCompetition): string {
-  return comp.competition_type === 'solo' && comp.dance_label ? comp.dance_label : comp.display_name
-}
-
 export default async function FeisDetailPage({ params }: PageParams) {
   const { id } = await params
   const supabase = await createClient()
@@ -75,13 +72,7 @@ export default async function FeisDetailPage({ params }: PageParams) {
 
   const feeSchedule = feeResult.data as FeeSchedule | null
   const competitions = (compsResult.data ?? []) as FeisCompetition[]
-  const groups = groupForEntryForm(
-    competitions.map((competition) => ({
-      competition,
-      eligible: true,
-      reason: ''
-    }))
-  )
+  const levels = summariseSyllabus(competitions)
   const deadline = entryDeadline(listing)
   const activeTier = feeSchedule ? getActiveLateTier(feeSchedule.late_fee_tiers, new Date()) : null
   const enterHref = `/feiseanna/${listing.id}/register`
@@ -108,7 +99,7 @@ export default async function FeisDetailPage({ params }: PageParams) {
       />
 
       <main className="mx-auto grid max-w-6xl items-start gap-7 px-4 py-7 sm:px-7 lg:grid-cols-[minmax(0,1fr)_300px]">
-        <div className="grid min-w-0 gap-7">
+        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-7">
           {listing.description && (
             <section>
               <h2 className="mb-2 text-[22px] font-extrabold [font-stretch:75%]">
@@ -124,8 +115,8 @@ export default async function FeisDetailPage({ params }: PageParams) {
             <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
               <h2 className="text-[22px] font-extrabold [font-stretch:75%]">Competitions</h2>
               <span className="text-sm text-muted-foreground">
-                {competitions.length} in the syllabus. When you enter, each dancer sees only the
-                ones they can dance.
+                Open a level to see its competition numbers. When you enter, each dancer sees only
+                the ones they can dance.
               </span>
             </div>
 
@@ -135,35 +126,112 @@ export default async function FeisDetailPage({ params }: PageParams) {
               </p>
             ) : (
               <div className="feis-entry-form">
-                {groups.map((group, i) => (
-                  <section key={group.label}>
-                    <h3
-                      className={`px-4 pt-2 pb-1 text-[12.5px] font-bold text-muted-foreground ${
-                        i > 0 ? 'border-t-[1.5px] border-[var(--color-feis-charcoal)]' : ''
-                      }`}
+                {levels.map((level, i) => {
+                  const fees = feeSchedule
+                    ? [
+                        ...new Set(
+                          level.competitions.map((c) => competitionFeeCents(c, feeSchedule))
+                        )
+                      ]
+                    : []
+                  const price =
+                    fees.length === 0
+                      ? null
+                      : fees.length === 1
+                        ? `${formatCents(fees[0])} each`
+                        : `from ${formatCents(Math.min(...fees))}`
+                  const columns = level.dances.length > 0 ? level.dances : ['']
+                  const count = `${level.competitions.length} ${
+                    level.competitions.length === 1 ? 'competition' : 'competitions'
+                  }`
+                  return (
+                    <details
+                      key={level.label}
+                      className={`group ${i > 0 ? 'border-t-[1.5px] border-[var(--color-feis-charcoal)]' : ''}`}
                     >
-                      {group.label}
-                    </h3>
-                    <ul>
-                      {group.items.map(({ competition }) => (
-                        <li
-                          key={competition.id}
-                          className="grid grid-cols-[56px_minmax(0,1fr)_auto] items-center gap-2.5 border-t border-[#E2DCCD] px-4 py-2 sm:grid-cols-[64px_minmax(0,1fr)_auto]"
+                      <summary className="grid cursor-pointer list-none grid-cols-[14px_minmax(0,1fr)_auto] items-baseline gap-x-2 px-4 py-3 hover:bg-[#FBF8F1] [&::-webkit-details-marker]:hidden">
+                        <svg
+                          aria-hidden
+                          viewBox="0 0 10 10"
+                          className="h-2.5 w-2.5 self-center text-muted-foreground transition-transform group-open:rotate-90 motion-reduce:transition-none"
                         >
-                          <span className="feis-narrow text-[17px]">
-                            {competition.display_code ?? ''}
+                          <path
+                            d="M3 1.5 6.5 5 3 8.5"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.8"
+                          />
+                        </svg>
+                        <span className="text-[17px] font-extrabold [font-stretch:85%]">
+                          {level.label}
+                        </span>
+                        {price ? (
+                          <span className="text-sm text-muted-foreground tabular-nums">
+                            {price}
                           </span>
-                          <span className="min-w-0">{competitionName(competition)}</span>
-                          {feeSchedule && (
-                            <span className="text-muted-foreground tabular-nums">
-                              {formatCents(competitionFeeCents(competition, feeSchedule))}
-                            </span>
-                          )}
-                        </li>
-                      ))}
-                    </ul>
-                  </section>
-                ))}
+                        ) : (
+                          <span />
+                        )}
+                        {level.dances.length > 0 && (
+                          <span className="col-start-2 col-end-4 text-sm">
+                            {level.dances.join(', ')}
+                          </span>
+                        )}
+                        <span className="col-start-2 col-end-4 text-[12.5px] text-muted-foreground">
+                          {[ageRange(level.ageGroups), count].filter(Boolean).join(', ')}
+                        </span>
+                      </summary>
+
+                      <div className="overflow-x-auto px-4 pb-4">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="text-[12.5px] text-muted-foreground">
+                              <th className="sticky left-0 bg-white py-1 pr-3 text-left font-semibold">
+                                {level.ageGroups.length > 0 ? 'Age' : 'Competition'}
+                              </th>
+                              {columns.map((dance) => (
+                                <th
+                                  key={dance}
+                                  className="px-1.5 py-1 text-center align-bottom font-semibold"
+                                >
+                                  {dance || 'Number'}
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {level.rows.map((row) => (
+                              <tr key={row} className="border-t border-[#E2DCCD]">
+                                <th
+                                  scope="row"
+                                  className="sticky left-0 bg-white py-1.5 pr-3 text-left font-normal whitespace-nowrap"
+                                >
+                                  {row}
+                                </th>
+                                {columns.map((dance) => {
+                                  const comp = level.cells.get(`${row}|${dance}`)
+                                  return (
+                                    <td key={dance} className="px-1.5 py-1.5 text-center">
+                                      {comp ? (
+                                        <span className="feis-narrow text-[16px]">
+                                          {comp.display_code ?? '✓'}
+                                        </span>
+                                      ) : (
+                                        <span className="text-[#CFC6B2]" aria-label="Not offered">
+                                          –
+                                        </span>
+                                      )}
+                                    </td>
+                                  )
+                                })}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </details>
+                  )
+                })}
               </div>
             )}
           </section>
