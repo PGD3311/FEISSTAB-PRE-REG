@@ -22,7 +22,7 @@
 - node-postgres (`pg`), for the database tests
 - Homebrew `postgresql@17`
 
-**Spec:** `docs/2026-10-16-payment-hardening-design.md` (revision 4). Read it before you start. "§n" below means section n of the spec.
+**Spec:** `docs/2026-10-16-payment-hardening-design.md` (revision 5). Read it before you start. "§n" below means section n of the spec.
 
 ## Progress (2026-10-17)
 
@@ -74,6 +74,7 @@
     - **The runbook's safety changes (Task 15):** the test-data reset is a read-only preview, then one all-or-nothing block that checks the feis id, its exact name and the order count. Before confirming a late payment (3a), Stripe is checked for refunds and disputes. Before 3a or a refund (3b), the other payments contact is told, and 3b first checks the case is still open. A reused payment's intent is never refunded. Stuck emails have a query and a guarded resend. The family is emailed by hand after any message-A case is closed (3e). Email is paused until a sending domain is verified.
     - **The app (batch 4):** Back from Stripe re-enables Pay. The dashboard says when it couldn't load entries. The success page shows "This payment has been reviewed…" once a message-A case is closed. One bad email row doesn't stall the rest. An ignored failure notice is logged.
   - **Task 16** is updated to match: the live test fixture's snapshot has `rules`; Step 4 sets `STRIPE_APPLICATION_FEE_PERCENT` and `NEXT_PUBLIC_BASE_URL`, checks Fluid compute and leaves `PAYMENTS_ALERT_EMAIL` unset; Step 7 reloads the API's schema cache and adds the three new webhook events after the deploy; the live script also checks `payments_admin`, the email queue functions and the one-active-order index; Step 8 dry-reads the runbook; Step 12 turns email on.
+- **Spec revision 5 (add-on orders and $0 orders, Daniel 2026-10-17) adds Tasks 17–21, which run before Task 16.** Task 17 merges `main` (migration 019 and its add-on screens) into this branch; Tasks 18–20 rebuild add-ons and $0 orders on this branch's order model (012, 013, 015 and 017 change in place, and the new last migration 020 checks 019's index); Task 21 updates the runbook and `CLAUDE.md`. Task 16 is updated for them: it applies 012–017 and then 020, its live check counts main's live add-ons, and its rehearsal and live tests cover an add-on, a $0 add-on and late payments against several orders.
 
 ## Global Constraints
 
@@ -114,7 +115,7 @@
   - Code that reads `registrations` with a user's client selects `REGISTRATION_COLUMNS` (`src/lib/registration-columns.ts`), never `*`.
   - `consent_ip` and `checkout_config` are private: only the service role and the payment functions read them.
   - A migration that adds a `registrations` column grants `SELECT` on it to `authenticated` and adds it to `REGISTRATION_COLUMNS`, unless it is private.
-- **Migrations:** this plan owns 012–017. Migration 018 belongs to the schools work on `feisweb-layout`, so any extra migration starts at 019.
+- **Migrations:** this plan owns 012–017 and 020. Migration 018 belongs to the schools work on `feisweb-layout`, and 019 is `main`'s add-on orders, which stays byte-identical to `main`'s, so any extra migration starts at 021. 012–017 never create or drop 019's `idx_registrations_active_unique`.
 - **Migration 012 as built:** every later function and every test setup must satisfy its rules (see Progress). Create test states the way the real functions do, or the way `tests/db/helpers/fixtures.ts` does.
 - **Next 16.2 dev traps** (`docs/known-issues.md`):
   - Never add `loading.tsx` files.
@@ -147,9 +148,11 @@ These five inputs aren't covered by the spec's own tests, but they're the ones m
   - the parent review view
 - `016_notification_delivery.sql`: claiming, freezing and completing notifications, and the email context.
 - `017_payments_admin.sql`: the `payments_admin` schema, `admin_actions`, `confirm_late_payment` and `close_exception`.
+- `019_add_on_orders.sql` (from `main`, unchanged): one unpaid order per family per feis, any number of paid ones.
+- `020_assert_unpaid_index.sql`: refuses to apply unless `idx_registrations_active_unique` is exactly 019's.
 - `supabase/checks/payment-hardening-live-check.sql`: read-only queries for the live database.
 - `supabase/tests/payment_hardening_live_tests.sql`: the live permission tests, which always roll back.
-- `supabase/checks/rehearse-on-live-copy.sh`: rehearses 012–017 on a copy of the live data before the real rollout.
+- `supabase/checks/rehearse-on-live-copy.sh`: rehearses 012–017 and 020 on a copy of the live data before the real rollout.
 
 **Pure code:**
 - `src/lib/registration-states.ts` (modify): the transition table, exported.
@@ -9932,11 +9935,5570 @@ git commit -m "docs: payment cases runbook and payment rules in CLAUDE.md"
 
 ---
 
+### Task 17: Merge `main` (add-on orders, migration 019) into `payment-hardening`
+
+Spec revision 5, Rollout step 3. `main` went live with a simpler add-on version at `0670edb`: migration 019, `summarisePaidOrders` and `prior` in the fee calculator, the add-on entry-page screens, "Add dances" on My entries, email numbers by feis and dancer, and `confirmFreeOrder` with `src/lib/confirmation-number.ts`, which write the order tables directly. This task brings `main` in with a real merge (the branch is pushed, so never a rebase) and keeps this branch's order flow everywhere the two collide. Nothing behaves differently afterwards: Tasks 18–20 rebuild main's add-on behaviour on this branch's order model.
+
+**Files:**
+- Merge: `origin/main` at `0670edb`
+- Add (from `main`, unchanged): `supabase/migrations/019_add_on_orders.sql`
+- Delete: `src/lib/email/send-confirmation.ts` (deleted on this branch, changed on `main`), `src/lib/confirmation-number.ts` (new on `main`, used only by the code this merge leaves out)
+- Modify (resolution): `src/components/registration/entry-page.tsx`
+
+**Interfaces:**
+- Consumes: `origin/main` at `0670edb`.
+- Produces, unchanged from `main`:
+  - migration 019: `idx_registrations_active_unique` on `(feis_listing_id, household_id)` where status is `draft` or `pending_payment`
+  - `PriorPaidFees` (`src/lib/types/feis-listing.ts`), `calculateFees(schedule, entries, at, prior)` and `summarisePaidOrders` (`src/lib/engine/fee-calculator.ts`, whose signature Task 18 changes), with their tests
+  - `DancerEntry`'s optional `entered` prop (`src/components/registration/dancer-entry.tsx`)
+  - `FamilyReceipt`'s optional `title` and `note`, and `PaidReceipt`'s required `canAdd` (`src/components/registration/family-receipt.tsx`)
+  - main's sign-up and account-page fixes, and its `docs/known-issues.md` line
+
+**How each of the nine files both branches changed is resolved:**
+
+| File | What git does | Resolution |
+|---|---|---|
+| `src/app/api/webhooks/stripe/route.ts` | conflict | Keep this branch's (`--ours`): the new webhook (Task 11). main only moved `generateConfirmationNumber` out of its old handler. |
+| `src/app/dashboard/page.tsx` | conflict | Keep this branch's. main's "Add dances" link on the latest paid order comes back in Task 20, behind `canStartOrder` and message A. |
+| `src/app/feiseanna/[id]/register/actions.ts` | conflict | Keep this branch's: Submit through `create_order`, Pay and Cancel through the checkout workflow. main's counting of paid orders and its paid-dance refusal are rebuilt in Tasks 18–20. `confirmFreeOrder` and its direct service-role writes are not kept: Pay's $0 path is `confirm_free_order` (Tasks 19 and 20). |
+| `src/components/registration/entry-page.tsx` | conflict | Keep this branch's, and pass `canAdd={false}` to `PaidReceipt`, whose prop main made required. Task 20 ports main's add-on screens. |
+| `src/lib/email/send-confirmation.ts` | modify/delete | Delete it (`git rm`). The email queue (Task 13) replaced it, and main's change, numbers looked up by feis and dancer, is already how 016's `get_notification_context` reads them. |
+| `src/app/feiseanna/[id]/register/page.tsx` | merges cleanly | Take this branch's version back (`git checkout HEAD --`): main's version passes `paidRegistrations`, which the entry page kept above doesn't take. Task 20 loads every paid order. |
+| `src/components/registration/family-receipt.tsx` | merges cleanly | Keep the merge (main's `title`, `note` and `canAdd`; Task 20 uses them). |
+| `src/lib/types/feis-listing.ts` | merges cleanly | Keep the merge (main's `PriorPaidFees`). |
+| `docs/known-issues.md` | merges cleanly | Keep the merge. Task 21 rewords main's add-on line. |
+
+Every other file main changed merges cleanly and is kept as merged: 019, the fee calculator and its tests, `dancer-entry.tsx`, `src/app/auth/signup/page.tsx` and `src/app/dashboard/account/page.tsx`. `src/lib/confirmation-number.ts` is deleted in the merge: nothing left imports it, and confirmation numbers are `new_confirmation_number()` in 015.
+
+- [ ] **Step 1: Check where `main` is**
+
+Work in `~/FEISSTAB-PRE-REG` on `payment-hardening`, with nothing uncommitted (`git status --short` prints nothing).
+```bash
+git fetch origin
+test "$(git rev-parse origin/main)" = "$(git rev-parse 0670edb)" && echo "main is at 0670edb"
+```
+Expected: `main is at 0670edb`. If `main` has moved on, stop and ask: the resolutions below are for `0670edb`.
+
+- [ ] **Step 2: Start the merge**
+
+```bash
+git merge --no-ff --no-commit origin/main || true
+git status --short
+```
+Expected: git reports conflicts in `src/app/api/webhooks/stripe/route.ts`, `src/app/dashboard/page.tsx`, `src/app/feiseanna/[id]/register/actions.ts` and `src/components/registration/entry-page.tsx` (`UU`), and a modify/delete conflict on `src/lib/email/send-confirmation.ts` (`DU`). Everything else is staged.
+
+- [ ] **Step 3: Resolve the conflicts as the table says**
+
+```bash
+git checkout --ours -- src/app/api/webhooks/stripe/route.ts src/app/dashboard/page.tsx \
+  'src/app/feiseanna/[id]/register/actions.ts' src/components/registration/entry-page.tsx
+git checkout HEAD -- 'src/app/feiseanna/[id]/register/page.tsx'
+git rm -q -f src/lib/email/send-confirmation.ts src/lib/confirmation-number.ts
+```
+
+In `src/components/registration/entry-page.tsx`, replace:
+```tsx
+            cardsHref={`/dashboard/numbers/${feisId}`}
+          />
+```
+with:
+```tsx
+            cardsHref={`/dashboard/numbers/${feisId}`}
+            canAdd={false}
+          />
+```
+
+- [ ] **Step 4: Check the result**
+
+```bash
+git add src/app/api/webhooks/stripe/route.ts src/app/dashboard/page.tsx \
+  'src/app/feiseanna/[id]/register/actions.ts' 'src/app/feiseanna/[id]/register/page.tsx' \
+  src/components/registration/entry-page.tsx
+git diff --quiet origin/main -- supabase/migrations/019_add_on_orders.sql && echo "019 is byte-identical"
+test -z "$(git grep -n -e confirmFreeOrder -e generateConfirmationNumber -e send-confirmation -- src)"
+test -z "$(git diff --name-only --diff-filter=U)" && echo "no leftovers and nothing unmerged"
+```
+Expected: `019 is byte-identical`, then `no leftovers and nothing unmerged`.
+
+Run: `npx tsc --noEmit && npm run lint && npm test && npm run test:db && npm run build`
+Expected: all pass. `npm test` runs 24 files and 288 tests (main's add-on fee tests included), and `npm run test:db` 9 files and 211 tests, now on 019's index: nothing in 012–017 depends on the old one.
+
+- [ ] **Step 5: Commit the merge**
+
+```bash
+git commit -q -m "chore: merge main's add-on orders (migration 019) into payment-hardening"
+git log --oneline -1
+```
+
+---
+
+### Task 18: Prices count the family's paid orders (pure)
+
+Spec §4, §14 and Decision 10. Every new order, a first order or an add-on, is priced on top of the family's paid orders for the feis, and freezes what it counted as `purchase_snapshot.pricing.prior`, in the exact shape `create_order` rebuilds (Task 19).
+
+**Files:**
+- Modify: `src/lib/types/feis-listing.ts`, `src/lib/engine/fee-calculator.ts`, `src/lib/engine/purchase-snapshot.ts`, `src/lib/engine/order-validation.ts`, `src/lib/engine/checkout-policy.ts`
+- Test: `tests/engine/fee-calculator.test.ts`, `tests/engine/purchase-snapshot.test.ts`, `tests/engine/order-validation.test.ts`, `tests/engine/checkout-policy.test.ts`, `tests/engine/checkout-config.test.ts`
+
+**Interfaces:**
+- Consumes: `calculateFees(schedule, entries, at, prior)` and `PriorPaidFees` (Task 17).
+- Produces:
+  - **Types** (`feis-listing.ts`): `PaidOrderEntry { dancer_id, competition_id, base_fee_cents, late_fee_cents, counts_toward_family_cap }`, `PaidOrder { id, confirmation_number, event_fee_cents, entries }` and `CountedOrders extends PriorPaidFees { orders: PaidOrder[] }`
+  - **`fee-calculator.ts`:** `compareIds(a, b)` (plain code-unit order) and `summarisePaidOrders(orders: PaidOrder[]): PriorPaidFees | null`, which now takes each entry's own family-max flag
+  - **`purchase-snapshot.ts`:**
+    - `PaidOrderRow`, the row shape Submit and the entry page read, and `paidOrdersFrom(rows, competitions): PaidOrder[]`
+    - `countedOrdersRecord(orders): CountedOrders | null`, the exact record
+    - `PriceOrderInput.paidOrders?: PaidOrder[]`, and `PurchaseSnapshot.pricing.prior: CountedOrders | null`
+    - `PRICING_VERSION = 'pricing-2026-10-17'`
+  - **`order-validation.ts`:** `OrderRequest.paidOrders?`, which refuses a pair already paid for, and `canStartOrder({ listing, now, hasUnpaidOrder, hasOpenMessageA }): boolean`
+  - **`checkout-policy.ts`:** `tooSmallToCharge(totalCents)`, true for 1 to 49 cents
+
+**Notes:**
+- **The exact record** (spec §4). `create_order` compares the payload's `pricing.prior` with its own rebuild as `jsonb`, so `countedOrdersRecord` follows the SQL to the letter: orders sorted by `id`, each order's entries by `dancer_id` then `competition_id`, `late_fee_dancer_ids` sorted and without repeats, ids in lower case, every key present (`confirmation_number` is `null` on a legacy order), and `null` for a family with no paid order. Sorting uses `compareIds`, never `localeCompare`, which matches Postgres's `uuid` order.
+- **Family-max flags.** An earlier entry counts toward the family max by its own order's frozen flag (`purchase_snapshot.competitions`). An order made before purchase snapshots uses the competition's flag now. `paidOrdersFrom` falls back to "counts" only when it can't find the competition at all, which on the entry page (enabled competitions only) is an estimate anyway.
+- `PurchaseSnapshot.version` stays 1: `prior` is a new field, and nothing reads the snapshot in a way its absence would break. Snapshots from before this task have no `prior` key, which `isAddOnOrder` (Task 20) and `create_order` (Task 19) read as none.
+- `belowCardMinimum` keeps blocking a card checkout under 50 cents (`claim_checkout`'s `amount_too_small`). Submit switches to `tooSmallToCharge` in Task 20, so a $0 order can be made.
+
+- [ ] **Step 1: Write the failing tests**
+
+In `tests/engine/fee-calculator.test.ts`:
+
+(a) Replace:
+```ts
+describe('summarisePaidOrders', () => {
+  it('is null when nothing has been paid', () => {
+    expect(summarisePaidOrders([], [], new Set())).toBeNull()
+  })
+
+  it('totals the earlier orders, leaving out competitions excluded from the family max', () => {
+    const prior = summarisePaidOrders(
+      [{ event_fee_cents: 2500 }],
+      [
+        { dancer_id: 'd1', feis_competition_id: 'r', base_fee_cents: 1300, late_fee_cents: 2500 },
+        { dancer_id: 'd1', feis_competition_id: 'lj', base_fee_cents: 1300, late_fee_cents: 0 },
+        { dancer_id: 'd2', feis_competition_id: 'team', base_fee_cents: 4000, late_fee_cents: 0 }
+      ],
+      new Set(['team'])
+    )
+    expect(prior).toEqual({
+```
+with:
+```ts
+describe('summarisePaidOrders', () => {
+  const entry = (dancer_id: string, competition_id: string, base: number, late = 0, counts = true) => ({
+    dancer_id,
+    competition_id,
+    base_fee_cents: base,
+    late_fee_cents: late,
+    counts_toward_family_cap: counts
+  })
+
+  it('is null when nothing has been paid', () => {
+    expect(summarisePaidOrders([])).toBeNull()
+  })
+
+  it("totals the earlier orders, leaving out entries that didn't count toward the family max", () => {
+    const prior = summarisePaidOrders([
+      {
+        id: 'o1',
+        confirmation_number: 'RF-2026-AAAAA',
+        event_fee_cents: 2500,
+        entries: [
+          entry('d1', 'r', 1300, 2500),
+          entry('d1', 'lj', 1300),
+          entry('d2', 'team', 4000, 0, false)
+        ]
+      }
+    ])
+    expect(prior).toEqual({
+```
+
+(b) Replace:
+```ts
+    })
+  })
+})
+
+```
+with:
+```ts
+    })
+  })
+
+  it("adds up several orders, each entry with its own order's family-max flag", () => {
+    const prior = summarisePaidOrders([
+      { id: 'o2', confirmation_number: null, event_fee_cents: 0, entries: [entry('d3', 'r', 1300, 500, false)] },
+      { id: 'o1', confirmation_number: null, event_fee_cents: 0, entries: [entry('d1', 'r', 1300, 500)] }
+    ])
+    expect(prior).toEqual({
+      // Neither order charged the family fee, so the next one still does
+      event_fee_paid: false,
+      cappable_paid_cents: 1300,
+      late_fee_dancer_ids: ['d1', 'd3'],
+      late_fees_paid_cents: 1000
+    })
+  })
+})
+
+```
+
+In `tests/engine/purchase-snapshot.test.ts`:
+
+(a) Replace:
+```ts
+  CONSENT_VERSION,
+  feeEntriesFor,
+  pairLineItems,
+  PRICING_VERSION,
+  priceOrder,
+  type PriceOrderInput
+} from '@/lib/engine/purchase-snapshot'
+import type { OrderDancer } from '@/lib/engine/order-validation'
+import { parseLocalDate } from '@/lib/format'
+import type { FeeSchedule, FeisCompetition } from '@/lib/types/feis-listing'
+
+```
+with:
+```ts
+  CONSENT_VERSION,
+  countedOrdersRecord,
+  feeEntriesFor,
+  pairLineItems,
+  paidOrdersFrom,
+  PRICING_VERSION,
+  priceOrder,
+  type PaidOrderRow,
+  type PriceOrderInput
+} from '@/lib/engine/purchase-snapshot'
+import type { OrderDancer } from '@/lib/engine/order-validation'
+import { parseLocalDate } from '@/lib/format'
+import type { FeeSchedule, FeisCompetition, PaidOrder } from '@/lib/types/feis-listing'
+
+```
+
+(b) Replace:
+```ts
+    expect(snapshot.rules).toMatchObject({ age_cutoff_date: '2027-01-01', pricing_version: PRICING_VERSION, consent_version: CONSENT_VERSION })
+  })
+```
+with:
+```ts
+    expect(snapshot.rules).toMatchObject({ age_cutoff_date: '2027-01-01', pricing_version: PRICING_VERSION, consent_version: CONSENT_VERSION })
+    expect(PRICING_VERSION).toBe('pricing-2026-10-17')
+  })
+```
+
+(c) Replace:
+```ts
+      }
+    ])
+  })
+})
+
+```
+with:
+```ts
+      }
+    ])
+  })
+})
+
+// Spec §4: an add-on is priced on top of the family's paid orders, and freezes what it counted
+describe('pricing with earlier paid orders', () => {
+  const paid = (id: string, overrides: Partial<PaidOrder> = {}): PaidOrder => ({
+    id,
+    confirmation_number: `RF-2026-${id.slice(0, 5).toUpperCase()}`,
+    event_fee_cents: 1000,
+    entries: [
+      {
+        dancer_id: 'd1',
+        competition_id: 'c1',
+        base_fee_cents: 1500,
+        late_fee_cents: 0,
+        counts_toward_family_cap: true
+      }
+    ],
+    ...overrides
+  })
+
+  it('freezes prior as null on a first order', () => {
+    expect(priceOrder(input()).snapshot.pricing.prior).toBeNull()
+    expect(priceOrder(input({ paidOrders: [] })).snapshot.pricing.prior).toBeNull()
+  })
+
+  it("doesn't charge the family fee again, and freezes the counted orders", () => {
+    const first = paid('7d1a0000-0000-4000-8000-000000000001')
+    const { breakdown, snapshot } = priceOrder(
+      input({ entries: [{ dancerId: 'd1', competitionId: 'c2' }], paidOrders: [first] })
+    )
+    expect(breakdown.event_fee_cents).toBe(0)
+    expect(breakdown.grand_total_cents).toBe(1500)
+    expect(snapshot.pricing.prior).toEqual({
+      orders: [first],
+      event_fee_paid: true,
+      cappable_paid_cents: 1500,
+      late_fee_dancer_ids: [],
+      late_fees_paid_cents: 0
+    })
+  })
+
+  it('charges only what the family max leaves after the earlier orders', () => {
+    const capped = { ...schedule, family_cap_cents: 2000 }
+    const { breakdown } = priceOrder(
+      input({
+        feeSchedule: capped,
+        entries: [{ dancerId: 'd1', competitionId: 'c2' }],
+        paidOrders: [paid('7d1a0000-0000-4000-8000-000000000001')]
+      })
+    )
+    // 1500 of the 2000 max already paid leaves 500 for a 1500 dance
+    expect(breakdown.family_cap_savings_cents).toBe(1000)
+    expect(breakdown.grand_total_cents).toBe(500)
+  })
+
+  it('charges nothing once the family max is already reached', () => {
+    const capped = { ...schedule, family_cap_cents: 1500 }
+    const { breakdown } = priceOrder(
+      input({
+        feeSchedule: capped,
+        entries: [{ dancerId: 'd1', competitionId: 'c2' }],
+        paidOrders: [paid('7d1a0000-0000-4000-8000-000000000001')]
+      })
+    )
+    expect(breakdown.grand_total_cents).toBe(0)
+  })
+
+  it("doesn't charge a dancer a second late fee", () => {
+    const late = {
+      ...schedule,
+      late_fee_tiers: [{ starts_at: '2026-10-15T00:00:00Z', fee_cents: 2500, family_max_cents: null }]
+    }
+    const first = paid('7d1a0000-0000-4000-8000-000000000001', {
+      entries: [
+        {
+          dancer_id: 'd1',
+          competition_id: 'c1',
+          base_fee_cents: 1500,
+          late_fee_cents: 2500,
+          counts_toward_family_cap: true
+        }
+      ]
+    })
+    const { snapshot } = priceOrder(
+      input({ feeSchedule: late, entries: [{ dancerId: 'd1', competitionId: 'c2' }], paidOrders: [first] })
+    )
+    expect(snapshot.entries[0].late_fee_cents).toBe(0)
+    expect(snapshot.pricing.prior?.late_fee_dancer_ids).toEqual(['d1'])
+  })
+
+  it('sorts orders by id, and entries by dancer then competition, with plain comparison', () => {
+    const entry = (dancer_id: string, competition_id: string) => ({
+      dancer_id,
+      competition_id,
+      base_fee_cents: 1500,
+      late_fee_cents: 0,
+      counts_toward_family_cap: true
+    })
+    const record = countedOrdersRecord([
+      paid('b0000000-0000-4000-8000-000000000000', { entries: [entry('d2', 'c1'), entry('d1', 'c2'), entry('d1', 'c1')] }),
+      paid('A0000000-0000-4000-8000-000000000000', { confirmation_number: null })
+    ])
+    expect(record?.orders.map((o) => o.id)).toEqual([
+      'a0000000-0000-4000-8000-000000000000',
+      'b0000000-0000-4000-8000-000000000000'
+    ])
+    expect(record?.orders[0].confirmation_number).toBeNull()
+    expect(record?.orders[1].entries.map((e) => `${e.dancer_id}:${e.competition_id}`)).toEqual([
+      'd1:c1',
+      'd1:c2',
+      'd2:c1'
+    ])
+    expect(countedOrdersRecord([])).toBeNull()
+  })
+})
+
+describe('paidOrdersFrom', () => {
+  const row = (purchase_snapshot: PaidOrderRow['purchase_snapshot']): PaidOrderRow => ({
+    id: 'o1',
+    confirmation_number: 'RF-2026-AAAAA',
+    event_fee_cents: 1000,
+    purchase_snapshot,
+    registration_entries: [
+      { dancer_id: 'd1', feis_competition_id: 'c1', base_fee_cents: 1500, late_fee_cents: 0 }
+    ]
+  })
+
+  it("takes each entry's family-max flag from its own order's snapshot", () => {
+    // Excluded when it was bought; the organiser has since counted it toward the max
+    const frozen = { competitions: [{ ...comp('c1', '210R', 'reel'), exclude_from_family_cap: true }] }
+    const [order] = paidOrdersFrom([row(frozen)], [comp('c1', '210R', 'reel')])
+    expect(order.entries[0].counts_toward_family_cap).toBe(false)
+  })
+
+  it("uses the competition's current flag for an order made before snapshots", () => {
+    const now = [{ ...comp('c1', '210R', 'reel'), exclude_from_family_cap: true }]
+    const [order] = paidOrdersFrom([row(null)], now)
+    expect(order).toEqual({
+      id: 'o1',
+      confirmation_number: 'RF-2026-AAAAA',
+      event_fee_cents: 1000,
+      entries: [
+        {
+          dancer_id: 'd1',
+          competition_id: 'c1',
+          base_fee_cents: 1500,
+          late_fee_cents: 0,
+          counts_toward_family_cap: false
+        }
+      ]
+    })
+  })
+})
+
+```
+
+In `tests/engine/order-validation.test.ts`:
+
+(a) Replace:
+```ts
+  ageCutoffDateFor,
+  toDancerProfile,
+```
+with:
+```ts
+  ageCutoffDateFor,
+  canStartOrder,
+  toDancerProfile,
+```
+
+(b) Replace:
+```ts
+      danceLevels: { reel: 'NOV', treble_jig: 'PW' }
+    })
+  })
+})
+
+```
+with:
+```ts
+      danceLevels: { reel: 'NOV', treble_jig: 'PW' }
+    })
+  })
+})
+
+// Spec §4: an add-on only adds. A dance already in one of the family's paid orders is refused
+describe('validateOrderRequest with paid orders', () => {
+  const paidOrders = [
+    {
+      id: 'o1',
+      confirmation_number: 'RF-2026-AAAAA',
+      event_fee_cents: 1000,
+      entries: [
+        {
+          dancer_id: 'd1',
+          competition_id: 'c1',
+          base_fee_cents: 1500,
+          late_fee_cents: 0,
+          counts_toward_family_cap: true
+        }
+      ]
+    }
+  ]
+
+  it('refuses a dance already entered and paid for, naming the dancer and the dance', () => {
+    expect(validateOrderRequest(request({ paidOrders }))).toEqual({
+      ok: false,
+      error: 'Aoife is already entered in Novice Reel U10. Reload this page to see your entries.'
+    })
+  })
+
+  it('accepts another dance for the same dancer', () => {
+    const slipJig = competition({
+      id: 'c2',
+      dance_key: 'reel',
+      display_name: 'Novice Reel U10 (second)',
+      display_code: '210R2'
+    })
+    const result = validateOrderRequest(
+      request({
+        paidOrders,
+        competitions: [competition(), slipJig],
+        entries: [{ dancerId: 'd1', competitionId: 'c2' }]
+      })
+    )
+    expect(result.ok).toBe(true)
+  })
+})
+
+describe('canStartOrder', () => {
+  const listing = {
+    status: 'open' as const,
+    reg_opens_at: '2026-10-01T00:00:00Z',
+    reg_closes_at: '2026-12-01T00:00:00Z',
+    late_reg_closes_at: null
+  }
+  const start = (overrides: Partial<Parameters<typeof canStartOrder>[0]> = {}) =>
+    canStartOrder({ listing, now: NOW, hasUnpaidOrder: false, hasOpenMessageA: false, ...overrides })
+
+  it('lets a new order start while registration is open', () => {
+    expect(start()).toBe(true)
+  })
+
+  it("is false when the listing isn't open, before it opens and after the close date", () => {
+    expect(start({ listing: { ...listing, status: 'closed' } })).toBe(false)
+    expect(start({ listing: { ...listing, reg_opens_at: '2026-11-02T00:00:00Z' } })).toBe(false)
+    expect(start({ listing: { ...listing, reg_closes_at: '2026-10-31T00:00:00Z' } })).toBe(false)
+    // The late deadline is the close date when there is one
+    expect(
+      start({
+        listing: {
+          ...listing,
+          reg_closes_at: '2026-10-31T00:00:00Z',
+          late_reg_closes_at: '2026-11-15T00:00:00Z'
+        }
+      })
+    ).toBe(true)
+  })
+
+  it('is false while the family holds an unpaid order', () => {
+    expect(start({ hasUnpaidOrder: true })).toBe(false)
+  })
+
+  it('is false while message A is open, for a first order as much as an add-on', () => {
+    expect(start({ hasOpenMessageA: true })).toBe(false)
+  })
+})
+
+```
+
+In `tests/engine/checkout-policy.test.ts`:
+
+(a) Replace:
+```ts
+  checkoutBlockReason,
+  MIN_CHARGE_CENTS
+} from '@/lib/engine/checkout-policy'
+```
+with:
+```ts
+  checkoutBlockReason,
+  MIN_CHARGE_CENTS,
+  tooSmallToCharge
+} from '@/lib/engine/checkout-policy'
+```
+
+(b) Replace:
+```ts
+
+  it('blocks Pay exactly where Submit refuses, with one message for both', () => {
+    for (const totalCents of [0, 49, 50, 51]) {
+```
+with:
+```ts
+
+  it("blocks a card checkout below the minimum, with Submit's message", () => {
+    for (const totalCents of [0, 49, 50, 51]) {
+```
+
+(c) Replace:
+```ts
+    )
+  })
+})
+
+```
+with:
+```ts
+    )
+  })
+})
+
+// Decision 10: Submit refuses 1 to 49 cents. A $0 order is confirmed without Stripe instead
+describe('tooSmallToCharge', () => {
+  it('is true from 1 to 49 cents, and false for 0 and from 50 cents up', () => {
+    expect(tooSmallToCharge(0)).toBe(false)
+    expect(tooSmallToCharge(1)).toBe(true)
+    expect(tooSmallToCharge(49)).toBe(true)
+    expect(tooSmallToCharge(50)).toBe(false)
+  })
+})
+
+```
+
+`PurchaseSnapshot.pricing` gains a required `prior`, so the typed snapshot in the checkout-config tests needs it too.
+
+In `tests/engine/checkout-config.test.ts`, replace:
+```ts
+      base_fee_cents: fee, late_fee_cents: 0, day_of_surcharge_cents: 0 })),
+    pricing: { fee_schedule: {} as never, breakdown: {} as never, priced_at: '2026-11-01T12:00:00.000Z' },
+    rules: { age_cutoff_date: '2027-01-01', levels: [], consent_version: 'x', platform_terms_version: 'y',
+```
+with:
+```ts
+      base_fee_cents: fee, late_fee_cents: 0, day_of_surcharge_cents: 0 })),
+    pricing: { fee_schedule: {} as never, breakdown: {} as never, priced_at: '2026-11-01T12:00:00.000Z', prior: null },
+    rules: { age_cutoff_date: '2027-01-01', levels: [], consent_version: 'x', platform_terms_version: 'y',
+```
+
+- [ ] **Step 2: Run the tests to see them fail**
+
+Run: `npx vitest run tests/engine`
+Expected: FAIL. `countedOrdersRecord`, `paidOrdersFrom`, `canStartOrder` and `tooSmallToCharge` aren't exported yet, `summarisePaidOrders` still takes three arguments, and `PRICING_VERSION` is still `pricing-2026-10-16`.
+
+- [ ] **Step 3: Add the paid-order types**
+
+In `src/lib/types/feis-listing.ts`, replace:
+```ts
+  late_fees_paid_cents: number
+}
+```
+with:
+```ts
+  late_fees_paid_cents: number
+}
+
+/** An entry of one of the family's paid orders, as a later order counts it */
+export interface PaidOrderEntry {
+  dancer_id: string
+  competition_id: string
+  base_fee_cents: number
+  late_fee_cents: number
+  /** Whether it counted toward the family max when it was bought */
+  counts_toward_family_cap: boolean
+}
+
+/** One of the family's paid orders for a feis, as a later order counts it (spec §4) */
+export interface PaidOrder {
+  id: string
+  confirmation_number: string | null
+  event_fee_cents: number
+  entries: PaidOrderEntry[]
+}
+
+/**
+ * What an order's price counted: the family's paid orders for the feis and what they covered. Frozen
+ * as purchase_snapshot.pricing.prior, which create_order rebuilds and compares exactly (spec §4).
+ */
+export interface CountedOrders extends PriorPaidFees {
+  orders: PaidOrder[]
+}
+```
+
+- [ ] **Step 4: Count earlier orders entry by entry**
+
+In `src/lib/engine/fee-calculator.ts`:
+
+(a) Replace:
+```ts
+  LateFeeTier,
+  PriorPaidFees
+```
+with:
+```ts
+  LateFeeTier,
+  PaidOrder,
+  PriorPaidFees
+```
+
+(b) Replace:
+```ts
+
+/**
+ * What a family has already paid for one feis, from the entries of its paid orders.
+ * `excludedFromCap` holds the competitions that don't count toward the family max.
+ */
+export function summarisePaidOrders(
+  orders: { event_fee_cents: number }[],
+  entries: {
+    dancer_id: string
+    feis_competition_id: string
+    base_fee_cents: number
+    late_fee_cents: number
+  }[],
+  excludedFromCap: Set<string>
+): PriorPaidFees | null {
+  if (orders.length === 0) return null
+  return {
+    event_fee_paid: orders.some((o) => o.event_fee_cents > 0),
+    cappable_paid_cents: entries
+      .filter((e) => !excludedFromCap.has(e.feis_competition_id))
+      .reduce((sum, e) => sum + e.base_fee_cents, 0),
+    late_fee_dancer_ids: [
+      ...new Set(entries.filter((e) => e.late_fee_cents > 0).map((e) => e.dancer_id))
+    ],
+    late_fees_paid_cents: entries.reduce((sum, e) => sum + e.late_fee_cents, 0)
+  }
+```
+with:
+```ts
+
+/** Plain code-unit order, the order Postgres gives uuids. Never localeCompare (spec §4). */
+export function compareIds(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0
+}
+
+/**
+ * What a family has already paid for one feis, from its paid orders. Each entry says itself whether
+ * it counted toward the family max when it was bought (spec §4), so a competition's flag changing
+ * later doesn't change what an earlier order covered.
+ */
+export function summarisePaidOrders(orders: PaidOrder[]): PriorPaidFees | null {
+  if (orders.length === 0) return null
+  const entries = orders.flatMap((order) => order.entries)
+  return {
+    event_fee_paid: orders.some((order) => order.event_fee_cents > 0),
+    cappable_paid_cents: entries
+      .filter((entry) => entry.counts_toward_family_cap)
+      .reduce((sum, entry) => sum + entry.base_fee_cents, 0),
+    late_fee_dancer_ids: [
+      ...new Set(entries.filter((entry) => entry.late_fee_cents > 0).map((entry) => entry.dancer_id))
+    ].sort(compareIds),
+    late_fees_paid_cents: entries.reduce((sum, entry) => sum + entry.late_fee_cents, 0)
+  }
+```
+
+- [ ] **Step 5: Price on top of the paid orders, and freeze what was counted**
+
+In `src/lib/engine/purchase-snapshot.ts`:
+
+(a) Replace:
+```ts
+import { calculateAgeOnDate } from '@/lib/engine/eligibility'
+import { calculateFees } from '@/lib/engine/fee-calculator'
+import {
+```
+with:
+```ts
+import { calculateAgeOnDate } from '@/lib/engine/eligibility'
+import { calculateFees, compareIds, summarisePaidOrders } from '@/lib/engine/fee-calculator'
+import {
+```
+
+(b) Replace:
+```ts
+  ChampionshipStatus,
+  FeeBreakdown,
+  FeeCategoryType,
+  FeeEntry,
+  FeeSchedule,
+  FeisCompetition,
+  Level
+} from '@/lib/types/feis-listing'
+
+export const PRICING_VERSION = 'pricing-2026-10-16'
+export const ELIGIBILITY_VERSION = 'eligibility-2026-10-16'
+```
+with:
+```ts
+  ChampionshipStatus,
+  CountedOrders,
+  FeeBreakdown,
+  FeeCategoryType,
+  FeeEntry,
+  FeeSchedule,
+  FeisCompetition,
+  Level,
+  PaidOrder
+} from '@/lib/types/feis-listing'
+
+/** pricing-2026-10-17: prices count the family's earlier paid orders for the feis (spec §4) */
+export const PRICING_VERSION = 'pricing-2026-10-17'
+export const ELIGIBILITY_VERSION = 'eligibility-2026-10-16'
+```
+
+(c) Replace:
+```ts
+  entries: SnapshotEntry[]
+  pricing: { fee_schedule: FeeSchedule; breakdown: FeeBreakdown; priced_at: string }
+  rules: {
+```
+with:
+```ts
+  entries: SnapshotEntry[]
+  pricing: {
+    fee_schedule: FeeSchedule
+    breakdown: FeeBreakdown
+    priced_at: string
+    /** The paid orders this price counted, and what they covered; null on a family's first order */
+    prior: CountedOrders | null
+  }
+  rules: {
+```
+
+(d) Replace:
+```ts
+  feeSchedule: FeeSchedule
+}
+```
+with:
+```ts
+  feeSchedule: FeeSchedule
+  /** The family's paid orders for this feis, from paidOrdersFrom(); none for a first order */
+  paidOrders?: PaidOrder[]
+}
+```
+
+(e) Replace:
+```ts
+  purchase_snapshot: PurchaseSnapshot
+}
+```
+with:
+```ts
+  purchase_snapshot: PurchaseSnapshot
+}
+
+/** A paid order as Submit and the entry page read it: the row, its entries and its purchase snapshot */
+export interface PaidOrderRow {
+  id: string
+  confirmation_number: string | null
+  event_fee_cents: number
+  purchase_snapshot: Pick<PurchaseSnapshot, 'competitions'> | null
+  registration_entries: {
+    dancer_id: string
+    feis_competition_id: string
+    base_fee_cents: number
+    late_fee_cents: number
+  }[]
+}
+
+/**
+ * The family's paid orders as later orders count them. Whether an entry counted toward the family max
+ * comes from its own order's purchase snapshot; an older order without one (made before snapshots)
+ * uses the competition's current setting. create_order reads the rows by the same rule.
+ */
+export function paidOrdersFrom(
+  rows: PaidOrderRow[],
+  competitions: Pick<FeisCompetition, 'id' | 'exclude_from_family_cap'>[]
+): PaidOrder[] {
+  const current = new Map(competitions.map((c) => [c.id, c.exclude_from_family_cap]))
+  return rows.map((row) => {
+    const frozen = new Map(
+      (row.purchase_snapshot?.competitions ?? []).map((c) => [c.id, c.exclude_from_family_cap])
+    )
+    return {
+      id: row.id,
+      confirmation_number: row.confirmation_number,
+      event_fee_cents: row.event_fee_cents,
+      entries: row.registration_entries.map((entry) => ({
+        dancer_id: entry.dancer_id,
+        competition_id: entry.feis_competition_id,
+        base_fee_cents: entry.base_fee_cents,
+        late_fee_cents: entry.late_fee_cents,
+        counts_toward_family_cap: !(
+          frozen.get(entry.feis_competition_id) ??
+          current.get(entry.feis_competition_id) ??
+          false
+        )
+      }))
+    }
+  })
+}
+
+/**
+ * The counted-orders record exactly as create_order rebuilds it in SQL (spec §4): orders sorted by
+ * id, each order's entries by dancer then competition, ids in lower case, every key present, and
+ * null for a family with no paid orders. The two are compared as jsonb, so any difference refuses.
+ */
+export function countedOrdersRecord(orders: PaidOrder[]): CountedOrders | null {
+  if (orders.length === 0) return null
+  const sorted: PaidOrder[] = orders
+    .map((order) => ({
+      id: order.id.toLowerCase(),
+      confirmation_number: order.confirmation_number ?? null,
+      event_fee_cents: order.event_fee_cents,
+      entries: order.entries
+        .map((entry) => ({
+          dancer_id: entry.dancer_id.toLowerCase(),
+          competition_id: entry.competition_id.toLowerCase(),
+          base_fee_cents: entry.base_fee_cents,
+          late_fee_cents: entry.late_fee_cents,
+          counts_toward_family_cap: entry.counts_toward_family_cap
+        }))
+        .sort(
+          (a, b) =>
+            compareIds(a.dancer_id, b.dancer_id) || compareIds(a.competition_id, b.competition_id)
+        )
+    }))
+    .sort((a, b) => compareIds(a.id, b.id))
+  return { orders: sorted, ...summarisePaidOrders(sorted)! }
+}
+```
+
+(f) Replace:
+```ts
+  const feeEntries = feeEntriesFor(input.entries, competitions)
+  const breakdown = calculateFees(input.feeSchedule, feeEntries, input.now)
+
+```
+with:
+```ts
+  const feeEntries = feeEntriesFor(input.entries, competitions)
+  // An add-on is priced on top of what the family's paid orders already covered
+  const prior = countedOrdersRecord(input.paidOrders ?? [])
+  const breakdown = calculateFees(input.feeSchedule, feeEntries, input.now, prior)
+
+```
+
+(g) Replace:
+```ts
+    })),
+    pricing: { fee_schedule: input.feeSchedule, breakdown, priced_at: input.now.toISOString() },
+    rules: {
+```
+with:
+```ts
+    })),
+    pricing: {
+      fee_schedule: input.feeSchedule,
+      breakdown,
+      priced_at: input.now.toISOString(),
+      prior
+    },
+    rules: {
+```
+
+- [ ] **Step 6: Refuse a dance already paid for, and add `canStartOrder`**
+
+In `src/lib/engine/order-validation.ts`:
+
+(a) Replace:
+```ts
+  FeisListing,
+  Level
+} from '@/lib/types/feis-listing'
+```
+with:
+```ts
+  FeisListing,
+  Level,
+  PaidOrder
+} from '@/lib/types/feis-listing'
+```
+
+(b) Replace:
+```ts
+  entries: RequestedEntry[]
+}
+```
+with:
+```ts
+  entries: RequestedEntry[]
+  /** The family's paid orders for this feis: their dances can't be entered again */
+  paidOrders?: PaidOrder[]
+}
+```
+
+(c) Replace:
+```ts
+  }
+}
+```
+with:
+```ts
+  }
+}
+
+/** Whether a new order can start: a family's first order or an add-on (spec §14, Decision 13) */
+export interface OrderStartInput {
+  listing: Pick<FeisListing, 'status' | 'reg_opens_at' | 'reg_closes_at' | 'late_reg_closes_at'>
+  now: Date
+  /** The family holds a draft or pending_payment order for this feis */
+  hasUnpaidOrder: boolean
+  /** The family has an open message-A case for this feis: message A says not to pay again */
+  hasOpenMessageA: boolean
+}
+
+/**
+ * The one gate for starting a new order, used for choosing dances and Pay on the entry page and for
+ * Add dances on My entries and the paid receipt. False while registration isn't open, before it
+ * opens, after it closes, while the family holds an unpaid order, or while message A is open.
+ */
+export function canStartOrder(input: OrderStartInput): boolean {
+  const { listing, now } = input
+  if (listing.status !== 'open') return false
+  if (listing.reg_opens_at && now < new Date(listing.reg_opens_at)) return false
+  const close = registrationCloseTime(listing)
+  if (close && now > close) return false
+  return !input.hasUnpaidOrder && !input.hasOpenMessageA
+}
+```
+
+(d) Replace:
+```ts
+
+  const ageCutoffDate = ageCutoffDateFor(listing, now)
+```
+with:
+```ts
+
+  // An add-on only adds: a dance already in one of the family's paid orders is never bought twice
+  const entered = new Set(
+    (request.paidOrders ?? []).flatMap((order) =>
+      order.entries.map((entry) => `${entry.dancer_id}:${entry.competition_id}`)
+    )
+  )
+  for (const entry of request.entries) {
+    if (entered.has(`${entry.dancerId}:${entry.competitionId}`)) {
+      const dancer = dancers.get(entry.dancerId)!
+      const competition = competitions.get(entry.competitionId)!
+      return fail(
+        `${dancer.first_name} is already entered in ${competition.display_name}. Reload this page to see your entries.`
+      )
+    }
+  }
+
+  const ageCutoffDate = ageCutoffDateFor(listing, now)
+```
+
+- [ ] **Step 7: Add `tooSmallToCharge`**
+
+In `src/lib/engine/checkout-policy.ts`, replace:
+```ts
+/**
+ * Whether an order's total is too small to pay by card. Submit refuses to create such an order;
+ * claim_checkout's amount_too_small block is the database's backstop.
+ */
+export function belowCardMinimum(totalCents: number): boolean {
+  return totalCents < MIN_CHARGE_CENTS
+}
+```
+with:
+```ts
+/**
+ * Whether an order's total is too small to pay by card. claim_checkout blocks such an order
+ * (amount_too_small); a $0 order never claims a checkout, because Pay confirms it without Stripe.
+ */
+export function belowCardMinimum(totalCents: number): boolean {
+  return totalCents < MIN_CHARGE_CENTS
+}
+
+/**
+ * Whether Submit refuses a total (Decision 10): 1 to 49 cents is more than nothing but less than a card
+ * can be charged, so no order is made that could never be paid. create_order refuses it too. A total
+ * of 0 is allowed: Pay confirms it without Stripe (spec §6).
+ */
+export function tooSmallToCharge(totalCents: number): boolean {
+  return totalCents > 0 && belowCardMinimum(totalCents)
+}
+```
+
+- [ ] **Step 8: Run the tests**
+
+Run: `npx vitest run tests/engine`
+Expected: PASS (11 files, 187 tests).
+
+Run: `npx tsc --noEmit && npm test && npm run test:db`
+Expected: all pass: 24 files and 304 tests, then 9 files and 211 tests. The database still ignores `pricing.prior` until Task 19, and every fixture order is a first order, priced with `prior: null`.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add src/lib/types/feis-listing.ts src/lib/engine/fee-calculator.ts src/lib/engine/purchase-snapshot.ts \
+  src/lib/engine/order-validation.ts src/lib/engine/checkout-policy.ts tests/engine/fee-calculator.test.ts \
+  tests/engine/purchase-snapshot.test.ts tests/engine/order-validation.test.ts tests/engine/checkout-policy.test.ts \
+  tests/engine/checkout-config.test.ts
+git commit -q -m "feat: prices count the family's paid orders and freeze what they counted"
+```
+
+---
+
+### Task 19: Add-on and $0 orders in the order functions (migrations 012, 013, 015, 017 and 020)
+
+Spec §2, §3, §4, §6 step 3a, §9, §11 and Testing. 012–017 aren't live yet, so they're edited in place. They never create or drop 019's index, and the new last migration, 020, refuses to apply unless the index is exactly 019's.
+
+**Files:**
+- Modify: `supabase/migrations/012_order_integrity.sql`, `supabase/migrations/013_create_order.sql`, `supabase/migrations/015_payment_confirmation.sql`, `supabase/migrations/017_payments_admin.sql`
+- Create: `supabase/migrations/020_assert_unpaid_index.sql`
+- Modify: `src/app/_payments/order-store.ts`, `src/lib/engine/checkout-policy.ts`, `src/app/feiseanna/[id]/register/actions.ts`
+- Test: `tests/db/helpers/fixtures.ts`, `tests/db/add-on-orders.test.ts` (new), `tests/db/create-order.test.ts`, `tests/db/payment-confirmation.test.ts`, `tests/db/payments-admin.test.ts`, `tests/db/order-integrity.test.ts`, `tests/db/checkout-claims.test.ts`
+
+**Interfaces:**
+- Consumes: 019's index (Task 17); `paidOrdersFrom`, `priceOrder({ paidOrders })` and the counted-orders record (Task 18).
+- Produces:
+  - **012:** a move into `paid` needs the marker `pre_registration.fulfilling_order` to name the order, checked after the status table and the evidence. The evidence is the claim and session for an order above 0, or, for a $0 order, a move from `draft` with no claim, session, payment intent or charge.
+  - **013:** `_counted_orders(p_household_id uuid, p_feis_listing_id uuid) → jsonb` (internal: no API role may run it). `create_order` refuses `amount_too_small` (1 to 49 cents), `unpaid_order_exists` (renamed from `active_order_exists`), `paid_orders_changed` and `already_entered`, and checks the once-per-family rules against the counted orders.
+  - **015:**
+    - `_uncounted_paid_orders(p_registration_id uuid) → uuid[]` (internal)
+    - `_fulfil_order` sets the marker before its paid update
+    - `confirm_order_payment` applies rules (a) and (b) with `details.why`, and the relabel branch is gone
+    - `confirm_free_order(p_registration_id uuid, p_household_id uuid) → jsonb`, for the service role
+  - **017:** `confirm_late_payment` follows Decision 12, and its audit row names the counted orders.
+  - **020:** the index check.
+  - **`order-store.ts`:** the new `CreateOrderResult` reasons, `FreeOrderResult` and `confirmFreeOrder(registrationId, householdId)`.
+  - **`checkout-policy.ts`:** `PAID_ORDERS_CHANGED_MESSAGE`, which `REFUSAL_MESSAGES` and Pay's $0 path (Task 20) share.
+  - **Fixtures:**
+    - `insertOrderDirect(…, { totalCents })`, which also sets the paid marker first now
+    - `insertLegacyPaidOrder`, for a paid order as main's live code made them
+    - `paidOrdersOf(pool, householdId, listing)`, the paid orders as Submit reads them
+    - `buildPayload({ paidOrders })`, `createAddOnOrder(pool, base, entries)` and `payOrder(pool, order)`
+
+**Notes:**
+- **The paid marker** reuses the snapshot marker. `_fulfil_order` names the order before its one paid update and clears it after the snapshot, so `confirm_order_payment`, `confirm_free_order` and `payments_admin.confirm_late_payment` all mark orders paid through it. The trigger checks the marker last, so a move the status table or the evidence refuses still gets that message, and the evidence tests from Task 3 pass unchanged.
+- **Rule (a) and rule (b)** (spec §9 step 4). Before them, `confirm_order_payment` expires the family's other lapsed unpaid orders for the feis, as `create_order` does. A conflict's `details.why` is an array with one item per failed rule, in this order: `{"rule": "unpaid_order_exists", "orders": [...]}` and `{"rule": "paid_orders_changed", "orders": [...]}`, each list sorted. (a) applies only to an expired order; (b) is checked for every status.
+- **`confirm_free_order`** takes the household-and-feis lock, then the order row, then the listing `FOR UPDATE`. `FOR SHARE`, as in `claim_checkout`, would deadlock two $0 confirmations at one feis, because `_fulfil_order` then locks the listing `FOR UPDATE` for numbering. A test runs two families at once to prove it.
+- **The once-per-family checks in `create_order`** read the frozen schedule in `pricing.fee_schedule` and the counted record. A payload without `pricing.fee_schedule.event_fee_cents` is refused: Task 16's live script now sends one.
+- **020's expected text** is what `pg_get_indexdef` prints for 019's index, schema-qualified whatever the `search_path`.
+- **`active_order_exists` is renamed `unpaid_order_exists`** in the SQL, `order-store.ts` and `REFUSAL_MESSAGES`, with the spec's four new messages. Submit still refuses every total under 50 cents until Task 20 switches it to `tooSmallToCharge`.
+- **Fixtures the marker changes:** `insertOrderDirect` (the marker before its paid update), `FULFIL_SQL` in `order-integrity.test.ts` (a `fulfil` helper sets the marker first), and the direct paid update in `payment-confirmation.test.ts`. The relabel assertions (`not.toHaveProperty('caught')`) become assertions on `details.why`. `checkout-claims.test.ts`'s 20-cent order, which `create_order` now refuses, becomes a $0 order that `claim_checkout` still won't claim.
+
+- [ ] **Step 1: Extend the fixtures**
+
+In `tests/db/helpers/fixtures.ts`:
+
+(a) Replace:
+```ts
+import type { Pool } from 'pg'
+import type { Dancer, FeeSchedule, FeisCompetition, FeisListing, Level } from '@/lib/types/feis-listing'
+import { createOrderStore } from '@/app/_payments/order-store'
+import { buildCheckoutConfig, type CheckoutConfig } from '@/lib/engine/checkout-config'
+import { ageCutoffDateFor, type RequestedEntry } from '@/lib/engine/order-validation'
+import {
+  buildCreateOrderPayload,
+  priceOrder,
+  type CreateOrderPayload
+} from '@/lib/engine/purchase-snapshot'
+```
+with:
+```ts
+import type { Pool } from 'pg'
+import type {
+  Dancer,
+  FeeSchedule,
+  FeisCompetition,
+  FeisListing,
+  Level,
+  PaidOrder
+} from '@/lib/types/feis-listing'
+import { createOrderStore } from '@/app/_payments/order-store'
+import { buildCheckoutConfig, type CheckoutConfig } from '@/lib/engine/checkout-config'
+import { ageCutoffDateFor, type RequestedEntry } from '@/lib/engine/order-validation'
+import {
+  buildCreateOrderPayload,
+  paidOrdersFrom,
+  priceOrder,
+  type CreateOrderPayload,
+  type PaidOrderRow
+} from '@/lib/engine/purchase-snapshot'
+```
+
+(b) Replace:
+```ts
+ * attach_checkout_session and _fulfil_order will (Tasks 8 and 9). The real app never does this.
+ */
+export async function insertOrderDirect(
+  pool: Pool,
+  householdId: string,
+  listingId: string,
+  entries: { dancerId: string; competitionId: string }[],
+  opts: { status?: 'draft' | 'paid' } = {}
+): Promise<string> {
+  const client = await pool.connect()
+```
+with:
+```ts
+ * attach_checkout_session and _fulfil_order will (Tasks 8 and 9). The real app never does this.
+ * `totalCents: 0` makes a $0 draft, with no event or application fee.
+ */
+export async function insertOrderDirect(
+  pool: Pool,
+  householdId: string,
+  listingId: string,
+  entries: { dancerId: string; competitionId: string }[],
+  opts: { status?: 'draft' | 'paid'; totalCents?: number } = {}
+): Promise<string> {
+  const total = opts.totalCents ?? 4000
+  const client = await pool.connect()
+```
+
+(c) Replace:
+```ts
+         event_fee_cents, hold_expires_at, purchase_snapshot)
+       VALUES ($1, $2, $3, 'draft', 4000, 200, 1000, now() + interval '30 minutes', '{"version": 1}')`,
+      [id, listingId, householdId]
+    )
+```
+with:
+```ts
+         event_fee_cents, hold_expires_at, purchase_snapshot)
+       VALUES ($1, $2, $3, 'draft', $4, $5, $6, now() + interval '30 minutes', '{"version": 1}')`,
+      [id, listingId, householdId, total, total === 0 ? 0 : 200, total === 0 ? 0 : 1000]
+    )
+```
+
+(d) Replace:
+```ts
+      )
+      await client.query(
+        `UPDATE registrations SET status = 'paid', paid_at = now(), confirmation_number = 'RF-TEST-' || substr($1::text, 1, 5),
+           stripe_payment_intent_id = 'pi_' || replace($1::text, '-', ''), hold_expires_at = NULL
+         WHERE id = $1`,
+        [id]
+      )
+      await client.query(`SELECT set_config('pre_registration.fulfilling_order', $1, true)`, [id])
+      await client.query(
+```
+with:
+```ts
+      )
+      // _fulfil_order's order of steps: the paid marker first (012 refuses a move into paid without it)
+      await client.query(`SELECT set_config('pre_registration.fulfilling_order', $1, true)`, [id])
+      await client.query(
+        `UPDATE registrations SET status = 'paid', paid_at = now(), confirmation_number = 'RF-TEST-' || substr($1::text, 1, 5),
+           stripe_payment_intent_id = 'pi_' || replace($1::text, '-', ''), hold_expires_at = NULL
+         WHERE id = $1`,
+        [id]
+      )
+      await client.query(
+```
+
+(e) Replace:
+```ts
+
+export function buildPayload(input: {
+  listing: ListingFixture
+  dancers: FixtureDancer[]
+  entries: RequestedEntry[]
+  now?: Date
+}): CreateOrderPayload {
+```
+with:
+```ts
+
+/**
+ * Test-only: a paid order as main's live code made them before payment hardening: no purchase snapshot, no
+ * snapshot row, and for a $0 one no claim or session. Written as the superuser with the order triggers off for
+ * this one transaction (session_replication_role = replica), since no function makes such an order any more.
+ */
+export async function insertLegacyPaidOrder(
+  pool: Pool,
+  householdId: string,
+  listingId: string,
+  entries: { dancerId: string; competitionId: string; baseFeeCents?: number; lateFeeCents?: number }[],
+  opts: { eventFeeCents?: number } = {}
+): Promise<string> {
+  const id = randomUUID()
+  const eventFee = opts.eventFeeCents ?? 1000
+  const total = eventFee + entries.reduce((sum, e) => sum + (e.baseFeeCents ?? 1500) + (e.lateFeeCents ?? 0), 0)
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    await client.query('SET LOCAL session_replication_role = replica')
+    await client.query(
+      `INSERT INTO registrations (id, feis_listing_id, household_id, status, total_cents, application_fee_cents,
+         event_fee_cents, confirmation_number, paid_at)
+       VALUES ($1, $2, $3, 'paid', $4, 0, $5, $6, now())`,
+      [id, listingId, householdId, total, eventFee, `FT-2026-${id.slice(0, 4).toUpperCase()}`]
+    )
+    for (const entry of entries) {
+      await client.query(
+        `INSERT INTO registration_entries (registration_id, dancer_id, feis_competition_id, fee_category,
+           base_fee_cents, late_fee_cents)
+         VALUES ($1, $2, $3, 'solo', $4, $5)`,
+        [id, entry.dancerId, entry.competitionId, entry.baseFeeCents ?? 1500, entry.lateFeeCents ?? 0]
+      )
+    }
+    await client.query('COMMIT')
+    return id
+  } catch (err) {
+    await client.query('ROLLBACK')
+    throw err
+  } finally {
+    client.release()
+  }
+}
+
+/** The family's paid orders for a feis as Submit reads them, counted by the engine's paidOrdersFrom */
+export async function paidOrdersOf(
+  pool: Pool,
+  householdId: string,
+  listing: ListingFixture
+): Promise<PaidOrder[]> {
+  const { rows } = await pool.query(
+    `SELECT r.id, r.confirmation_number, r.event_fee_cents, r.purchase_snapshot,
+       coalesce((SELECT jsonb_agg(jsonb_build_object('dancer_id', e.dancer_id,
+           'feis_competition_id', e.feis_competition_id, 'base_fee_cents', e.base_fee_cents,
+           'late_fee_cents', e.late_fee_cents))
+         FROM registration_entries e WHERE e.registration_id = r.id), '[]') AS registration_entries
+     FROM registrations r
+     WHERE r.household_id = $1 AND r.feis_listing_id = $2 AND r.status = 'paid'`,
+    [householdId, listing.listing.id]
+  )
+  const { rows: competitions } = await pool.query(
+    'SELECT id, exclude_from_family_cap FROM feis_competitions WHERE feis_listing_id = $1',
+    [listing.listing.id]
+  )
+  return paidOrdersFrom(rows as PaidOrderRow[], competitions)
+}
+
+export function buildPayload(input: {
+  listing: ListingFixture
+  dancers: FixtureDancer[]
+  entries: RequestedEntry[]
+  now?: Date
+  /** The family's paid orders for the feis, for an add-on */
+  paidOrders?: PaidOrder[]
+}): CreateOrderPayload {
+```
+
+(f) Replace:
+```ts
+    entries: input.entries,
+    feeSchedule: input.listing.feeSchedule
+  })
+```
+with:
+```ts
+    entries: input.entries,
+    feeSchedule: input.listing.feeSchedule,
+    paidOrders: input.paidOrders
+  })
+```
+
+(g) Replace:
+```ts
+  registrationId: string
+}
+```
+with:
+```ts
+  registrationId: string
+}
+
+/**
+ * A family's next order for a feis, priced on top of its paid orders as Submit prices it, and made through
+ * create_order. The family and its dancers come from an earlier fixture.
+ */
+export async function createAddOnOrder(
+  pool: Pool,
+  base: { family: Family; listing: ListingFixture; dancers: FixtureDancer[] },
+  entries: RequestedEntry[]
+): Promise<DraftOrderFixture> {
+  const paidOrders = await paidOrdersOf(pool, base.family.householdId, base.listing)
+  const payload = buildPayload({ listing: base.listing, dancers: base.dancers, entries, paidOrders })
+  const result = await createOrderStore(pgRpc(pool)).createOrder(
+    base.family.householdId,
+    base.listing.listing.id,
+    payload
+  )
+  if (result.status !== 'created') throw new Error(`Add-on order was refused: ${result.reason}`)
+  return { ...base, entries, payload, registrationId: result.registration_id }
+}
+```
+
+(h) Replace:
+```ts
+  return { claimId, config, sessionId }
+}
+
+```
+with:
+```ts
+  return { claimId, config, sessionId }
+}
+
+/** Pays an order the way Pay and the webhook do: claim, attach, then confirm_order_payment */
+export async function payOrder(pool: Pool, order: DraftOrderFixture): Promise<string> {
+  const ready = await readyToPay(pool, order)
+  const result = await createOrderStore(pgRpc(pool)).confirmOrderPayment({
+    registrationId: order.registrationId,
+    claimId: ready.claimId,
+    sessionId: ready.sessionId,
+    account: ready.config.account,
+    amountCents: order.payload.total_cents,
+    currency: 'usd',
+    paymentStatus: 'paid',
+    paymentIntentId: `pi_${ready.sessionId}`,
+    chargeId: null,
+    eventId: `evt_${randomUUID()}`,
+    source: 'webhook'
+  })
+  if (result.result !== 'confirmed') throw new Error(`expected a confirmation, got ${result.result}`)
+  return result.confirmation_number!
+}
+
+```
+
+- [ ] **Step 2: Write the failing tests**
+
+Create `tests/db/add-on-orders.test.ts`:
+```ts
+import { randomUUID } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import {
+  createOrderStore,
+  type ConfirmPaymentInput,
+  type OrderStore
+} from '@/app/_payments/order-store'
+import type { PaidOrder } from '@/lib/types/feis-listing'
+import { createTestDatabase, refused, type TestDatabase } from './helpers/db'
+import {
+  buildPayload,
+  createAddOnOrder,
+  createDancer,
+  createDraftOrder,
+  createFamily,
+  createListing,
+  insertLegacyPaidOrder,
+  paidOrdersOf,
+  payOrder,
+  readyToPay,
+  type DraftOrderFixture,
+  type ListingFixture
+} from './helpers/fixtures'
+import { pgRpc } from './helpers/pg-rpc'
+
+let db: TestDatabase
+let store: OrderStore
+
+beforeAll(async () => {
+  db = await createTestDatabase()
+  store = createOrderStore(pgRpc(db.pool))
+})
+
+afterAll(async () => {
+  await db?.drop()
+})
+
+/** 019's index, as pg_get_indexdef prints it */
+const UNPAID_INDEX =
+  'CREATE UNIQUE INDEX idx_registrations_active_unique ON pre_registration.registrations USING btree ' +
+  "(feis_listing_id, household_id) WHERE (status = ANY (ARRAY['draft'::text, 'pending_payment'::text]))"
+
+type Ready = Awaited<ReturnType<typeof readyToPay>>
+
+function payment(order: DraftOrderFixture, ready: Ready): ConfirmPaymentInput {
+  return {
+    registrationId: order.registrationId,
+    claimId: ready.claimId,
+    sessionId: ready.sessionId,
+    account: ready.config.account,
+    amountCents: order.payload.total_cents,
+    currency: 'usd',
+    paymentStatus: 'paid',
+    paymentIntentId: `pi_${ready.sessionId}`,
+    chargeId: null,
+    eventId: `evt_${randomUUID()}`,
+    source: 'webhook'
+  }
+}
+
+/** Takes an order to checkout, then lets its checkout expire, so a payment for it arrives late */
+async function lateOrder(order: DraftOrderFixture): Promise<Ready> {
+  const ready = await readyToPay(db.pool, order)
+  await store.expireCheckout({
+    registrationId: order.registrationId,
+    claimId: ready.claimId,
+    sessionId: ready.sessionId,
+    account: ready.config.account
+  })
+  return ready
+}
+
+async function orderRow(id: string) {
+  const { rows } = await db.pool.query('SELECT * FROM registrations WHERE id = $1', [id])
+  return rows[0]
+}
+
+async function ordersOf(householdId: string): Promise<number> {
+  const { rows } = await db.pool.query(
+    'SELECT count(*)::int AS n FROM registrations WHERE household_id = $1',
+    [householdId]
+  )
+  return rows[0].n
+}
+
+async function counts(registrationId: string) {
+  const { rows } = await db.pool.query(
+    `SELECT
+       (SELECT count(*)::int FROM registration_snapshots WHERE registration_id = $1) AS snapshots,
+       (SELECT count(*)::int FROM notifications WHERE registration_id = $1 AND kind = 'registration_confirmation') AS emails,
+       (SELECT count(*)::int FROM competitor_numbers WHERE registration_id = $1) AS numbers,
+       (SELECT count(*)::int FROM payment_exceptions WHERE registration_id = $1) AS cases`,
+    [registrationId]
+  )
+  return rows[0]
+}
+
+/** The details of the one late_payment_conflict case on an order */
+async function conflictWhy(registrationId: string) {
+  const { rows } = await db.pool.query(
+    `SELECT details FROM payment_exceptions WHERE registration_id = $1 AND reason = 'late_payment_conflict'`,
+    [registrationId]
+  )
+  expect(rows).toHaveLength(1)
+  return rows[0].details.why
+}
+
+/** A paid first order (Aoife: Novice Reel and Slip Jig, $40.00), and a second dancer, Niamh, with no entries yet */
+async function familyWithPaidOrder(listing?: ListingFixture) {
+  const first = await createDraftOrder(db.pool, { listing })
+  await payOrder(db.pool, first)
+  const niamh = await createDancer(db.pool, first.family.householdId, { firstName: 'Niamh' })
+  const base = { family: first.family, listing: first.listing, dancers: [...first.dancers, niamh] }
+  const [aoife] = first.dancers
+  const [reel, slipJig, trebleJig] = first.listing.competitions
+  return { first, base, aoife, niamh, reel, slipJig, trebleJig }
+}
+
+/** A listing whose family max is `cents`, in the database and in the fixture */
+async function cappedListing(cents: number): Promise<ListingFixture> {
+  return createListing(db.pool, { familyCapCents: cents })
+}
+
+/** A feis where every dance and the family fee cost nothing, so every order is $0 */
+async function freeListing(): Promise<ListingFixture> {
+  const created = await createListing(db.pool)
+  await db.pool.query(
+    'UPDATE fee_schedules SET event_fee_cents = 0, solo_fee_cents = 0 WHERE feis_listing_id = $1',
+    [created.listing.id]
+  )
+  return {
+    ...created,
+    feeSchedule: { ...created.feeSchedule, event_fee_cents: 0, solo_fee_cents: 0 }
+  }
+}
+
+/** Marks a competition as outside the family max, in the database and in the fixture */
+async function excludeFromFamilyMax(
+  listing: ListingFixture,
+  competitionId: string
+): Promise<ListingFixture> {
+  await db.pool.query('UPDATE feis_competitions SET exclude_from_family_cap = true WHERE id = $1', [
+    competitionId
+  ])
+  return {
+    ...listing,
+    competitions: listing.competitions.map((c) =>
+      c.id === competitionId ? { ...c, exclude_from_family_cap: true } : c
+    )
+  }
+}
+
+describe('the unpaid-order index (019) and its check (020)', () => {
+  it('covers only draft and pending_payment, and re-applying 012–017 leaves it so', async () => {
+    const client = await db.pool.connect()
+    const indexDef = async () =>
+      (
+        await client.query(
+          `SELECT pg_get_indexdef('pre_registration.idx_registrations_active_unique'::regclass) AS def`
+        )
+      ).rows[0].def
+    try {
+      expect(await indexDef()).toBe(UNPAID_INDEX)
+      await client.query('BEGIN')
+      for (const file of [
+        '012_order_integrity',
+        '013_create_order',
+        '014_checkout_claims',
+        '015_payment_confirmation',
+        '016_notification_delivery',
+        '017_payments_admin'
+      ]) {
+        await client.query(readFileSync(`supabase/migrations/${file}.sql`, 'utf8'))
+      }
+      expect(await indexDef()).toBe(UNPAID_INDEX)
+    } finally {
+      await client.query('ROLLBACK')
+      client.release()
+    }
+  })
+
+  it('020 refuses to apply unless the index is exactly 019’s', async () => {
+    const check = readFileSync('supabase/migrations/020_assert_unpaid_index.sql', 'utf8')
+    const client = await db.pool.connect()
+    try {
+      // 019's index passes
+      await client.query(check)
+      for (const replacement of [
+        // 002's predicate: paid orders would count as active again
+        `CREATE UNIQUE INDEX idx_registrations_active_unique ON registrations (feis_listing_id, household_id)
+           WHERE status NOT IN ('expired', 'cancelled')`,
+        // No index at all
+        null
+      ]) {
+        await client.query('BEGIN')
+        await client.query('DROP INDEX idx_registrations_active_unique')
+        if (replacement) await client.query(replacement)
+        expect(await refused(client.query(check))).toMatch(/must be 019's one-unpaid-order index/)
+        await client.query('ROLLBACK')
+      }
+    } finally {
+      client.release()
+    }
+  })
+})
+
+describe('create_order with paid orders (add-on orders)', () => {
+  it('creates an add-on that counts the paid order, and leaves the paid order as it was', async () => {
+    const { first, base, aoife, trebleJig } = await familyWithPaidOrder()
+    const paidBefore = await orderRow(first.registrationId)
+    const addOn = await createAddOnOrder(db.pool, base, [
+      { dancerId: aoife.id, competitionId: trebleJig.id }
+    ])
+
+    // No second family fee: just the one dance
+    expect(addOn.payload.total_cents).toBe(1500)
+    expect(addOn.payload.event_fee_cents).toBe(0)
+    const row = await orderRow(addOn.registrationId)
+    expect(row).toMatchObject({ status: 'draft', total_cents: 1500, event_fee_cents: 0 })
+    expect(row.purchase_snapshot.pricing.prior).toMatchObject({
+      orders: [
+        {
+          id: first.registrationId,
+          confirmation_number: paidBefore.confirmation_number,
+          event_fee_cents: 1000
+        }
+      ],
+      event_fee_paid: true,
+      cappable_paid_cents: 3000,
+      late_fee_dancer_ids: [],
+      late_fees_paid_cents: 0
+    })
+    expect(row.purchase_snapshot.pricing.prior.orders[0].entries).toHaveLength(2)
+    expect(await orderRow(first.registrationId)).toEqual(paidBefore)
+  })
+
+  it('refuses a dance already in a paid order (already_entered), and creates nothing', async () => {
+    const { base, aoife, reel } = await familyWithPaidOrder()
+    const paidOrders = await paidOrdersOf(db.pool, base.family.householdId, base.listing)
+    const payload = buildPayload({
+      ...base,
+      entries: [{ dancerId: aoife.id, competitionId: reel.id }],
+      paidOrders
+    })
+    expect(
+      await store.createOrder(base.family.householdId, base.listing.listing.id, payload)
+    ).toEqual({ status: 'refused', reason: 'already_entered' })
+    expect(await ordersOf(base.family.householdId)).toBe(1)
+  })
+
+  it('refuses an add-on while the family holds an unpaid order (unpaid_order_exists)', async () => {
+    const { base, aoife, niamh, reel, trebleJig } = await familyWithPaidOrder()
+    const held = await createAddOnOrder(db.pool, base, [
+      { dancerId: aoife.id, competitionId: trebleJig.id }
+    ])
+    const paidOrders = await paidOrdersOf(db.pool, base.family.householdId, base.listing)
+    const payload = buildPayload({
+      ...base,
+      entries: [{ dancerId: niamh.id, competitionId: reel.id }],
+      paidOrders
+    })
+    expect(
+      await store.createOrder(base.family.householdId, base.listing.listing.id, payload)
+    ).toEqual({
+      status: 'refused',
+      reason: 'unpaid_order_exists',
+      registration_id: held.registrationId
+    })
+    expect(await ordersOf(base.family.householdId)).toBe(2)
+  })
+
+  it("refuses a price whose counted orders aren't the family's paid orders now (paid_orders_changed)", async () => {
+    const { base, niamh, reel } = await familyWithPaidOrder()
+    const entries = [{ dancerId: niamh.id, competitionId: reel.id }]
+    const real = await paidOrdersOf(db.pool, base.family.householdId, base.listing)
+    const madeUp: PaidOrder = { ...real[0], id: randomUUID() }
+    const altered: PaidOrder[] = [
+      {
+        ...real[0],
+        entries: real[0].entries.map((e, i) => (i === 0 ? { ...e, base_fee_cents: 1 } : e))
+      }
+    ]
+    for (const [label, paidOrders] of [
+      ['stale: priced as a first order', []],
+      ['made up: an order that was never paid', [...real, madeUp]],
+      ['wrong figures for the paid order', altered]
+    ] as [string, PaidOrder[]][]) {
+      const payload = buildPayload({ ...base, entries, paidOrders })
+      expect(
+        await store.createOrder(base.family.householdId, base.listing.listing.id, payload),
+        label
+      ).toEqual({ status: 'refused', reason: 'paid_orders_changed' })
+    }
+    expect(await ordersOf(base.family.householdId)).toBe(1)
+  })
+
+  it("takes each paid entry's family-max flag from its own order's snapshot, not the competition now", async () => {
+    const listing = await cappedListing(3500)
+    const { base, aoife, slipJig, trebleJig } = await familyWithPaidOrder(listing)
+    // After the family paid, the organiser takes Slip Jig out of the family max
+    const changed = await excludeFromFamilyMax(base.listing, slipJig.id)
+    const entries = [{ dancerId: aoife.id, competitionId: trebleJig.id }]
+
+    // Priced with today's flag: the paid order's Slip Jig no longer counts, which isn't what it covered
+    const wrong = await paidOrdersOf(db.pool, base.family.householdId, base.listing)
+    const todaysFlags = wrong.map((o) => ({
+      ...o,
+      entries: o.entries.map((e) =>
+        e.competition_id === slipJig.id ? { ...e, counts_toward_family_cap: false } : e
+      )
+    }))
+    const refusedPayload = buildPayload({
+      ...base,
+      listing: changed,
+      entries,
+      paidOrders: todaysFlags
+    })
+    expect(
+      await store.createOrder(base.family.householdId, base.listing.listing.id, refusedPayload)
+    ).toEqual({ status: 'refused', reason: 'paid_orders_changed' })
+
+    // Priced with the paid order's own flags: $30.00 of the $35.00 max is used, so $5.00 is left
+    const addOn = await createAddOnOrder(db.pool, { ...base, listing: changed }, entries)
+    expect(addOn.payload.purchase_snapshot.pricing.prior?.cappable_paid_cents).toBe(3000)
+    expect(addOn.payload.total_cents).toBe(500)
+  })
+
+  it("counts a legacy paid order (no snapshot) from its rows, with the competition's current family-max flag", async () => {
+    const created = await createListing(db.pool, { familyCapCents: 3500 })
+    const listing = await excludeFromFamilyMax(created, created.competitions[1].id)
+    const family = await createFamily(db.pool)
+    const aoife = await createDancer(db.pool, family.householdId)
+    const [reel, slipJig, trebleJig] = listing.competitions
+    const legacyId = await insertLegacyPaidOrder(db.pool, family.householdId, listing.listing.id, [
+      { dancerId: aoife.id, competitionId: reel.id },
+      { dancerId: aoife.id, competitionId: slipJig.id }
+    ])
+    expect((await orderRow(legacyId)).purchase_snapshot).toBeNull()
+    const base = { family, listing, dancers: [aoife] }
+    const entries = [{ dancerId: aoife.id, competitionId: trebleJig.id }]
+
+    // A payload that counts the legacy Slip Jig toward the max, though the competition is excluded now
+    const counted = await paidOrdersOf(db.pool, family.householdId, listing)
+    const otherFlag = counted.map((o) => ({
+      ...o,
+      entries: o.entries.map((e) => ({ ...e, counts_toward_family_cap: true }))
+    }))
+    expect(
+      await store.createOrder(
+        family.householdId,
+        listing.listing.id,
+        buildPayload({ ...base, entries, paidOrders: otherFlag })
+      )
+    ).toEqual({ status: 'refused', reason: 'paid_orders_changed' })
+
+    // Counted from its rows: the family fee was paid, and only the Reel counts toward the max
+    const addOn = await createAddOnOrder(db.pool, base, entries)
+    expect(addOn.payload.purchase_snapshot.pricing.prior).toMatchObject({
+      orders: [{ id: legacyId, event_fee_cents: 1000 }],
+      event_fee_paid: true,
+      cappable_paid_cents: 1500
+    })
+    expect(addOn.payload.total_cents).toBe(1500)
+  })
+
+  it('refuses a payload that breaks the once-per-family rules, whose totals still add up', async () => {
+    // The family fee charged a second time
+    const fee = await familyWithPaidOrder()
+    const feeAddOn = buildPayload({
+      ...fee.base,
+      entries: [{ dancerId: fee.aoife.id, competitionId: fee.trebleJig.id }],
+      paidOrders: await paidOrdersOf(db.pool, fee.base.family.householdId, fee.base.listing)
+    })
+    feeAddOn.event_fee_cents = 1000
+    feeAddOn.total_cents += 1000
+    feeAddOn.purchase_snapshot.pricing.breakdown.event_fee_cents = 1000
+    feeAddOn.purchase_snapshot.pricing.breakdown.grand_total_cents += 1000
+    expect(
+      await refused(
+        store.createOrder(fee.base.family.householdId, fee.base.listing.listing.id, feeAddOn)
+      )
+    ).toMatch(/order event fee does not match the counted orders/)
+
+    // Less saved than the family max leaves: $30.00 of $35.00 used, so a $15.00 dance costs $5.00
+    const max = await familyWithPaidOrder(await cappedListing(3500))
+    const maxAddOn = buildPayload({
+      ...max.base,
+      entries: [{ dancerId: max.aoife.id, competitionId: max.trebleJig.id }],
+      paidOrders: await paidOrdersOf(db.pool, max.base.family.householdId, max.base.listing)
+    })
+    expect(maxAddOn.total_cents).toBe(500)
+    maxAddOn.total_cents = 1500
+    maxAddOn.purchase_snapshot.pricing.breakdown.family_cap_savings_cents = 0
+    maxAddOn.purchase_snapshot.pricing.breakdown.grand_total_cents = 1500
+    expect(
+      await refused(
+        store.createOrder(max.base.family.householdId, max.base.listing.listing.id, maxAddOn)
+      )
+    ).toMatch(/order family max saving does not match the counted orders/)
+
+    // A second late fee for a dancer the paid order already charged one
+    const created = await createListing(db.pool)
+    const lateListing = {
+      ...created,
+      feeSchedule: {
+        ...created.feeSchedule,
+        late_fee_tiers: [
+          {
+            starts_at: new Date(Date.now() - 86_400_000).toISOString(),
+            fee_cents: 2500,
+            family_max_cents: null
+          }
+        ]
+      }
+    }
+    const late = await familyWithPaidOrder(lateListing)
+    const lateAddOn = buildPayload({
+      ...late.base,
+      entries: [{ dancerId: late.aoife.id, competitionId: late.trebleJig.id }],
+      paidOrders: await paidOrdersOf(db.pool, late.base.family.householdId, late.base.listing)
+    })
+    expect(lateAddOn.purchase_snapshot.entries[0].late_fee_cents).toBe(0)
+    lateAddOn.entries[0].late_fee_cents = 2500
+    lateAddOn.purchase_snapshot.entries[0].late_fee_cents = 2500
+    lateAddOn.total_cents += 2500
+    lateAddOn.purchase_snapshot.pricing.breakdown.grand_total_cents += 2500
+    expect(
+      await refused(
+        store.createOrder(late.base.family.householdId, late.base.listing.listing.id, lateAddOn)
+      )
+    ).toMatch(/order late fees do not match the counted orders/)
+
+    for (const family of [fee, max, late])
+      expect(await ordersOf(family.base.family.householdId)).toBe(1)
+  })
+
+  it('refuses a Submit priced before a late payment was confirmed (paid_orders_changed)', async () => {
+    const { base, aoife, niamh, reel, trebleJig } = await familyWithPaidOrder()
+    const addOn = await createAddOnOrder(db.pool, base, [
+      { dancerId: aoife.id, competitionId: trebleJig.id }
+    ])
+    const ready = await lateOrder(addOn)
+
+    // Submit reads the paid orders, then the late payment for the add-on is confirmed
+    const paidOrders = await paidOrdersOf(db.pool, base.family.householdId, base.listing)
+    const payload = buildPayload({
+      ...base,
+      entries: [{ dancerId: niamh.id, competitionId: reel.id }],
+      paidOrders
+    })
+    expect((await store.confirmOrderPayment(payment(addOn, ready))).result).toBe('confirmed')
+
+    expect(
+      await store.createOrder(base.family.householdId, base.listing.listing.id, payload)
+    ).toEqual({ status: 'refused', reason: 'paid_orders_changed' })
+    expect(await ordersOf(base.family.householdId)).toBe(2)
+  })
+
+  it('gives two add-on Submits at once one draft, and refuses the other', async () => {
+    const { base, aoife, niamh, reel, trebleJig } = await familyWithPaidOrder()
+    const paidOrders = await paidOrdersOf(db.pool, base.family.householdId, base.listing)
+    const results = await Promise.all([
+      store.createOrder(
+        base.family.householdId,
+        base.listing.listing.id,
+        buildPayload({
+          ...base,
+          entries: [{ dancerId: aoife.id, competitionId: trebleJig.id }],
+          paidOrders
+        })
+      ),
+      store.createOrder(
+        base.family.householdId,
+        base.listing.listing.id,
+        buildPayload({
+          ...base,
+          entries: [{ dancerId: niamh.id, competitionId: reel.id }],
+          paidOrders
+        })
+      )
+    ])
+    expect(results.map((r) => r.status).sort()).toEqual(['created', 'refused'])
+    expect(results.find((r) => r.status === 'refused')).toMatchObject({
+      reason: 'unpaid_order_exists'
+    })
+    expect(await ordersOf(base.family.householdId)).toBe(2)
+  })
+})
+
+describe('confirm_free_order', () => {
+  it('confirms a $0 add-on without Stripe: paid, numbered where needed, one snapshot and one email', async () => {
+    // The first order uses the whole $30.00 family max, so more dances cost nothing
+    const { first, base, aoife, niamh, reel, trebleJig } = await familyWithPaidOrder(
+      await cappedListing(3000)
+    )
+    const addOn = await createAddOnOrder(db.pool, base, [
+      { dancerId: aoife.id, competitionId: trebleJig.id },
+      { dancerId: niamh.id, competitionId: reel.id }
+    ])
+    expect(addOn.payload.total_cents).toBe(0)
+
+    const result = await store.confirmFreeOrder(addOn.registrationId, base.family.householdId)
+    if (result.result !== 'confirmed')
+      throw new Error(`expected a confirmation, got ${result.result}`)
+    expect(result.confirmation_number).toMatch(/^RF-\d{4}-[A-HJKMNP-Z2-9]{5}$/)
+    expect(await orderRow(addOn.registrationId)).toMatchObject({
+      status: 'paid',
+      total_cents: 0,
+      confirmation_number: result.confirmation_number,
+      hold_expires_at: null,
+      checkout_claim_id: null,
+      stripe_checkout_session_id: null,
+      stripe_payment_intent_id: null,
+      stripe_charge_id: null
+    })
+    // Only Niamh needed a number: Aoife keeps the one from the first order
+    expect(await counts(addOn.registrationId)).toEqual({
+      snapshots: 1,
+      emails: 1,
+      numbers: 1,
+      cases: 0
+    })
+    const { rows: numbers } = await db.pool.query(
+      'SELECT dancer_id, registration_id FROM competitor_numbers WHERE feis_listing_id = $1 AND dancer_id = ANY($2) ORDER BY competitor_number',
+      [base.listing.listing.id, [aoife.id, niamh.id]]
+    )
+    expect(numbers).toEqual([
+      { dancer_id: aoife.id, registration_id: first.registrationId },
+      { dancer_id: niamh.id, registration_id: addOn.registrationId }
+    ])
+    const {
+      rows: [snapshot]
+    } = await db.pool.query(
+      'SELECT snapshot_data FROM registration_snapshots WHERE registration_id = $1',
+      [addOn.registrationId]
+    )
+    expect(snapshot.snapshot_data.payment).toMatchObject({
+      confirmation_number: result.confirmation_number,
+      amount_cents: 0,
+      currency: 'usd',
+      checkout_session_id: null,
+      payment_intent_id: null,
+      charge_id: null,
+      account: null
+    })
+  })
+
+  it('confirms a $0 order at a feis with no Stripe account', async () => {
+    const listing = await freeListing()
+    await db.pool.query('UPDATE feis_listings SET stripe_account_id = NULL WHERE id = $1', [
+      listing.listing.id
+    ])
+    const order = await createDraftOrder(db.pool, { listing })
+    expect(
+      await store.confirmFreeOrder(order.registrationId, order.family.householdId)
+    ).toMatchObject({ result: 'confirmed' })
+    expect((await orderRow(order.registrationId)).status).toBe('paid')
+  })
+
+  it('confirms once when Pay is clicked twice; the second click hears it is already confirmed', async () => {
+    const order = await createDraftOrder(db.pool, { listing: await freeListing() })
+    const results = await Promise.all([
+      store.confirmFreeOrder(order.registrationId, order.family.householdId),
+      store.confirmFreeOrder(order.registrationId, order.family.householdId)
+    ])
+    expect(results.map((r) => r.result).sort()).toEqual(['already_confirmed', 'confirmed'])
+    expect(await counts(order.registrationId)).toEqual({
+      snapshots: 1,
+      emails: 1,
+      numbers: 1,
+      cases: 0
+    })
+  })
+
+  it('confirms two families at one feis at the same time, with distinct numbers and no deadlock', async () => {
+    for (let round = 0; round < 3; round++) {
+      const listing = await freeListing()
+      const [a, b] = [
+        await createDraftOrder(db.pool, { listing }),
+        await createDraftOrder(db.pool, { listing })
+      ]
+      const results = await Promise.all([
+        store.confirmFreeOrder(a.registrationId, a.family.householdId),
+        store.confirmFreeOrder(b.registrationId, b.family.householdId)
+      ])
+      expect(results.map((r) => r.result)).toEqual(['confirmed', 'confirmed'])
+      const { rows } = await db.pool.query(
+        'SELECT DISTINCT competitor_number FROM competitor_numbers WHERE feis_listing_id = $1',
+        [listing.listing.id]
+      )
+      expect(rows).toHaveLength(2)
+    }
+  })
+
+  it('changes nothing after the organiser stops registration or turns off a competition, or once the hold has passed', async () => {
+    const stopped = await createDraftOrder(db.pool, { listing: await freeListing() })
+    await db.pool.query(`UPDATE feis_listings SET status = 'closed' WHERE id = $1`, [
+      stopped.listing.listing.id
+    ])
+    const disabled = await createDraftOrder(db.pool, { listing: await freeListing() })
+    await db.pool.query('UPDATE feis_competitions SET enabled = false WHERE id = $1', [
+      disabled.entries[0].competitionId
+    ])
+    const lapsed = await createDraftOrder(db.pool, { listing: await freeListing() })
+    await db.pool.query(
+      `UPDATE registrations SET hold_expires_at = now() - interval '1 minute' WHERE id = $1`,
+      [lapsed.registrationId]
+    )
+
+    for (const [order, expected] of [
+      [stopped, { result: 'blocked', reason: 'organiser_stopped' }],
+      [disabled, { result: 'blocked', reason: 'competition_unavailable' }],
+      [lapsed, { result: 'not_confirmable', status: 'draft', hold_expired: true }]
+    ] as const) {
+      const before = await orderRow(order.registrationId)
+      expect(await store.confirmFreeOrder(order.registrationId, order.family.householdId)).toEqual(
+        expected
+      )
+      expect(await orderRow(order.registrationId)).toEqual(before)
+      expect(await counts(order.registrationId)).toEqual({
+        snapshots: 0,
+        emails: 0,
+        numbers: 0,
+        cases: 0
+      })
+    }
+  })
+
+  it("answers not_found for another family's order, and changes nothing", async () => {
+    const order = await createDraftOrder(db.pool, { listing: await freeListing() })
+    const stranger = await createFamily(db.pool)
+    const before = await orderRow(order.registrationId)
+    expect(await store.confirmFreeOrder(order.registrationId, stranger.householdId)).toEqual({
+      result: 'not_found'
+    })
+    expect(await orderRow(order.registrationId)).toEqual(before)
+  })
+
+  it('confirms only a $0 draft: an order above 0 goes to checkout instead', async () => {
+    const order = await createDraftOrder(db.pool)
+    expect(await store.confirmFreeOrder(order.registrationId, order.family.householdId)).toEqual({
+      result: 'not_confirmable',
+      status: 'draft',
+      hold_expired: false
+    })
+    expect((await orderRow(order.registrationId)).status).toBe('draft')
+  })
+
+  it('cancels a $0 draft whose counted orders no longer hold, with no case: no money moved', async () => {
+    const { base, aoife, trebleJig } = await familyWithPaidOrder(await cappedListing(3000))
+    const addOn = await createAddOnOrder(db.pool, base, [
+      { dancerId: aoife.id, competitionId: trebleJig.id }
+    ])
+    // A paid order the add-on didn't count, which only a hand-made order can be now
+    const uncounted = await insertLegacyPaidOrder(
+      db.pool,
+      base.family.householdId,
+      base.listing.listing.id,
+      []
+    )
+    expect(await store.confirmFreeOrder(addOn.registrationId, base.family.householdId)).toEqual({
+      result: 'paid_orders_changed',
+      orders: [uncounted]
+    })
+    expect((await orderRow(addOn.registrationId)).status).toBe('cancelled')
+    expect(await counts(addOn.registrationId)).toEqual({
+      snapshots: 0,
+      emails: 0,
+      numbers: 0,
+      cases: 0
+    })
+  })
+})
+
+describe('late payments with several orders', () => {
+  it('confirms a late add-on payment whose only other paid order it counted', async () => {
+    const { base, aoife, trebleJig } = await familyWithPaidOrder()
+    const addOn = await createAddOnOrder(db.pool, base, [
+      { dancerId: aoife.id, competitionId: trebleJig.id }
+    ])
+    const ready = await lateOrder(addOn)
+    expect((await store.confirmOrderPayment(payment(addOn, ready))).result).toBe('confirmed')
+    expect((await orderRow(addOn.registrationId)).status).toBe('paid')
+  })
+
+  it('confirms a payment for an add-on awaiting payment whose counted orders still hold', async () => {
+    const { base, aoife, trebleJig } = await familyWithPaidOrder()
+    const addOn = await createAddOnOrder(db.pool, base, [
+      { dancerId: aoife.id, competitionId: trebleJig.id }
+    ])
+    await payOrder(db.pool, addOn)
+    expect(await counts(addOn.registrationId)).toEqual({
+      snapshots: 1,
+      emails: 1,
+      numbers: 0,
+      cases: 0
+    })
+  })
+
+  it('records a case when another order was paid since this one was priced (paid_orders_changed)', async () => {
+    const { first, base, aoife, trebleJig } = await familyWithPaidOrder()
+    const late = await createAddOnOrder(db.pool, base, [
+      { dancerId: aoife.id, competitionId: trebleJig.id }
+    ])
+    const ready = await lateOrder(late)
+    // The family starts again and pays for the same dance, priced without the late order
+    const again = await createAddOnOrder(db.pool, base, [
+      { dancerId: aoife.id, competitionId: trebleJig.id }
+    ])
+    await payOrder(db.pool, again)
+
+    const result = await store.confirmOrderPayment(payment(late, ready))
+    expect(result).toMatchObject({ result: 'exception', reason: 'late_payment_conflict' })
+    expect(await conflictWhy(late.registrationId)).toEqual([
+      { rule: 'paid_orders_changed', orders: [again.registrationId] }
+    ])
+    expect((await orderRow(late.registrationId)).status).toBe('expired')
+    expect((await orderRow(again.registrationId)).status).toBe('paid')
+    expect((await orderRow(first.registrationId)).status).toBe('paid')
+    if (result.result !== 'exception') return
+    expect(
+      await refused(
+        db.pool.query('SELECT payments_admin.confirm_late_payment($1, $2)', [
+          result.support_ref,
+          'Daniel: checking the rule'
+        ])
+      )
+    ).toMatch(/was paid after this order was priced/)
+  })
+
+  it('records one case naming both rules when both fail', async () => {
+    const { base, aoife, niamh, reel, trebleJig } = await familyWithPaidOrder()
+    const late = await createAddOnOrder(db.pool, base, [
+      { dancerId: aoife.id, competitionId: trebleJig.id }
+    ])
+    const ready = await lateOrder(late)
+    const paidSince = await createAddOnOrder(db.pool, base, [
+      { dancerId: aoife.id, competitionId: trebleJig.id }
+    ])
+    await payOrder(db.pool, paidSince)
+    const unpaid = await createAddOnOrder(db.pool, base, [
+      { dancerId: niamh.id, competitionId: reel.id }
+    ])
+
+    expect(await store.confirmOrderPayment(payment(late, ready))).toMatchObject({
+      result: 'exception',
+      reason: 'late_payment_conflict'
+    })
+    expect(await conflictWhy(late.registrationId)).toEqual([
+      { rule: 'unpaid_order_exists', orders: [unpaid.registrationId] },
+      { rule: 'paid_orders_changed', orders: [paidSince.registrationId] }
+    ])
+    expect((await counts(late.registrationId)).cases).toBe(1)
+    expect((await orderRow(unpaid.registrationId)).status).toBe('draft')
+  })
+
+  it('expires another unpaid order whose hold has passed, then confirms the late payment', async () => {
+    const order = await createDraftOrder(db.pool)
+    const ready = await lateOrder(order)
+    const newer = await store.createOrder(
+      order.family.householdId,
+      order.listing.listing.id,
+      buildPayload({ listing: order.listing, dancers: order.dancers, entries: order.entries })
+    )
+    if (newer.status !== 'created') throw new Error('expected a newer order')
+    // The newer draft's hold passes before the expiry job runs
+    await db.pool.query(
+      `UPDATE registrations SET hold_expires_at = now() - interval '1 minute' WHERE id = $1`,
+      [newer.registration_id]
+    )
+
+    expect((await store.confirmOrderPayment(payment(order, ready))).result).toBe('confirmed')
+    expect((await orderRow(newer.registration_id)).status).toBe('expired')
+  })
+
+  it('confirm_late_payment cancels an unclaimed draft and confirms, keeping a counted paid order', async () => {
+    const { first, base, aoife, niamh, reel, trebleJig } = await familyWithPaidOrder()
+    const late = await createAddOnOrder(db.pool, base, [
+      { dancerId: aoife.id, competitionId: trebleJig.id }
+    ])
+    const ready = await lateOrder(late)
+    const draft = await createAddOnOrder(db.pool, base, [
+      { dancerId: niamh.id, competitionId: reel.id }
+    ])
+    const conflict = await store.confirmOrderPayment(payment(late, ready))
+    if (conflict.result !== 'exception') throw new Error('expected a case')
+
+    const {
+      rows: [confirmed]
+    } = await db.pool.query('SELECT payments_admin.confirm_late_payment($1, $2) AS result', [
+      conflict.support_ref,
+      'Daniel: rang the family; they want the late order'
+    ])
+    expect(confirmed.result).toMatchObject({
+      result: 'confirmed',
+      cancelled_orders: [draft.registrationId]
+    })
+    expect((await orderRow(late.registrationId)).status).toBe('paid')
+    expect((await orderRow(draft.registrationId)).status).toBe('cancelled')
+    expect((await orderRow(first.registrationId)).status).toBe('paid')
+    const {
+      rows: [audit]
+    } = await db.pool.query('SELECT evidence FROM admin_actions WHERE support_ref = $1', [
+      conflict.support_ref
+    ])
+    expect(audit.evidence.counted_orders).toEqual([first.registrationId])
+  })
+
+  it('confirms a $0 order racing a late payment, and the late payment is a case whichever runs first', async () => {
+    for (let round = 0; round < 3; round++) {
+      // The first order uses the whole family max. Treble Jig is outside the max, so adding it costs $15.00
+      const { base, aoife, niamh, reel, trebleJig } = await familyWithPaidOrder(
+        await cappedListing(3000)
+      )
+      const outside = await excludeFromFamilyMax(base.listing, trebleJig.id)
+      const late = await createAddOnOrder(db.pool, { ...base, listing: outside }, [
+        { dancerId: aoife.id, competitionId: trebleJig.id }
+      ])
+      expect(late.payload.total_cents).toBe(1500)
+      const ready = await lateOrder(late)
+      const free = await createAddOnOrder(db.pool, { ...base, listing: outside }, [
+        { dancerId: niamh.id, competitionId: reel.id }
+      ])
+      expect(free.payload.total_cents).toBe(0)
+
+      const [freeResult, lateResult] = await Promise.all([
+        store.confirmFreeOrder(free.registrationId, base.family.householdId),
+        store.confirmOrderPayment(payment(late, ready))
+      ])
+      expect(freeResult.result).toBe('confirmed')
+      expect(lateResult).toMatchObject({ result: 'exception', reason: 'late_payment_conflict' })
+      const why = await conflictWhy(late.registrationId)
+      expect([
+        JSON.stringify([{ rule: 'unpaid_order_exists', orders: [free.registrationId] }]),
+        JSON.stringify([{ rule: 'paid_orders_changed', orders: [free.registrationId] }])
+      ]).toContain(JSON.stringify(why))
+      expect((await orderRow(late.registrationId)).status).toBe('expired')
+    }
+  })
+})
+```
+
+In `tests/db/create-order.test.ts`:
+
+(a) Replace:
+```ts
+
+  it('refuses a second active order for the same family and feis', async () => {
+    const first = await createDraftOrder(db.pool)
+```
+with:
+```ts
+
+  it('refuses a second unpaid order for the same family and feis', async () => {
+    const first = await createDraftOrder(db.pool)
+```
+
+(b) Replace:
+```ts
+      status: 'refused',
+      reason: 'active_order_exists',
+      registration_id: first.registrationId
+    })
+  })
+```
+with:
+```ts
+      status: 'refused',
+      reason: 'unpaid_order_exists',
+      registration_id: first.registrationId
+    })
+  })
+
+  it('refuses a total of 1 to 49 cents, and creates totals of 0 and 50 cents', async () => {
+    /** A one-dance order whose total is exactly `cents`: no family fee, and a dance at that price */
+    async function orderCosting(cents: number) {
+      const family = await createFamily(db.pool)
+      const created = await createListing(db.pool)
+      const listing = {
+        ...created,
+        feeSchedule: { ...created.feeSchedule, event_fee_cents: 0, solo_fee_cents: cents }
+      }
+      const dancer = await createDancer(db.pool, family.householdId)
+      const payload = buildPayload({
+        listing,
+        dancers: [dancer],
+        entries: [{ dancerId: dancer.id, competitionId: listing.competitions[0].id }]
+      })
+      expect(payload.total_cents).toBe(cents)
+      return {
+        family,
+        result: await store.createOrder(family.householdId, listing.listing.id, payload)
+      }
+    }
+
+    for (const cents of [1, 20, 49]) {
+      const { family, result } = await orderCosting(cents)
+      expect(result, `${cents} cents`).toEqual({ status: 'refused', reason: 'amount_too_small' })
+      expect(await createdFor(family.householdId)).toEqual({ orders: 0, entries: 0 })
+    }
+    for (const cents of [0, 50]) {
+      const { family, result } = await orderCosting(cents)
+      expect(result.status, `${cents} cents`).toBe('created')
+      expect(await createdFor(family.householdId)).toEqual({ orders: 1, entries: 1 })
+    }
+  })
+```
+
+(c) Replace:
+```ts
+
+  it('refuses while a 011 confirmed order is active, as the unique index does', async () => {
+    const order = await createDraftOrder(db.pool)
+```
+with:
+```ts
+
+  it('refuses while a 011 confirmed order is held, rather than pricing around it', async () => {
+    const order = await createDraftOrder(db.pool)
+```
+
+(d) Replace:
+```ts
+        status: 'refused',
+        reason: 'active_order_exists',
+        registration_id: order.registrationId
+```
+with:
+```ts
+        status: 'refused',
+        reason: 'unpaid_order_exists',
+        registration_id: order.registrationId
+```
+
+In `tests/db/payment-confirmation.test.ts`:
+
+(a) Replace:
+```ts
+
+/** The late payment conflict case on an order, found by the explicit check or by the relabel */
+async function conflictDetails(registrationId: string) {
+```
+with:
+```ts
+
+/** The details of the one late payment conflict case on an order: why it is a conflict, rule by rule */
+async function conflictDetails(registrationId: string) {
+```
+
+(b) Replace:
+```ts
+    expect((await orderRow(order.registrationId)).status).toBe('expired')
+    if (newer.status === 'created') expect((await orderRow(newer.registration_id)).status).toBe('draft')
+    // The explicit check found it: only the unique index's relabel adds `caught`
+    expect(await conflictDetails(order.registrationId)).not.toHaveProperty('caught')
+  })
+```
+with:
+```ts
+    expect((await orderRow(order.registrationId)).status).toBe('expired')
+    if (newer.status !== 'created') return
+    expect((await orderRow(newer.registration_id)).status).toBe('draft')
+    expect((await conflictDetails(order.registrationId)).why).toEqual([
+      { rule: 'unpaid_order_exists', orders: [newer.registration_id] }
+    ])
+  })
+```
+
+(c) Replace:
+```ts
+    expect(result.reason).toBe('late_payment_conflict')
+    // The explicit check found it: only the unique index's relabel adds `caught`
+    expect(await conflictDetails(order.registrationId)).not.toHaveProperty('caught')
+
+```
+with:
+```ts
+    expect(result.reason).toBe('late_payment_conflict')
+    expect((await conflictDetails(order.registrationId)).why).toEqual([
+      { rule: 'unpaid_order_exists', orders: [newer.registration_id] }
+    ])
+
+```
+
+(d) Replace:
+```ts
+      ])
+      const confirmedWins = confirmed.result === 'confirmed' && created.status === 'refused'
+      const submitWins = created.status === 'created' && confirmed.result === 'exception' && confirmed.reason === 'late_payment_conflict'
+      expect(confirmedWins || submitWins).toBe(true)
+      // Both take the household-and-feis lock, so the explicit check sees a Submit that won
+      if (submitWins) {
+        expect(await conflictDetails(order.registrationId)).not.toHaveProperty('caught')
+      }
+```
+with:
+```ts
+      ])
+      // Submit read no paid order, so once the late payment is confirmed its price no longer holds
+      const confirmedWins = confirmed.result === 'confirmed' && created.status === 'refused' &&
+        created.reason === 'paid_orders_changed'
+      const submitWins = created.status === 'created' && confirmed.result === 'exception' && confirmed.reason === 'late_payment_conflict'
+      expect(confirmedWins || submitWins).toBe(true)
+      // Both take the household-and-feis lock, so the late payment sees a Submit that won
+      if (submitWins && created.status === 'created') {
+        expect((await conflictDetails(order.registrationId)).why).toEqual([
+          { rule: 'unpaid_order_exists', orders: [created.registration_id] }
+        ])
+      }
+```
+
+(e) Replace:
+```ts
+    const message = await refused(asService(db.pool, async (c) => {
+      await c.query(
+        `UPDATE registrations SET status = 'paid', paid_at = now(), confirmation_number = 'RF-TEST-TWICE',
+           stripe_payment_intent_id = 'pi_twice'
+         WHERE id = $1`, [order.registrationId])
+      await c.query(`SELECT set_config('pre_registration.fulfilling_order', $1, true)`, [order.registrationId])
+      await c.query(`INSERT INTO registration_snapshots (registration_id, snapshot_data) VALUES ($1, '{}')`, [order.registrationId])
+```
+with:
+```ts
+    const message = await refused(asService(db.pool, async (c) => {
+      await c.query(`SELECT set_config('pre_registration.fulfilling_order', $1, true)`, [order.registrationId])
+      await c.query(
+        `UPDATE registrations SET status = 'paid', paid_at = now(), confirmation_number = 'RF-TEST-TWICE',
+           stripe_payment_intent_id = 'pi_twice'
+         WHERE id = $1`, [order.registrationId])
+      await c.query(`INSERT INTO registration_snapshots (registration_id, snapshot_data) VALUES ($1, '{}')`, [order.registrationId])
+```
+
+In `tests/db/payments-admin.test.ts`:
+
+(a) Replace:
+```ts
+/** A late payment on an expired order, after the family started a newer one */
+async function lateConflict(newer: 'unclaimed' | 'claimed' | 'paid' = 'unclaimed') {
+  const order = await createDraftOrder(db.pool)
+```
+with:
+```ts
+/** A late payment on an expired order, after the family started a newer one */
+async function lateConflict(newer: 'unclaimed' | 'claimed_draft' | 'claimed' | 'paid' = 'unclaimed') {
+  const order = await createDraftOrder(db.pool)
+```
+
+(b) Replace:
+```ts
+  const newerOrder: DraftOrderFixture = { ...order, payload, registrationId: created.registration_id }
+  if (newer !== 'unclaimed') {
+    const newerReady = await readyToPay(db.pool, newerOrder)
+    if (newer === 'paid') await store.confirmOrderPayment(payment(newerOrder, newerReady))
+  }
+
+  const result = await store.confirmOrderPayment(payment(order, ready))
+  if (result.result !== 'exception') throw new Error('expected a late-payment case')
+  return { order, newerId: created.registration_id, supportRef: result.support_ref }
+}
+```
+with:
+```ts
+  const newerOrder: DraftOrderFixture = { ...order, payload, registrationId: created.registration_id }
+  let newerReady: Ready | null = null
+  if (newer !== 'unclaimed') {
+    newerReady = await readyToPay(db.pool, newerOrder, { attach: newer !== 'claimed_draft' })
+    if (newer === 'paid') await store.confirmOrderPayment(payment(newerOrder, newerReady))
+  }
+
+  const result = await store.confirmOrderPayment(payment(order, ready))
+  if (result.result !== 'exception') throw new Error('expected a late-payment case')
+  return { order, newerOrder, newerReady, newerId: created.registration_id, supportRef: result.support_ref }
+}
+```
+
+(c) Replace:
+```ts
+    expect(audit.evidence.cancelled_orders).toEqual([newerId])
+
+```
+with:
+```ts
+    expect(audit.evidence.cancelled_orders).toEqual([newerId])
+    // A first order counted no earlier orders
+    expect(audit.evidence.counted_orders).toEqual([])
+
+```
+
+(d) Replace:
+```ts
+
+  it('refuses when another order was taken to checkout, even once that checkout has expired', async () => {
+    const { supportRef, newerId } = await lateConflict('claimed')
+    expect(await refused(confirmLate(supportRef))).toMatch(/was taken to checkout/)
+
+    // The newer order's checkout runs out, but a delayed payment for it could still arrive
+    const { rows: [newer] } = await db.pool.query(
+      'SELECT checkout_claim_id, stripe_checkout_session_id, checkout_config FROM registrations WHERE id = $1', [newerId])
+    await store.expireCheckout({
+      registrationId: newerId, claimId: newer.checkout_claim_id, sessionId: newer.stripe_checkout_session_id,
+      account: newer.checkout_config.account,
+    })
+    expect(await refused(confirmLate(supportRef))).toMatch(/was taken to checkout/)
+  })
+
+  it('refuses when the family paid twice; that case is closed with a refund', async () => {
+    const { supportRef } = await lateConflict('paid')
+    expect(await refused(confirmLate(supportRef))).toMatch(/refund one payment instead/)
+  })
+```
+with:
+```ts
+
+  it('refuses while another order is at checkout: a claimed draft, or one awaiting payment', async () => {
+    for (const newer of ['claimed_draft', 'claimed'] as const) {
+      const { order, newerId, supportRef } = await lateConflict(newer)
+      const before = await stateOf([order.registrationId, newerId], supportRef)
+      expect(await refused(confirmLate(supportRef)), newer).toMatch(/is at checkout, so a payment for it may still arrive/)
+      expect(await stateOf([order.registrationId, newerId], supportRef)).toEqual(before)
+    }
+  })
+
+  it('confirms once the newer checkout expired unpaid, and a later payment for it becomes a case (Decision 12)', async () => {
+    const { order, newerOrder, newerReady, newerId, supportRef } = await lateConflict('claimed')
+    if (!newerReady) throw new Error('expected the newer order at checkout')
+    await store.expireCheckout({
+      registrationId: newerId, claimId: newerReady.claimId, sessionId: newerReady.sessionId,
+      account: newerReady.config.account,
+    })
+    const { rows } = await confirmLate(supportRef)
+    expect(rows[0].result).toMatchObject({ result: 'confirmed', cancelled_orders: [] })
+    expect(await statusOf(order.registrationId)).toBe('paid')
+    expect(await statusOf(newerId)).toBe('expired')
+
+    // The newer order was priced without the late one, so its own late payment can't be confirmed by itself
+    const late = await store.confirmOrderPayment(payment(newerOrder, newerReady))
+    expect(late).toMatchObject({ result: 'exception', reason: 'late_payment_conflict' })
+    expect(await statusOf(newerId)).toBe('expired')
+    const { rows: [newerCase] } = await db.pool.query(
+      `SELECT details FROM payment_exceptions WHERE registration_id = $1 AND reason = 'late_payment_conflict'`, [newerId])
+    expect(newerCase.details.why).toEqual([{ rule: 'paid_orders_changed', orders: [order.registrationId] }])
+  })
+
+  it("refuses when another order was paid that this one didn't count; that case is closed with a refund", async () => {
+    const { order, newerId, supportRef } = await lateConflict('paid')
+    expect(await refused(confirmLate(supportRef))).toMatch(/was paid after this order was priced/)
+    expect(await statusOf(order.registrationId)).toBe('expired')
+    expect(await statusOf(newerId)).toBe('paid')
+    await closeCase(supportRef, 'refunded', 're_3QpaidTWICE', 'Daniel: refunded the late payment; the newer order stands')
+    expect((await stateOf([order.registrationId], supportRef)).caseRow)
+      .toMatchObject({ status: 'resolved', resolution: 'refunded' })
+  })
+```
+
+In `tests/db/order-integrity.test.ts`:
+
+(a) Replace:
+```ts
+import path from 'node:path'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+```
+with:
+```ts
+import path from 'node:path'
+import type { PoolClient } from 'pg'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+```
+
+(b) Replace:
+```ts
+    confirmation_number = 'RF-TEST-' || substr($1::text, 1, 8), paid_at = now(), hold_expires_at = NULL
+  WHERE id = $1`
+
+function newSessionId(): string {
+```
+with:
+```ts
+    confirmation_number = 'RF-TEST-' || substr($1::text, 1, 8), paid_at = now(), hold_expires_at = NULL
+  WHERE id = $1`
+
+/** _fulfil_order's own order of steps: it names the order in the paid marker, then makes its one paid update */
+async function fulfil(c: PoolClient, id: string, sessionId: string | null): Promise<void> {
+  await c.query(`SELECT set_config('pre_registration.fulfilling_order', $1, true)`, [id])
+  await c.query(FULFIL_SQL, [id, sessionId])
+}
+
+function newSessionId(): string {
+```
+
+(c) Replace:
+```ts
+    await claimDraft(draftId)
+    // The order is paid in this transaction, but the marker names a different order
+    expect(await refused(asService(db.pool, async (c) => {
+      await c.query(
+```
+with:
+```ts
+    await claimDraft(draftId)
+    // The order is paid in this transaction, but by the snapshot the marker names a different order
+    expect(await refused(asService(db.pool, async (c) => {
+      await c.query(`SELECT set_config('pre_registration.fulfilling_order', $1, true)`, [draftId])
+      await c.query(
+```
+
+(d) Replace:
+```ts
+    await asService(db.pool, async (c) => {
+      await c.query(FULFIL_SQL, [draftId, null])
+      await c.query(`SELECT set_config('pre_registration.fulfilling_order', $1, true)`, [draftId])
+      await c.query(
+```
+with:
+```ts
+    await asService(db.pool, async (c) => {
+      await fulfil(c, draftId, null)
+      await c.query(
+```
+
+(e) Replace:
+```ts
+    expect((await orderRow(usual.draftId)).status).toBe('pending_payment')
+    await asService(db.pool, (c) => c.query(FULFIL_SQL, [usual.draftId, usualSession]))
+    await expectPaid(usual.draftId, usualSession)
+
+    // Paid through the order's own claim before Pay attached the session: draft → paid
+    const early = await familyWithDraft()
+    await claimDraft(early.draftId)
+    const earlySession = newSessionId()
+    await asService(db.pool, (c) => c.query(FULFIL_SQL, [early.draftId, earlySession]))
+    await expectPaid(early.draftId, earlySession)
+```
+with:
+```ts
+    expect((await orderRow(usual.draftId)).status).toBe('pending_payment')
+    await asService(db.pool, (c) => fulfil(c, usual.draftId, usualSession))
+    await expectPaid(usual.draftId, usualSession)
+
+    // Paid through the order's own claim before Pay attached the session: draft → paid
+    const early = await familyWithDraft()
+    await claimDraft(early.draftId)
+    const earlySession = newSessionId()
+    await asService(db.pool, (c) => fulfil(c, early.draftId, earlySession))
+    await expectPaid(early.draftId, earlySession)
+```
+
+(f) Replace:
+```ts
+    expect((await orderRow(late.draftId)).status).toBe('expired')
+    await asService(db.pool, (c) => c.query(FULFIL_SQL, [late.draftId, lateSession]))
+    await expectPaid(late.draftId, lateSession)
+```
+with:
+```ts
+    expect((await orderRow(late.draftId)).status).toBe('expired')
+    await asService(db.pool, (c) => fulfil(c, late.draftId, lateSession))
+    await expectPaid(late.draftId, lateSession)
+```
+
+(g) Replace:
+```ts
+        .toMatch(/a paid order needs its checkout claim, checkout session, payment time and confirmation number/)
+      expect(await orderRow(id)).toEqual(before)
+    }
+  })
+```
+with:
+```ts
+        .toMatch(/a paid order needs its checkout claim, checkout session, payment time and confirmation number/)
+      expect(await orderRow(id)).toEqual(before)
+    }
+  })
+
+  it('marks an order paid only while the paid marker names it, after the status table and the evidence', async () => {
+    const pending = await familyWithDraft()
+    const sessionId = await awaitingPayment(pending.draftId)
+    const before = await orderRow(pending.draftId)
+    // Full payment evidence, but no marker, or a marker naming another order
+    for (const marker of [null, randomUUID()]) {
+      expect(await refused(asService(db.pool, async (c) => {
+        if (marker) await c.query(`SELECT set_config('pre_registration.fulfilling_order', $1, true)`, [marker])
+        return c.query(FULFIL_SQL, [pending.draftId, sessionId])
+      }))).toMatch(/an order is marked paid only by its confirmation/)
+      expect(await orderRow(pending.draftId)).toEqual(before)
+    }
+
+    // The marker never lets an illegal move through: cancelled to paid still gets the status table's message
+    const cancelled = await familyWithDraft()
+    await awaitingPayment(cancelled.draftId)
+    await asService(db.pool, (c) => c.query(`UPDATE registrations SET status = 'cancelled' WHERE id = $1`, [cancelled.draftId]))
+    expect(await refused(asService(db.pool, (c) => fulfil(c, cancelled.draftId, null))))
+      .toMatch(/cannot move from cancelled to paid/)
+    expect((await orderRow(cancelled.draftId)).status).toBe('cancelled')
+  })
+
+  it('pays a $0 draft with no claim, session, payment intent or charge, and nothing else at $0', async () => {
+    const listing = await createListing(db.pool)
+    /** A $0 draft, for a family of its own: a family holds one unpaid order per feis */
+    const freeDraft = async () => {
+      const family = await createFamily(db.pool)
+      const dancer = await createDancer(db.pool, family.householdId)
+      return insertOrderDirect(db.pool, family.householdId, listing.listing.id,
+        [{ dancerId: dancer.id, competitionId: listing.competitions[0].id }], { totalCents: 0 })
+    }
+    // What _fulfil_order sends for a $0 order: no Stripe details at all
+    const FREE_SQL = `UPDATE registrations SET status = 'paid', paid_at = now(),
+        confirmation_number = 'RF-FREE-' || substr($1::text, 1, 8), hold_expires_at = NULL
+      WHERE id = $1`
+    const payFree = (id: string, extra = '') => asService(db.pool, async (c) => {
+      await c.query(`SELECT set_config('pre_registration.fulfilling_order', $1, true)`, [id])
+      if (extra) await c.query(extra, [id])
+      return c.query(FREE_SQL, [id])
+    })
+
+    const ok = await freeDraft()
+    await payFree(ok)
+    expect(await orderRow(ok)).toMatchObject({
+      status: 'paid', total_cents: 0, checkout_claim_id: null, stripe_checkout_session_id: null,
+      stripe_payment_intent_id: null, stripe_charge_id: null
+    })
+
+    const refusals: [string, (id: string) => Promise<unknown>][] = [
+      // With a claim (claim_checkout never claims under 50 cents, but the guard holds anyway)
+      ['a claim', (id) => payFree(id, CLAIM_SQL)],
+      // With a payment intent or a charge
+      ['a payment intent', (id) => payFree(id, `UPDATE registrations SET stripe_payment_intent_id = 'pi_x' WHERE id = $1`)],
+      ['a charge', (id) => payFree(id, `UPDATE registrations SET stripe_charge_id = 'ch_x' WHERE id = $1`)],
+      // From expired rather than draft
+      ['expired first', (id) => payFree(id, `UPDATE registrations SET status = 'expired' WHERE id = $1`)],
+      // Without a confirmation number
+      ['no confirmation number', (id) => asService(db.pool, async (c) => {
+        await c.query(`SELECT set_config('pre_registration.fulfilling_order', $1, true)`, [id])
+        return c.query(`UPDATE registrations SET status = 'paid', paid_at = now() WHERE id = $1`, [id])
+      })]
+    ]
+    for (const [label, attempt] of refusals) {
+      const id = await freeDraft()
+      const before = await orderRow(id)
+      expect(await refused(attempt(id)), label)
+        .toMatch(/a free order is paid from a draft, with its payment time and confirmation number and no checkout or payment details/)
+      expect(await orderRow(id), label).toEqual(before)
+    }
+  })
+```
+
+In `tests/db/checkout-claims.test.ts`:
+
+(a) Replace:
+```ts
+
+/** An order of one 20-cent dance: create_order takes it, but no card payment can be that small */
+async function createTinyOrder(): Promise<DraftOrderFixture> {
+  const created = await createListing(db.pool)
+  await db.pool.query(
+    'UPDATE fee_schedules SET event_fee_cents = 0, solo_fee_cents = 20 WHERE feis_listing_id = $1',
+    [created.listing.id]
+  )
+  const listing = {
+    ...created,
+    feeSchedule: { ...created.feeSchedule, event_fee_cents: 0, solo_fee_cents: 20 }
+  }
+  const family = await createFamily(db.pool)
+  const dancer = await createDancer(db.pool, family.householdId)
+  const entries = [{ dancerId: dancer.id, competitionId: listing.competitions[0].id }]
+  const payload = buildPayload({ listing, dancers: [dancer], entries })
+  const result = await store.createOrder(family.householdId, listing.listing.id, payload)
+  if (result.status !== 'created') throw new Error(`Tiny order was refused: ${result.reason}`)
+  const registrationId = result.registration_id
+```
+with:
+```ts
+
+/** An order of one free dance: create_order takes it, and Pay confirms it without a card checkout */
+async function createFreeOrder(): Promise<DraftOrderFixture> {
+  const created = await createListing(db.pool)
+  await db.pool.query(
+    'UPDATE fee_schedules SET event_fee_cents = 0, solo_fee_cents = 0 WHERE feis_listing_id = $1',
+    [created.listing.id]
+  )
+  const listing = {
+    ...created,
+    feeSchedule: { ...created.feeSchedule, event_fee_cents: 0, solo_fee_cents: 0 }
+  }
+  const family = await createFamily(db.pool)
+  const dancer = await createDancer(db.pool, family.householdId)
+  const entries = [{ dancerId: dancer.id, competitionId: listing.competitions[0].id }]
+  const payload = buildPayload({ listing, dancers: [dancer], entries })
+  const result = await store.createOrder(family.householdId, listing.listing.id, payload)
+  if (result.status !== 'created') throw new Error(`Free order was refused: ${result.reason}`)
+  const registrationId = result.registration_id
+```
+
+(b) Replace:
+```ts
+
+  it('starts no checkout for an order below the 50-cent card minimum', async () => {
+    const order = await createTinyOrder()
+    expect(order.payload.total_cents).toBeLessThan(50)
+    expect(await claim(order)).toEqual({ result: 'blocked', reason: 'amount_too_small' })
+```
+with:
+```ts
+
+  it('starts no checkout for a $0 order, which is confirmed without a card', async () => {
+    const order = await createFreeOrder()
+    expect(order.payload.total_cents).toBe(0)
+    expect(await claim(order)).toEqual({ result: 'blocked', reason: 'amount_too_small' })
+```
+
+- [ ] **Step 3: Run the tests to see them fail**
+
+Run: `npm run test:db`
+Expected: FAIL. Among the failures: every add-on is refused as `active_order_exists`, `confirm_free_order` and 020 don't exist, `create_order` still takes 1 to 49 cents, `confirm_late_payment` still refuses an order whose checkout expired, and a move into `paid` without the marker still succeeds.
+
+- [ ] **Step 4: Migration 012: the paid marker and the $0 evidence**
+
+In `supabase/migrations/012_order_integrity.sql`:
+
+(a) Replace:
+```sql
+-- ─── Uniqueness that confirmation relies on ───
+CREATE UNIQUE INDEX IF NOT EXISTS idx_registrations_checkout_session_unique
+```
+with:
+```sql
+-- ─── Uniqueness that confirmation relies on ───
+-- One unpaid order per family per feis is 019's idx_registrations_active_unique (draft and pending_payment
+-- only). 012–017 never create or drop it, so they apply the same before 019 (live) or after it (the tests);
+-- 020 checks it is 019's.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_registrations_checkout_session_unique
+```
+
+(b) Replace:
+```sql
+
+  -- Payment evidence, checked after the status table so an illegal move still says so
+  IF NEW.status = 'paid' AND OLD.status IS DISTINCT FROM 'paid'
+     AND (NEW.checkout_claim_id IS NULL OR NEW.stripe_checkout_session_id IS NULL
+          OR NEW.paid_at IS NULL OR NEW.confirmation_number IS NULL) THEN
+    RAISE EXCEPTION 'a paid order needs its checkout claim, checkout session, payment time and confirmation number'
+      USING ERRCODE = '42501';
+  END IF;
+```
+with:
+```sql
+
+  -- Payment evidence, checked after the status table so an illegal move still says so. An order above 0 is
+  -- paid through its own checkout claim and session. An order that costs nothing is confirmed without Stripe
+  -- (confirm_free_order, migration 015): straight from draft, with no claim, session, payment intent or charge.
+  IF NEW.status = 'paid' AND OLD.status IS DISTINCT FROM 'paid' THEN
+    IF NEW.total_cents > 0
+       AND (NEW.checkout_claim_id IS NULL OR NEW.stripe_checkout_session_id IS NULL
+            OR NEW.paid_at IS NULL OR NEW.confirmation_number IS NULL) THEN
+      RAISE EXCEPTION 'a paid order needs its checkout claim, checkout session, payment time and confirmation number'
+        USING ERRCODE = '42501';
+    END IF;
+    IF NEW.total_cents = 0
+       AND (OLD.status <> 'draft' OR NEW.paid_at IS NULL OR NEW.confirmation_number IS NULL
+            OR NEW.checkout_claim_id IS NOT NULL OR NEW.stripe_checkout_session_id IS NOT NULL
+            OR NEW.stripe_payment_intent_id IS NOT NULL OR NEW.stripe_charge_id IS NOT NULL) THEN
+      RAISE EXCEPTION 'a free order is paid from a draft, with its payment time and confirmation number and no checkout or payment details'
+        USING ERRCODE = '42501';
+    END IF;
+    -- Every move into paid happens inside _fulfil_order (015), which names the order in this marker before its
+    -- paid update. Checked last, so a move the status table or the evidence refuses still says why.
+    IF current_setting('pre_registration.fulfilling_order', true) IS DISTINCT FROM NEW.id::text THEN
+      RAISE EXCEPTION 'an order is marked paid only by its confirmation' USING ERRCODE = '42501';
+    END IF;
+  END IF;
+```
+
+- [ ] **Step 5: Migration 013: count the paid orders in `create_order`**
+
+In `supabase/migrations/013_create_order.sql`:
+
+(a) Replace:
+```sql
+-- Payment hardening, part 2: an order, its entries, consent and frozen details are created
+-- in one transaction, or not at all. Spec §1, §4.
+
+SET search_path TO pre_registration, public;
+
+-- Serialises everything that can create or revive an active order for one family at one feis
+CREATE OR REPLACE FUNCTION lock_household_feis(p_household_id uuid, p_feis_listing_id uuid)
+```
+with:
+```sql
+-- Payment hardening, part 2: an order, its entries, consent and frozen details are created
+-- in one transaction, or not at all. A family may hold one unpaid order per feis and any number
+-- of paid ones; each new order's price counts the paid ones (add-on orders). Spec §1, §4, §14.
+
+SET search_path TO pre_registration, public;
+
+-- Serialises everything that creates an order or makes one paid for one family at one feis
+CREATE OR REPLACE FUNCTION lock_household_feis(p_household_id uuid, p_feis_listing_id uuid)
+```
+
+(b) Replace:
+```sql
+
+CREATE OR REPLACE FUNCTION create_order(p_household_id uuid, p_feis_listing_id uuid, p_order jsonb)
+```
+with:
+```sql
+
+-- The family's paid orders for this feis as a later order counts them (spec §4): the record a price freezes as
+-- purchase_snapshot.pricing.prior, rebuilt here from the rows so create_order can compare the two as jsonb.
+-- Orders by id, each order's entries by dancer then competition, every key present, and null when the family
+-- has no paid order. Whether an entry counted toward the family max is its own order's frozen flag, or for an
+-- older order with no purchase snapshot, the competition's flag now.
+CREATE OR REPLACE FUNCTION _counted_orders(p_household_id uuid, p_feis_listing_id uuid)
+RETURNS jsonb
+LANGUAGE sql
+STABLE
+SET search_path = pre_registration, pg_temp
+AS $$
+  WITH paid AS (
+    SELECT r.id, r.confirmation_number, r.event_fee_cents, r.purchase_snapshot
+    FROM registrations r
+    WHERE r.household_id = p_household_id AND r.feis_listing_id = p_feis_listing_id AND r.status = 'paid'
+  ), entries AS (
+    SELECT e.registration_id, e.dancer_id, e.feis_competition_id AS competition_id,
+      e.base_fee_cents, e.late_fee_cents,
+      NOT coalesce(
+        (SELECT (frozen ->> 'exclude_from_family_cap')::boolean
+         FROM jsonb_array_elements(CASE WHEN jsonb_typeof(p.purchase_snapshot -> 'competitions') = 'array'
+                                        THEN p.purchase_snapshot -> 'competitions' ELSE '[]'::jsonb END) AS frozen
+         WHERE frozen ->> 'id' = e.feis_competition_id::text
+         LIMIT 1),
+        c.exclude_from_family_cap,
+        false) AS counts_toward_family_cap
+    FROM paid p
+    JOIN registration_entries e ON e.registration_id = p.id
+    LEFT JOIN feis_competitions c ON c.id = e.feis_competition_id
+  )
+  SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM paid) THEN NULL ELSE jsonb_build_object(
+    'orders', (
+      SELECT jsonb_agg(jsonb_build_object(
+          'id', p.id,
+          'confirmation_number', p.confirmation_number,
+          'event_fee_cents', p.event_fee_cents,
+          'entries', coalesce((
+            SELECT jsonb_agg(jsonb_build_object(
+                'dancer_id', x.dancer_id,
+                'competition_id', x.competition_id,
+                'base_fee_cents', x.base_fee_cents,
+                'late_fee_cents', x.late_fee_cents,
+                'counts_toward_family_cap', x.counts_toward_family_cap)
+              ORDER BY x.dancer_id, x.competition_id)
+            FROM entries x WHERE x.registration_id = p.id), '[]'::jsonb))
+        ORDER BY p.id)
+      FROM paid p),
+    'event_fee_paid', EXISTS (SELECT 1 FROM paid WHERE event_fee_cents > 0),
+    'cappable_paid_cents',
+      (SELECT coalesce(sum(base_fee_cents) FILTER (WHERE counts_toward_family_cap), 0) FROM entries),
+    'late_fee_dancer_ids', coalesce(
+      (SELECT jsonb_agg(d.dancer_id ORDER BY d.dancer_id)
+       FROM (SELECT DISTINCT dancer_id FROM entries WHERE late_fee_cents > 0) AS d),
+      '[]'::jsonb),
+    'late_fees_paid_cents', (SELECT coalesce(sum(late_fee_cents), 0) FROM entries)
+  ) END
+$$;
+
+REVOKE ALL ON FUNCTION _counted_orders(uuid, uuid) FROM PUBLIC, anon, authenticated, service_role;
+
+CREATE OR REPLACE FUNCTION create_order(p_household_id uuid, p_feis_listing_id uuid, p_order jsonb)
+```
+
+(c) Replace:
+```sql
+  v_existing uuid;
+  v_id uuid := gen_random_uuid();
+  v_hold timestamptz := now() + interval '30 minutes';
+  v_snapshot jsonb := p_order -> 'purchase_snapshot';
+  v_breakdown jsonb := p_order -> 'purchase_snapshot' -> 'pricing' -> 'breakdown';
+  v_mismatches integer;
+  v_entry_total integer;
+BEGIN
+```
+with:
+```sql
+  v_existing uuid;
+  v_counted jsonb;
+  v_id uuid := gen_random_uuid();
+  v_hold timestamptz := now() + interval '30 minutes';
+  v_snapshot jsonb := p_order -> 'purchase_snapshot';
+  v_breakdown jsonb := p_order -> 'purchase_snapshot' -> 'pricing' -> 'breakdown';
+  v_schedule jsonb := p_order -> 'purchase_snapshot' -> 'pricing' -> 'fee_schedule';
+  v_mismatches integer;
+  v_entry_total integer;
+  v_capped integer;
+  v_cap integer;
+BEGIN
+```
+
+(d) Replace:
+```sql
+
+  -- A family whose hold has just run out is not blocked by it until the expiry job next runs:
+```
+with:
+```sql
+
+  -- Stripe can't take a card payment of 1 to 49 cents, so no order is made that could never be paid
+  -- (Decision 10). A total of 0 is allowed: Pay confirms it without Stripe (confirm_free_order, 015).
+  IF (p_order ->> 'total_cents')::integer BETWEEN 1 AND 49 THEN
+    RETURN jsonb_build_object('status', 'refused', 'reason', 'amount_too_small');
+  END IF;
+
+  -- A family whose hold has just run out is not blocked by it until the expiry job next runs:
+```
+
+(e) Replace:
+```sql
+
+  -- Active means what idx_registrations_active_unique (002) means: neither expired nor cancelled. A live
+  -- database still holding 011's confirmed orders then refuses here, not with a unique-index error.
+  SELECT id INTO v_existing FROM registrations
+  WHERE household_id = p_household_id AND feis_listing_id = p_feis_listing_id
+    AND status NOT IN ('expired', 'cancelled')
+  LIMIT 1;
+  IF FOUND THEN
+    RETURN jsonb_build_object('status', 'refused', 'reason', 'active_order_exists', 'registration_id', v_existing);
+  END IF;
+```
+with:
+```sql
+
+  -- One unpaid order at a time: in practice the draft or pending_payment order 019's index allows one of. A
+  -- live database still holding 011's confirmed orders refuses here too, rather than pricing around one.
+  -- Paid orders don't refuse: they're counted below.
+  SELECT id INTO v_existing FROM registrations
+  WHERE household_id = p_household_id AND feis_listing_id = p_feis_listing_id
+    AND status NOT IN ('paid', 'expired', 'cancelled')
+  LIMIT 1;
+  IF FOUND THEN
+    RETURN jsonb_build_object('status', 'refused', 'reason', 'unpaid_order_exists', 'registration_id', v_existing);
+  END IF;
+
+  -- The price must have counted exactly the family's paid orders as they are now. This catches an order paid
+  -- between Submit's read and here, such as a late payment, and any record built wrongly. A first order's
+  -- prior is null (a missing key counts as null too).
+  v_counted := _counted_orders(p_household_id, p_feis_listing_id);
+  IF v_counted IS DISTINCT FROM nullif(v_snapshot -> 'pricing' -> 'prior', 'null'::jsonb) THEN
+    RETURN jsonb_build_object('status', 'refused', 'reason', 'paid_orders_changed');
+  END IF;
+
+  -- An add-on only adds: a dance already in one of the family's paid orders is never bought twice
+  IF EXISTS (
+    SELECT 1
+    FROM jsonb_to_recordset(p_order -> 'entries') AS e(dancer_id uuid, feis_competition_id uuid)
+    JOIN registration_entries pe ON pe.dancer_id = e.dancer_id AND pe.feis_competition_id = e.feis_competition_id
+    JOIN registrations r ON r.id = pe.registration_id
+    WHERE r.household_id = p_household_id AND r.feis_listing_id = p_feis_listing_id AND r.status = 'paid'
+  ) THEN
+    RETURN jsonb_build_object('status', 'refused', 'reason', 'already_entered');
+  END IF;
+```
+
+(f) Replace:
+```sql
+    RAISE EXCEPTION 'order totals do not match the purchase snapshot';
+  END IF;
+```
+with:
+```sql
+    RAISE EXCEPTION 'order totals do not match the purchase snapshot';
+  END IF;
+
+  -- The once-per-family rules hold against the counted orders. The family fee is charged once: 0 when a
+  -- counted order paid it, otherwise the frozen schedule's fee
+  IF (p_order ->> 'event_fee_cents')::integer IS DISTINCT FROM
+     (CASE WHEN coalesce((v_counted ->> 'event_fee_paid')::boolean, false) THEN 0
+           ELSE (v_schedule ->> 'event_fee_cents')::integer END) THEN
+    RAISE EXCEPTION 'order event fee does not match the counted orders';
+  END IF;
+  -- No dancer the counted orders charged a late fee is charged one here, and no dancer more than one here
+  IF EXISTS (
+       SELECT 1 FROM registration_entries e
+       WHERE e.registration_id = v_id AND e.late_fee_cents > 0
+         AND e.dancer_id::text IN (
+           SELECT jsonb_array_elements_text(coalesce(v_counted -> 'late_fee_dancer_ids', '[]'::jsonb))))
+     OR EXISTS (
+       SELECT 1 FROM registration_entries e
+       WHERE e.registration_id = v_id AND e.late_fee_cents > 0
+       GROUP BY e.dancer_id HAVING count(*) > 1) THEN
+    RAISE EXCEPTION 'order late fees do not match the counted orders';
+  END IF;
+  -- The family-max saving is what the frozen family max leaves after the counted orders. Whether this order's
+  -- entries count toward it is the snapshot's flag for each competition (the late tier's own max is left to
+  -- calculateFees, which is unit-tested)
+  v_cap := (v_schedule ->> 'family_cap_cents')::integer;
+  SELECT coalesce(sum(e.base_fee_cents), 0)::integer INTO v_capped
+  FROM registration_entries e
+  LEFT JOIN feis_competitions c ON c.id = e.feis_competition_id
+  WHERE e.registration_id = v_id
+    AND NOT coalesce(
+      (SELECT (frozen ->> 'exclude_from_family_cap')::boolean
+       FROM jsonb_array_elements(CASE WHEN jsonb_typeof(v_snapshot -> 'competitions') = 'array'
+                                      THEN v_snapshot -> 'competitions' ELSE '[]'::jsonb END) AS frozen
+       WHERE frozen ->> 'id' = e.feis_competition_id::text
+       LIMIT 1),
+      c.exclude_from_family_cap,
+      false);
+  IF (v_breakdown ->> 'family_cap_savings_cents')::integer IS DISTINCT FROM
+     (CASE WHEN v_cap IS NULL THEN 0
+           ELSE greatest(0, v_capped - greatest(0, v_cap - coalesce((v_counted ->> 'cappable_paid_cents')::integer, 0)))
+      END) THEN
+    RAISE EXCEPTION 'order family max saving does not match the counted orders';
+  END IF;
+```
+
+- [ ] **Step 6: Migration 015: rules (a) and (b), the marker in `_fulfil_order`, and `confirm_free_order`**
+
+In `supabase/migrations/015_payment_confirmation.sql`:
+
+(a) Replace:
+```sql
+-- Payment hardening, part 4: confirmation is one transaction; anything that doesn't add up becomes
+-- a durable case with a reference, an alert and a restricted parent view. Spec §9, §10, §12.
+
+```
+with:
+```sql
+-- Payment hardening, part 4: confirmation is one transaction; anything that doesn't add up becomes
+-- a durable case with a reference, an alert and a restricted parent view. An order that costs nothing
+-- is confirmed through the same steps without Stripe. Spec §6, §9, §10, §12.
+
+```
+
+(b) Replace:
+```sql
+BEGIN
+  -- One UPDATE sets every payment field with the status: 012 needs the claim, session, payment time and
+  -- confirmation number to arrive with 'paid', and freezes them from then on. The snapshot below is
+  -- written in this same transaction, as 012's snapshot guard requires (paid_at = now()).
+  UPDATE registrations
+```
+with:
+```sql
+BEGIN
+  -- Every move into paid happens here: 012 lets an order become paid only while this marker names it, and lets
+  -- its snapshot in only in the same transaction. Set before the paid update, cleared after the snapshot.
+  PERFORM set_config('pre_registration.fulfilling_order', p_registration_id::text, true);
+
+  -- One UPDATE sets every payment field with the status: 012 needs the claim, session, payment time and
+  -- confirmation number to arrive with 'paid' (for a $0 order, no claim or session at all), and freezes them
+  -- from then on. The snapshot below is written in this same transaction, as 012's snapshot guard requires
+  -- (paid_at = now()).
+  UPDATE registrations
+```
+
+(c) Replace:
+```sql
+
+  PERFORM set_config('pre_registration.fulfilling_order', p_registration_id::text, true);
+  INSERT INTO registration_snapshots (registration_id, snapshot_data)
+```
+with:
+```sql
+
+  INSERT INTO registration_snapshots (registration_id, snapshot_data)
+```
+
+(d) Replace:
+```sql
+
+-- ─── Confirmation ───
+```
+with:
+```sql
+
+-- Rule (b) of spec §9, "the price still holds": every other paid order of the family for this feis is one this
+-- order's price counted (purchase_snapshot.pricing.prior.orders). Returns the ones it didn't, sorted, so an empty
+-- array means the price holds. An order without a purchase snapshot, or with no prior, counted none.
+CREATE OR REPLACE FUNCTION _uncounted_paid_orders(p_registration_id uuid)
+RETURNS uuid[]
+LANGUAGE sql
+STABLE
+SET search_path = pre_registration, pg_temp
+AS $$
+  SELECT coalesce(array_agg(other.id ORDER BY other.id), '{}')
+  FROM registrations o
+  JOIN registrations other
+    ON other.household_id = o.household_id AND other.feis_listing_id = o.feis_listing_id
+   AND other.id <> o.id AND other.status = 'paid'
+  WHERE o.id = p_registration_id
+    AND other.id::text NOT IN (
+      SELECT counted ->> 'id'
+      FROM jsonb_array_elements(
+        CASE WHEN jsonb_typeof(o.purchase_snapshot -> 'pricing' -> 'prior' -> 'orders') = 'array'
+             THEN o.purchase_snapshot -> 'pricing' -> 'prior' -> 'orders' ELSE '[]'::jsonb END) AS counted
+      WHERE counted ->> 'id' IS NOT NULL)
+$$;
+
+-- ─── Confirmation ───
+```
+
+(e) Replace:
+```sql
+  v_number text;
+  v_constraint text;
+  v_details jsonb := jsonb_build_object('source', p_source, 'claimed_registration_id', p_registration_id);
+```
+with:
+```sql
+  v_number text;
+  v_unpaid uuid[];
+  v_uncounted uuid[];
+  v_why jsonb := '[]'::jsonb;
+  v_details jsonb := jsonb_build_object('source', p_source, 'claimed_registration_id', p_registration_id);
+```
+
+(f) Replace:
+```sql
+
+  -- Every check is against the order's own claim, never the listing's current settings
+  v_reason := CASE
+```
+with:
+```sql
+
+  -- Payment checks: every check is against the order's own claim, never the listing's current settings
+  v_reason := CASE
+```
+
+(g) Replace:
+```sql
+    WHEN v_order.status IN ('cancelled', 'paid') THEN 'order_not_payable'
+    -- Active means what idx_registrations_active_unique (002) means, as in create_order (013): neither
+    -- expired nor cancelled. A live database may still hold 011's confirmed orders, which count too.
+    WHEN v_order.status = 'expired' AND EXISTS (
+      SELECT 1 FROM registrations
+      WHERE household_id = v_household AND feis_listing_id = v_listing AND id <> p_registration_id
+        AND status NOT IN ('expired', 'cancelled'))
+      THEN 'late_payment_conflict'
+    ELSE NULL
+  END;
+
+```
+with:
+```sql
+    WHEN v_order.status IN ('cancelled', 'paid') THEN 'order_not_payable'
+    ELSE NULL
+  END;
+
+  -- State checks (spec §9 step 4)
+  IF v_reason IS NULL THEN
+    -- A family who started again isn't held up by a hold the expiry job hasn't ended yet: their other unpaid
+    -- orders for this feis whose hold has passed expire first, by the same rule as that job and create_order
+    UPDATE registrations
+    SET status = 'expired', updated_at = now()
+    WHERE household_id = v_household AND feis_listing_id = v_listing AND id <> p_registration_id
+      AND status IN ('draft', 'pending_payment') AND hold_expires_at < now();
+
+    -- (a) No other unpaid order. It was priced without this payment, may repeat its dances, and can be paid at any
+    -- moment. Only a late payment is judged by it: an unpaid order is itself the family's one unpaid order.
+    -- Unpaid means neither paid, expired nor cancelled, so a live database's leftover 011 confirmed order counts.
+    IF v_order.status = 'expired' THEN
+      SELECT coalesce(array_agg(id ORDER BY id), '{}') INTO v_unpaid FROM registrations
+      WHERE household_id = v_household AND feis_listing_id = v_listing AND id <> p_registration_id
+        AND status NOT IN ('paid', 'expired', 'cancelled');
+      IF cardinality(v_unpaid) > 0 THEN
+        v_why := v_why || jsonb_build_array(jsonb_build_object('rule', 'unpaid_order_exists', 'orders', to_jsonb(v_unpaid)));
+      END IF;
+    END IF;
+
+    -- (b) The price still holds: every other paid order is one this order counted. Paid orders never change, and
+    -- create_order checked the counted orders under this same lock, so this means none was paid since this order
+    -- was priced. It can't fail while the order is unpaid, but it is checked whatever the status.
+    v_uncounted := _uncounted_paid_orders(p_registration_id);
+    IF cardinality(v_uncounted) > 0 THEN
+      v_why := v_why || jsonb_build_array(jsonb_build_object('rule', 'paid_orders_changed', 'orders', to_jsonb(v_uncounted)));
+    END IF;
+
+    IF jsonb_array_length(v_why) > 0 THEN
+      v_reason := 'late_payment_conflict';
+      v_details := v_details || jsonb_build_object('why', v_why);
+    END IF;
+  END IF;
+
+```
+
+(h) Replace:
+```sql
+
+  BEGIN
+    v_number := _fulfil_order(p_registration_id, p_session_id, p_payment_intent_id, p_charge_id,
+      p_amount_cents, lower(p_currency));
+  EXCEPTION WHEN unique_violation THEN
+    GET STACKED DIAGNOSTICS v_constraint = CONSTRAINT_NAME;
+    -- Only the one-active-order rule means "a newer order got there first". Any other uniqueness
+    -- failure (numbers, payment reuse) rolls the whole transaction back so Stripe retries it.
+    IF v_constraint IS DISTINCT FROM 'idx_registrations_active_unique' THEN
+      RAISE;
+    END IF;
+    v_ref := _record_payment_exception('blocking', 'late_payment_conflict', p_registration_id, p_claim_id,
+      p_event_id, p_account, p_session_id, p_payment_intent_id, p_amount_cents, p_currency,
+      v_details || jsonb_build_object('caught', v_constraint));
+    RETURN jsonb_build_object('result', 'exception', 'reason', 'late_payment_conflict', 'support_ref', v_ref);
+  END;
+
+```
+with:
+```sql
+
+  -- Conflicts are decided only by the checks above, under the lock: since 019 the unpaid-order index covers only
+  -- draft and pending_payment, so moving an order into paid can't hit it. Any uniqueness failure here (numbers,
+  -- payment reuse) rolls the whole transaction back so Stripe retries it.
+  v_number := _fulfil_order(p_registration_id, p_session_id, p_payment_intent_id, p_charge_id,
+    p_amount_cents, lower(p_currency));
+
+```
+
+(i) Replace:
+```sql
+
+  RETURN jsonb_build_object('result', 'confirmed', 'confirmation_number', v_number);
+```
+with:
+```sql
+
+  RETURN jsonb_build_object('result', 'confirmed', 'confirmation_number', v_number);
+END;
+$$;
+
+-- A $0 order (typically an add-on once the family max is reached) is confirmed by the database through the same
+-- all-or-nothing steps as a payment, with no Stripe (spec §6 step 3a). It never claims a checkout: claim_checkout
+-- refuses any total under 50 cents.
+CREATE OR REPLACE FUNCTION confirm_free_order(p_registration_id uuid, p_household_id uuid)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pre_registration, pg_temp
+AS $$
+DECLARE
+  v_listing uuid;
+  v_order registrations%ROWTYPE;
+  v_listing_row feis_listings%ROWTYPE;
+  v_uncounted uuid[];
+  v_number text;
+BEGIN
+  SELECT feis_listing_id INTO v_listing FROM registrations
+  WHERE id = p_registration_id AND household_id = p_household_id;
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object('result', 'not_found');
+  END IF;
+
+  PERFORM lock_household_feis(p_household_id, v_listing);
+  SELECT * INTO v_order FROM registrations WHERE id = p_registration_id FOR UPDATE;
+
+  IF v_order.status = 'paid' THEN
+    RETURN jsonb_build_object('result', 'already_confirmed', 'confirmation_number', v_order.confirmation_number);
+  END IF;
+  IF v_order.status <> 'draft' OR v_order.total_cents <> 0 OR v_order.checkout_claim_id IS NOT NULL
+     OR v_order.hold_expires_at IS NULL OR v_order.hold_expires_at <= now() THEN
+    RETURN jsonb_build_object('result', 'not_confirmable', 'status', v_order.status,
+      'hold_expired', v_order.hold_expires_at IS NOT NULL AND v_order.hold_expires_at <= now());
+  END IF;
+
+  -- The organiser can stop new entries right up to this moment, which is a free order's boundary in place of a
+  -- claim (spec §5). No Stripe account and no card minimum: nothing is charged. FOR UPDATE, not FOR SHARE as in
+  -- claim_checkout: _fulfil_order then locks the listing FOR UPDATE for numbering, and upgrading from a share
+  -- lock would deadlock two $0 confirmations at one feis.
+  SELECT * INTO v_listing_row FROM feis_listings WHERE id = v_listing FOR UPDATE;
+  IF v_listing_row.status <> 'open' THEN
+    RETURN jsonb_build_object('result', 'blocked', 'reason', 'organiser_stopped');
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM registration_entries e
+    JOIN feis_competitions c ON c.id = e.feis_competition_id
+    WHERE e.registration_id = p_registration_id AND NOT c.enabled
+  ) THEN
+    RETURN jsonb_build_object('result', 'blocked', 'reason', 'competition_unavailable');
+  END IF;
+
+  -- Rule (b) of §9. It can't fail while the order is the family's one unpaid order, but it is checked anyway. No
+  -- money moved, so there is no case: the draft is cancelled and the family starts again
+  v_uncounted := _uncounted_paid_orders(p_registration_id);
+  IF cardinality(v_uncounted) > 0 THEN
+    UPDATE registrations SET status = 'cancelled' WHERE id = p_registration_id;
+    RETURN jsonb_build_object('result', 'paid_orders_changed', 'orders', to_jsonb(v_uncounted));
+  END IF;
+
+  v_number := _fulfil_order(p_registration_id, NULL, NULL, NULL, 0, 'usd');
+  RETURN jsonb_build_object('result', 'confirmed', 'confirmation_number', v_number);
+```
+
+(j) Replace:
+```sql
+REVOKE ALL ON FUNCTION _fulfil_order(uuid, text, text, text, integer, text) FROM PUBLIC, anon, authenticated, service_role;
+REVOKE ALL ON FUNCTION confirm_order_payment(uuid, uuid, text, text, integer, text, text, text, text, text, text)
+  FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION record_payment_failure(uuid, uuid, text, text, text) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION get_my_payment_reviews(uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION confirm_order_payment(uuid, uuid, text, text, integer, text, text, text, text, text, text) TO service_role;
+GRANT EXECUTE ON FUNCTION record_payment_failure(uuid, uuid, text, text, text) TO service_role;
+GRANT EXECUTE ON FUNCTION get_my_payment_reviews(uuid) TO authenticated;
+```
+with:
+```sql
+REVOKE ALL ON FUNCTION _fulfil_order(uuid, text, text, text, integer, text) FROM PUBLIC, anon, authenticated, service_role;
+REVOKE ALL ON FUNCTION _uncounted_paid_orders(uuid) FROM PUBLIC, anon, authenticated, service_role;
+REVOKE ALL ON FUNCTION confirm_free_order(uuid, uuid) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION confirm_order_payment(uuid, uuid, text, text, integer, text, text, text, text, text, text)
+  FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION record_payment_failure(uuid, uuid, text, text, text) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION get_my_payment_reviews(uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION confirm_order_payment(uuid, uuid, text, text, integer, text, text, text, text, text, text) TO service_role;
+GRANT EXECUTE ON FUNCTION record_payment_failure(uuid, uuid, text, text, text) TO service_role;
+GRANT EXECUTE ON FUNCTION confirm_free_order(uuid, uuid) TO service_role;
+GRANT EXECUTE ON FUNCTION get_my_payment_reviews(uuid) TO authenticated;
+```
+
+- [ ] **Step 7: Migration 017: the admin rule for several orders (Decision 12)**
+
+In `supabase/migrations/017_payments_admin.sql`:
+
+(a) Replace:
+```sql
+
+-- A late payment that conflicts with a newer order: confirm it only if the recorded payment passes
+-- every confirmation check, no other order for the family and feis can have a payment on the way,
+-- and the payment isn't already on another order. Cancels the newer unpaid order and fulfils the late
+-- one, atomically, and closes the case as confirmed_late_payment in the same transaction.
+CREATE OR REPLACE FUNCTION payments_admin.confirm_late_payment(p_support_ref text, p_note text)
+```
+with:
+```sql
+
+-- A late payment recorded as a late_payment_conflict case: confirm it only if the recorded payment passes every
+-- confirmation check and isn't already on another order, the order is expired, its price still holds (every
+-- other paid order of the family for this feis is one it counted), and every other order is paid and counted,
+-- cancelled, expired, or an unclaimed draft. The unclaimed drafts are cancelled, since they were priced without
+-- the late payment; the late order is fulfilled and the case closed as confirmed_late_payment, all in one
+-- transaction (spec §11, Decision 12).
+CREATE OR REPLACE FUNCTION payments_admin.confirm_late_payment(p_support_ref text, p_note text)
+```
+
+(b) Replace:
+```sql
+  v_other registrations%ROWTYPE;
+  v_cancelled uuid[] := '{}';
+```
+with:
+```sql
+  v_other registrations%ROWTYPE;
+  v_uncounted uuid[];
+  v_counted jsonb;
+  v_cancelled uuid[] := '{}';
+```
+
+(c) Replace:
+```sql
+
+  -- Another order may only be replaced when no payment for it can exist. An order that never had a
+  -- checkout claim can't have been paid; one cancelled through Cancel had its checkout settled first.
+  -- Anything else that reached checkout, even if it has since expired, could still have a delayed
+  -- payment on the way, so the case is resolved by refund instead (spec §11).
+  FOR v_other IN
+```
+with:
+```sql
+
+  -- Rule (b) of §9: a paid order this order didn't count was paid after it was priced, so it may repeat this
+  -- order's dances, or have made its event fee, family max or late fees wrong. Only a refund is allowed
+  v_uncounted := _uncounted_paid_orders(v_order.id);
+  IF cardinality(v_uncounted) > 0 THEN
+    RAISE EXCEPTION 'order % was paid after this order was priced, so its price no longer holds; refund the late payment instead',
+      v_uncounted[1];
+  END IF;
+
+  -- Every other order must be paid (and counted, above), cancelled, expired, or an unclaimed draft. A draft with
+  -- a claim, or an order awaiting payment, may be paid at any moment and was priced without the late payment, so
+  -- only a refund is allowed. A newer order that reached checkout and expired unpaid doesn't block (Decision 12):
+  -- if a payment for it arrives later, rule (b) turns it into a case, because it didn't count this order.
+  FOR v_other IN
+```
+
+(d) Replace:
+```sql
+  LOOP
+    IF v_other.status = 'paid' THEN
+      RAISE EXCEPTION 'the family also paid order %; refund one payment instead', v_other.id;
+    END IF;
+    IF v_other.checkout_claim_id IS NOT NULL AND v_other.status <> 'cancelled' THEN
+      RAISE EXCEPTION 'order % was taken to checkout, so a payment for it may still arrive; refund the late payment instead',
+        v_other.id;
+    END IF;
+    IF v_other.status = 'draft' THEN
+      UPDATE registrations SET status = 'cancelled' WHERE id = v_other.id;
+      v_cancelled := v_cancelled || v_other.id;
+    END IF;
+  END LOOP;
+
+```
+with:
+```sql
+  LOOP
+    IF v_other.status = 'pending_payment' OR (v_other.status = 'draft' AND v_other.checkout_claim_id IS NOT NULL) THEN
+      RAISE EXCEPTION 'order % is at checkout, so a payment for it may still arrive; refund the late payment instead',
+        v_other.id;
+    END IF;
+    IF v_other.status NOT IN ('draft', 'paid', 'cancelled', 'expired') THEN
+      RAISE EXCEPTION 'order % is %; refund the late payment instead', v_other.id, v_other.status;
+    END IF;
+    IF v_other.status = 'draft' THEN
+      UPDATE registrations SET status = 'cancelled' WHERE id = v_other.id;
+      v_cancelled := v_cancelled || v_other.id;
+    END IF;
+  END LOOP;
+
+  -- The paid orders this order's price counted, for the audit row
+  SELECT coalesce(jsonb_agg(counted -> 'id' ORDER BY counted ->> 'id'), '[]'::jsonb) INTO v_counted
+  FROM jsonb_array_elements(
+    CASE WHEN jsonb_typeof(v_order.purchase_snapshot -> 'pricing' -> 'prior' -> 'orders') = 'array'
+         THEN v_order.purchase_snapshot -> 'pricing' -> 'prior' -> 'orders' ELSE '[]'::jsonb END) AS counted;
+
+```
+
+(e) Replace:
+```sql
+    'cancelled_orders', to_jsonb(v_cancelled),
+    'confirmation_number', v_number));
+```
+with:
+```sql
+    'cancelled_orders', to_jsonb(v_cancelled),
+    'counted_orders', v_counted,
+    'confirmation_number', v_number));
+```
+
+- [ ] **Step 8: Migration 020: refuse to apply without 019's index**
+
+Create `supabase/migrations/020_assert_unpaid_index.sql`:
+```sql
+-- 020_assert_unpaid_index.sql
+-- Payment hardening, last step: refuse to apply unless one unpaid order per family per feis is enforced by
+-- exactly 019's index. 012–017 rely on it and never create or drop it: create_order refuses a second unpaid
+-- order with a clear message before the index would, and confirmation decides conflicts by explicit checks,
+-- since a move into paid can't touch an index that covers only draft and pending_payment. This file runs last
+-- either way: live after 012–017 (019 is already there), and in the tests after 019. Spec §2, Rollout.
+
+DO $$
+DECLARE
+  v_def text := pg_get_indexdef(to_regclass('pre_registration.idx_registrations_active_unique'));
+  v_expected constant text :=
+    'CREATE UNIQUE INDEX idx_registrations_active_unique ON pre_registration.registrations USING btree '
+    '(feis_listing_id, household_id) WHERE (status = ANY (ARRAY[''draft''::text, ''pending_payment''::text]))';
+BEGIN
+  IF v_def IS DISTINCT FROM v_expected THEN
+    RAISE EXCEPTION 'idx_registrations_active_unique must be 019''s one-unpaid-order index, but is: %',
+      coalesce(v_def, 'missing');
+  END IF;
+END $$;
+```
+
+- [ ] **Step 9: The order store, the shared message and the refusal messages**
+
+In `src/app/_payments/order-store.ts`:
+
+(a) Replace:
+```ts
+      status: 'refused'
+      reason: 'listing_closed' | 'outside_window' | 'active_order_exists'
+      registration_id?: string
+    }
+
+```
+with:
+```ts
+      status: 'refused'
+      reason:
+        | 'listing_closed'
+        | 'outside_window'
+        | 'amount_too_small'
+        | 'unpaid_order_exists'
+        | 'paid_orders_changed'
+        | 'already_entered'
+      registration_id?: string
+    }
+
+/** confirm_free_order: a $0 draft confirmed without Stripe (spec §6 step 3a) */
+export type FreeOrderResult =
+  | { result: 'confirmed' | 'already_confirmed'; confirmation_number: string }
+  | { result: 'blocked'; reason: 'organiser_stopped' | 'competition_unavailable' }
+  | { result: 'paid_orders_changed'; orders: string[] }
+  | { result: 'not_confirmable'; status: RegistrationStatus; hold_expired: boolean }
+  | { result: 'not_found' }
+
+```
+
+(b) Replace:
+```ts
+
+    async attachCheckoutSession(
+```
+with:
+```ts
+
+    async confirmFreeOrder(registrationId: string, householdId: string): Promise<FreeOrderResult> {
+      return (await rpc('confirm_free_order', {
+        p_registration_id: registrationId,
+        p_household_id: householdId
+      })) as FreeOrderResult
+    },
+
+    async attachCheckoutSession(
+```
+
+In `src/lib/engine/checkout-policy.ts`, replace:
+```ts
+  return totalCents > 0 && belowCardMinimum(totalCents)
+}
+
+export type CheckoutBlock =
+```
+with:
+```ts
+  return totalCents > 0 && belowCardMinimum(totalCents)
+}
+
+/**
+ * create_order's paid_orders_changed: a paid order appeared, or changed what this one should count, after Submit
+ * read them. Pay says the same when a $0 order's counted orders no longer hold.
+ */
+export const PAID_ORDERS_CHANGED_MESSAGE =
+  'Your entries for this feis changed while you were choosing. Reload this page and check the total.'
+
+export type CheckoutBlock =
+```
+
+In `src/app/feiseanna/[id]/register/actions.ts`:
+
+(a) Replace:
+```ts
+import { createServiceClient, type ServiceClient } from '@/lib/supabase/service'
+import { belowCardMinimum, CHECKOUT_BLOCK_MESSAGES } from '@/lib/engine/checkout-policy'
+import { clientIpFrom } from '@/lib/engine/consent'
+```
+with:
+```ts
+import { createServiceClient, type ServiceClient } from '@/lib/supabase/service'
+import {
+  belowCardMinimum,
+  CHECKOUT_BLOCK_MESSAGES,
+  PAID_ORDERS_CHANGED_MESSAGE
+} from '@/lib/engine/checkout-policy'
+import { clientIpFrom } from '@/lib/engine/consent'
+```
+
+(b) Replace:
+```ts
+  outside_window: 'Registration for this feis has closed.',
+  active_order_exists: 'You already have entries for this feis. Reload this page to see them.'
+}
+```
+with:
+```ts
+  outside_window: 'Registration for this feis has closed.',
+  amount_too_small: CHECKOUT_BLOCK_MESSAGES.amount_too_small,
+  unpaid_order_exists:
+    'You already have entries waiting for payment at this feis. Reload this page to see them.',
+  already_entered:
+    'One of these dances is already entered and paid for. Reload this page to see your entries.',
+  paid_orders_changed: PAID_ORDERS_CHANGED_MESSAGE
+}
+```
+
+- [ ] **Step 10: Run the tests**
+
+Run: `npm run test:db`
+Expected: PASS (10 files, 241 tests). The test database applies every migration in name order, 019 and 020 included, as live will have them.
+
+Run: `npx tsc --noEmit && npm run lint && npm test`
+Expected: all pass, with no lint errors (24 files, 304 tests).
+
+- [ ] **Step 11: Commit**
+
+```bash
+git add supabase/migrations/012_order_integrity.sql supabase/migrations/013_create_order.sql \
+  supabase/migrations/015_payment_confirmation.sql supabase/migrations/017_payments_admin.sql \
+  supabase/migrations/020_assert_unpaid_index.sql src/app/_payments/order-store.ts src/lib/engine/checkout-policy.ts \
+  'src/app/feiseanna/[id]/register/actions.ts' tests/db/helpers/fixtures.ts tests/db/add-on-orders.test.ts \
+  tests/db/create-order.test.ts tests/db/payment-confirmation.test.ts tests/db/payments-admin.test.ts \
+  tests/db/order-integrity.test.ts tests/db/checkout-claims.test.ts
+git commit -q -m "feat: add-on and \$0 orders in the order functions; 020 checks the unpaid-order index"
+```
+
+---
+
+### Task 20: Add dances after paying, and $0 orders, in the app
+
+Spec §4, §6, §12 and §14, and Decision 13. This ports main's add-on screens onto this branch's order model and keeps the redesigned look. One gate, `canStartOrder`, decides everywhere when a new order can start.
+
+**Files:**
+- Modify: `src/lib/payment-review-messages.ts`, `src/lib/entry-display.ts`, `src/lib/email/templates.ts`
+- Modify: `src/app/_payments/checkout-workflow.ts`, `src/app/feiseanna/[id]/register/actions.ts`, `src/app/feiseanna/[id]/register/page.tsx`, `src/app/feiseanna/[id]/register/success/page.tsx`, `src/app/dashboard/page.tsx`
+- Modify: `src/components/registration/entry-page.tsx`, `src/components/registration/family-receipt.tsx`
+- Test: `tests/payment-review-messages.test.ts`, `tests/entry-display.test.ts`, `tests/email-templates.test.ts`, `tests/db/checkout-workflow.test.ts`
+
+**Interfaces:**
+- Consumes:
+  - from Task 18: `canStartOrder`, `paidOrdersFrom`, `summarisePaidOrders` and `tooSmallToCharge`
+  - from Task 19: `confirmFreeOrder`, `PAID_ORDERS_CHANGED_MESSAGE` and the new refusals
+  - from Task 17: `DancerEntry`'s `entered`, `FamilyReceipt`'s `title` and `note`, and `PaidReceipt`'s `canAdd`
+- Produces:
+  - `openMessageAFor(reviews, registrationIds): PaymentReview | null` (`payment-review-messages.ts`)
+  - `isAddOnOrder(order): boolean` (`entry-display.ts`): an order whose price counted earlier paid orders
+  - `ConfirmationEmailData.addedToEntry`
+  - Pay's $0 path in `checkout-workflow.ts`
+  - `EntryPageData.paidRegistrations` and `EntryPageData.openMessageA`
+  - the success page's `?order=<registration id>`
+
+**Notes:**
+- **Submit** reads the family's paid orders with the service role, together with the feis, and passes them to `validateOrderRequest` and `priceOrder` through `paidOrdersFrom`. It refuses only 1 to 49 cents now.
+- **Pay** confirms a $0 draft through `confirm_free_order` before any claim. It maps `confirmed` and `already_confirmed` to `paid`, `blocked` to `blocked` with the claim's message, `paid_orders_changed` to `start_again` with the shared message, `not_confirmable` to `start_again`, and `not_found` to an error. After any `paid`, the action sends the queued email as a best effort with `after()`, as the webhook does: a $0 order has no webhook.
+- **The entry page:**
+  - Paid dances show ticked and locked, as "Entered"; new choices are marked "Adding".
+  - The receipt for an add-on is "Adding to your entry", and its estimate counts the paid orders the way Submit does. Submit's own total still wins when they differ.
+  - At $0 the button reads "Confirm entries", and the receipt says there's nothing to pay.
+  - While a message-A case is open for the feis, message A with its reference replaces choosing and Pay, including Pay for a held order.
+  - Every route to the success page names the order (`?order=`).
+- **My entries:** each order is its own row, and an add-on is tagged "Added". The feis's newest paid order offers "Add dances" when `canStartOrder` allows it, and receipt links name their order.
+- **The email:** an add-on's email says its dances were added to the family's entry (`isAddOnOrder` on its frozen purchase) and lists only its own dances. Numbers were already looked up by feis and dancer (016). A $0 order shows $0.00.
+- **No TypeScript writes the order tables:** Task 17 left out `confirmFreeOrder` and `confirmation-number.ts`. Step 11 checks that nothing writes them.
+
+- [ ] **Step 1: Write the failing tests**
+
+In `tests/payment-review-messages.test.ts`:
+
+(a) Replace:
+```ts
+  messageAWasResolved,
+  openReviewsByOrder,
+```
+with:
+```ts
+  messageAWasResolved,
+  openMessageAFor,
+  openReviewsByOrder,
+```
+
+(b) Replace:
+```ts
+    expect(messageAWasResolved([], 'r1')).toBe(false)
+  })
+})
+
+```
+with:
+```ts
+    expect(messageAWasResolved([], 'r1')).toBe(false)
+  })
+})
+
+// Decision 13: while the family has an open message-A case for a feis, no new order for it starts
+describe('openMessageAFor', () => {
+  it("finds the newest open message-A case on one of the feis's orders", () => {
+    const newer = review({ registration_id: 'r2', support_ref: 'PAY-NEWER', created_at: '2026-10-16T13:00:00+00:00' })
+    expect(openMessageAFor([review(), newer], ['r1', 'r2'])).toEqual(newer)
+  })
+
+  it("ignores message B, resolved cases and other feiseanna's orders", () => {
+    expect(openMessageAFor([review({ message_code: 'B' })], ['r1'])).toBeNull()
+    expect(openMessageAFor([review({ resolved: true })], ['r1'])).toBeNull()
+    expect(openMessageAFor([review()], ['r9'])).toBeNull()
+  })
+})
+
+```
+
+In `tests/entry-display.test.ts`:
+
+(a) Replace:
+```ts
+  entryDeadline,
+  formatDeadline
+} from '@/lib/entry-display'
+```
+with:
+```ts
+  entryDeadline,
+  formatDeadline,
+  isAddOnOrder
+} from '@/lib/entry-display'
+```
+
+(b) Replace:
+```ts
+    expect(formatDeadline('2027-02-27T04:59:00Z', 'America/New_York')).toBe('Fri 26 Feb, 11:59 pm')
+  })
+})
+
+```
+with:
+```ts
+    expect(formatDeadline('2027-02-27T04:59:00Z', 'America/New_York')).toBe('Fri 26 Feb, 11:59 pm')
+  })
+})
+
+describe('isAddOnOrder', () => {
+  it('is an add-on when its price counted earlier paid orders', () => {
+    expect(isAddOnOrder({ purchase_snapshot: { pricing: { prior: { orders: [] } } } })).toBe(true)
+  })
+
+  it("isn't for a first order, or an order made before purchase snapshots or add-ons", () => {
+    expect(isAddOnOrder({ purchase_snapshot: { pricing: { prior: null } } })).toBe(false)
+    expect(isAddOnOrder({ purchase_snapshot: { pricing: {} } })).toBe(false)
+    expect(isAddOnOrder({ purchase_snapshot: null })).toBe(false)
+  })
+})
+
+```
+
+In `tests/email-templates.test.ts`, replace:
+```ts
+    expect(email.html).toContain('https://runfeis.test/dashboard')
+  })
+```
+with:
+```ts
+    expect(email.html).toContain('https://runfeis.test/dashboard')
+  })
+
+  it("says an add-on's dances were added to the family's entry, and lists only its own dances", () => {
+    const addOn = {
+      ...purchase,
+      pricing: { prior: { orders: [{ id: 'o1' }] } }
+    } as unknown as PurchaseSnapshot
+    const email = confirmationEmail({
+      order: { confirmation_number: 'RF-2026-ADD22', total_cents: 0 },
+      listing,
+      purchase: addOn,
+      numbers: [{ dancer_id: 'd1', competitor_number: 214 }],
+      baseUrl: 'https://runfeis.test'
+    })
+    expect(email.subject).toBe('Dances added: Newport Feis')
+    expect(email.html).toContain('These dances were added to your entry')
+    expect(email.html).toContain('>214<')
+    expect(email.html.match(/>210R</g)).toHaveLength(1)
+    // A $0 add-on shows what was paid: nothing
+    expect(email.html).toContain('$0.00')
+  })
+
+  it("keeps a first order's wording", () => {
+    const email = confirmationEmail({ order, listing, purchase, numbers: [], baseUrl: 'https://runfeis.test' })
+    expect(email.html).not.toContain('added to your entry')
+    expect(email.html).toContain('Here are your competitor numbers and dances')
+  })
+```
+
+In `tests/db/checkout-workflow.test.ts`:
+
+(a) Replace:
+```ts
+import { createOrderStore, type OrderStore } from '@/app/_payments/order-store'
+import { reviewMessage } from '@/lib/payment-review-messages'
+```
+with:
+```ts
+import { createOrderStore, type OrderStore } from '@/app/_payments/order-store'
+import { CHECKOUT_BLOCK_MESSAGES } from '@/lib/engine/checkout-policy'
+import { reviewMessage } from '@/lib/payment-review-messages'
+```
+
+(b) Replace:
+```ts
+  createDraftOrder,
+  type DraftOrderFixture
+```
+with:
+```ts
+  createDraftOrder,
+  createListing,
+  type DraftOrderFixture
+```
+
+(c) Replace:
+```ts
+
+describe('cancel', () => {
+```
+with:
+```ts
+
+// Spec §6 step 3a: a $0 order is confirmed by the database, with no Stripe call and no claim
+describe('pay for a $0 order', () => {
+  /** A draft order at a feis where the family fee and every dance cost nothing */
+  async function freeOrder(): Promise<DraftOrderFixture> {
+    const created = await createListing(db.pool)
+    await db.pool.query(
+      'UPDATE fee_schedules SET event_fee_cents = 0, solo_fee_cents = 0 WHERE feis_listing_id = $1',
+      [created.listing.id]
+    )
+    const listing = { ...created, feeSchedule: { ...created.feeSchedule, event_fee_cents: 0, solo_fee_cents: 0 } }
+    const order = await createDraftOrder(db.pool, { listing })
+    expect(order.payload.total_cents).toBe(0)
+    return order
+  }
+
+  it('confirms it without Stripe, and a second click hears it is paid', async () => {
+    const stripe = new FakeStripe()
+    const order = await freeOrder()
+    const first = await pay(deps(stripe), ids(order))
+    if (first.kind !== 'paid') throw new Error(`expected paid, got ${first.kind}`)
+    expect(first.confirmationNumber).toMatch(/^RF-\d{4}-[A-HJKMNP-Z2-9]{5}$/)
+    expect(await pay(deps(stripe), ids(order))).toEqual(first)
+    expect(stripe.createCalls).toBe(0)
+    expect(await orderRow(order.registrationId)).toMatchObject({
+      status: 'paid', checkout_claim_id: null, stripe_checkout_session_id: null
+    })
+  })
+
+  it('is blocked once the organiser stops registration, and starts again once its hold has passed', async () => {
+    const stripe = new FakeStripe()
+    const stopped = await freeOrder()
+    await db.pool.query(`UPDATE feis_listings SET status = 'closed' WHERE id = $1`, [stopped.listing.listing.id])
+    expect(await pay(deps(stripe), ids(stopped)))
+      .toEqual({ kind: 'blocked', message: CHECKOUT_BLOCK_MESSAGES.organiser_stopped })
+
+    const lapsed = await freeOrder()
+    await db.pool.query(`UPDATE registrations SET hold_expires_at = now() - interval '1 minute' WHERE id = $1`,
+      [lapsed.registrationId])
+    expect(await pay(deps(stripe), ids(lapsed)))
+      .toEqual({ kind: 'start_again', message: CHECKOUT_MESSAGES.expired })
+    expect(stripe.createCalls).toBe(0)
+    for (const order of [stopped, lapsed]) expect((await orderRow(order.registrationId)).status).toBe('draft')
+  })
+})
+
+describe('cancel', () => {
+```
+
+- [ ] **Step 2: Run the tests to see them fail**
+
+Run: `npm test && npm run test:db -- tests/db/checkout-workflow.test.ts`
+Expected: FAIL. `openMessageAFor` and `isAddOnOrder` aren't exported, an add-on's email still says "You're entered", and Pay sends a $0 order to the claim, which blocks it.
+
+- [ ] **Step 3: The message-A gate and the add-on test**
+
+In `src/lib/payment-review-messages.ts`, replace:
+```ts
+
+/** What the family sees in place of message A once the payments contacts have closed that case */
+```
+with:
+```ts
+
+/**
+ * The family's open message-A case for a feis: the newest unresolved case with message A on any of the feis's
+ * orders (`registrationIds`). While one is open, no new order for the feis can start (Decision 13).
+ */
+export function openMessageAFor(
+  reviews: PaymentReview[],
+  registrationIds: string[]
+): PaymentReview | null {
+  const ids = new Set(registrationIds)
+  let newest: PaymentReview | null = null
+  for (const review of openReviewsByOrder(reviews).values()) {
+    if (!ids.has(review.registration_id) || review.message_code !== 'A') continue
+    if (!newest || Date.parse(review.created_at) > Date.parse(newest.created_at)) newest = review
+  }
+  return newest
+}
+
+/** What the family sees in place of message A once the payments contacts have closed that case */
+```
+
+In `src/lib/entry-display.ts`, replace:
+```ts
+  return `${day}, ${time}`
+}
+
+```
+with:
+```ts
+  return `${day}, ${time}`
+}
+
+/**
+ * Whether an order was an add-on: its price counted the family's earlier paid orders (spec §14). Orders made
+ * before add-ons, and every family's first order, have no counted orders.
+ */
+export function isAddOnOrder(order: {
+  purchase_snapshot: { pricing?: { prior?: unknown } } | null
+}): boolean {
+  return order.purchase_snapshot?.pricing?.prior != null
+}
+
+```
+
+- [ ] **Step 4: The add-on email**
+
+In `src/lib/email/templates.ts`:
+
+(a) Replace:
+```ts
+import { formatCents, formatDate } from '@/lib/format'
+```
+with:
+```ts
+import { isAddOnOrder } from '@/lib/entry-display'
+import { formatCents, formatDate } from '@/lib/format'
+```
+
+(b) Replace:
+```ts
+  contactEmail: string | null
+  baseUrl: string
+}
+
+```
+with:
+```ts
+  contactEmail: string | null
+  baseUrl: string
+  /** An add-on: these dances were added to the family's entry, and its dancers keep their numbers */
+  addedToEntry?: boolean
+}
+
+```
+
+(c) Replace:
+```ts
+    contactEmail,
+    baseUrl
+  } = data
+  return `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="color-scheme" content="light"><title>You're entered</title></head>
+<body style="margin:0;padding:0;background-color:#FBF9F4;font-family:Arial,Helvetica,sans-serif;">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;">Your competitor numbers for ${escapeHtml(feisName)}.</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#FBF9F4;">
+```
+with:
+```ts
+    contactEmail,
+    baseUrl,
+    addedToEntry = false
+  } = data
+  const intro = addedToEntry
+    ? "These dances were added to your entry. Each dancer keeps the competitor number they already had. Keep this email with your first one; you'll need the numbers on the day."
+    : "Here are your competitor numbers and dances. Keep this email; you'll need the numbers on the day."
+  return `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="color-scheme" content="light"><title>You're entered</title></head>
+<body style="margin:0;padding:0;background-color:#FBF9F4;font-family:Arial,Helvetica,sans-serif;">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;">${addedToEntry ? 'Dances added to your entry for' : 'Your competitor numbers for'} ${escapeHtml(feisName)}.</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#FBF9F4;">
+```
+
+(d) Replace:
+```ts
+        <p style="margin:0 0 16px;font-size:15px;line-height:1.6;color:#3F4441;">
+          Here are your competitor numbers and dances. Keep this email; you'll need the numbers on the day.
+        </p>
+```
+with:
+```ts
+        <p style="margin:0 0 16px;font-size:15px;line-height:1.6;color:#3F4441;">
+          ${intro}
+        </p>
+```
+
+(e) Replace:
+```ts
+  const feisName = ctx.listing.name ?? 'your feis'
+  return {
+    subject: `You're entered: ${feisName}`,
+    html: renderConfirmationEmail({
+```
+with:
+```ts
+  const feisName = ctx.listing.name ?? 'your feis'
+  // An add-on's email lists only its own dances (the purchase is this order's), and says they were added
+  const addedToEntry = isAddOnOrder({ purchase_snapshot: ctx.purchase })
+  return {
+    subject: addedToEntry ? `Dances added: ${feisName}` : `You're entered: ${feisName}`,
+    html: renderConfirmationEmail({
+```
+
+(f) Replace:
+```ts
+      contactEmail: ctx.listing.contact_email,
+      baseUrl: ctx.baseUrl
+    })
+```
+with:
+```ts
+      contactEmail: ctx.listing.contact_email,
+      baseUrl: ctx.baseUrl,
+      addedToEntry
+    })
+```
+
+- [ ] **Step 5: Pay's $0 path**
+
+In `src/app/_payments/checkout-workflow.ts`:
+
+(a) Replace:
+```ts
+import { buildCheckoutConfig, type CheckoutConfig } from '@/lib/engine/checkout-config'
+import { CHECKOUT_BLOCK_MESSAGES, checkoutBlockReason } from '@/lib/engine/checkout-policy'
+import { reviewCodeForReason, reviewMessage } from '@/lib/payment-review-messages'
+```
+with:
+```ts
+import { buildCheckoutConfig, type CheckoutConfig } from '@/lib/engine/checkout-config'
+import {
+  CHECKOUT_BLOCK_MESSAGES,
+  checkoutBlockReason,
+  PAID_ORDERS_CHANGED_MESSAGE
+} from '@/lib/engine/checkout-policy'
+import { reviewCodeForReason, reviewMessage } from '@/lib/payment-review-messages'
+```
+
+(b) Replace:
+```ts
+  }
+  if (isClaimed(order)) return resumeClaim(deps, order)
+```
+with:
+```ts
+  }
+  // A $0 order is confirmed by the database without Stripe, and never claims a checkout (spec §6 step 3a)
+  if (order.status === 'draft' && order.total_cents === 0) return confirmFree(deps, order)
+  if (isClaimed(order)) return resumeClaim(deps, order)
+```
+
+(c) Replace:
+```ts
+        : reread(deps, order)
+    case 'not_found':
+```
+with:
+```ts
+        : reread(deps, order)
+    case 'not_found':
+      return { kind: 'error', message: CHECKOUT_MESSAGES.notFound }
+  }
+}
+
+/** Pay for an order that costs nothing: confirm_free_order, and what each answer means for the family */
+async function confirmFree(deps: CheckoutDeps, order: CheckoutOrder): Promise<PayResult> {
+  const result = await deps.store.confirmFreeOrder(order.id, order.household_id)
+  switch (result.result) {
+    case 'confirmed':
+    case 'already_confirmed':
+      return { kind: 'paid', confirmationNumber: result.confirmation_number }
+    case 'blocked':
+      return { kind: 'blocked', message: CHECKOUT_BLOCK_MESSAGES[result.reason] }
+    case 'paid_orders_changed':
+      return { kind: 'start_again', message: PAID_ORDERS_CHANGED_MESSAGE }
+    case 'not_confirmable':
+      return { kind: 'start_again', message: CHECKOUT_MESSAGES.expired }
+    case 'not_found':
+```
+
+- [ ] **Step 6: Submit prices on top of the paid orders; Pay sends the email**
+
+In `src/app/feiseanna/[id]/register/actions.ts`:
+
+(a) Replace:
+```ts
+import { headers } from 'next/headers'
+import { createClient, getSignedInUser } from '@/lib/supabase/server'
+import { createServiceClient, type ServiceClient } from '@/lib/supabase/service'
+import {
+  belowCardMinimum,
+  CHECKOUT_BLOCK_MESSAGES,
+  PAID_ORDERS_CHANGED_MESSAGE
+} from '@/lib/engine/checkout-policy'
+```
+with:
+```ts
+import { headers } from 'next/headers'
+import { after } from 'next/server'
+import { createClient, getSignedInUser } from '@/lib/supabase/server'
+import { createServiceClient, type ServiceClient } from '@/lib/supabase/service'
+import {
+  CHECKOUT_BLOCK_MESSAGES,
+  PAID_ORDERS_CHANGED_MESSAGE,
+  tooSmallToCharge
+} from '@/lib/engine/checkout-policy'
+```
+
+(b) Replace:
+```ts
+  buildCreateOrderPayload,
+  priceOrder,
+  type CreateOrderPayload
+} from '@/lib/engine/purchase-snapshot'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
+import { isHouseholdComplete, REQUIRED_HOUSEHOLD_FIELDS } from '@/lib/household'
+import { checkoutDeps } from '@/app/_payments/checkout-deps'
+import { cancel, pay, type CancelResult, type PayResult } from '@/app/_payments/checkout-workflow'
+import { REGISTRATION_COLUMNS } from '@/lib/registration-columns'
+```
+with:
+```ts
+  buildCreateOrderPayload,
+  paidOrdersFrom,
+  priceOrder,
+  type CreateOrderPayload,
+  type PaidOrderRow
+} from '@/lib/engine/purchase-snapshot'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
+import { isHouseholdComplete, REQUIRED_HOUSEHOLD_FIELDS } from '@/lib/household'
+import { checkoutDeps } from '@/app/_payments/checkout-deps'
+import { cancel, pay, type CancelResult, type PayResult } from '@/app/_payments/checkout-workflow'
+import { notificationDeps } from '@/app/_payments/notification-deps'
+import { processNotifications } from '@/app/_payments/notification-worker'
+import { REGISTRATION_COLUMNS } from '@/lib/registration-columns'
+```
+
+(c) Replace:
+```ts
+async function loadOrderInputs(service: ServiceClient, feisListingId: string, householdId: string) {
+  const [listing, feeSchedule, dancers, competitions] = await Promise.all([
+    service.from('feis_listings').select('*').eq('id', feisListingId).maybeSingle(),
+```
+with:
+```ts
+async function loadOrderInputs(service: ServiceClient, feisListingId: string, householdId: string) {
+  const [listing, feeSchedule, dancers, competitions, paidOrders] = await Promise.all([
+    service.from('feis_listings').select('*').eq('id', feisListingId).maybeSingle(),
+```
+
+(d) Replace:
+```ts
+        .range(from, to)
+    )
+  ])
+  const failed = listing.error ?? feeSchedule.error ?? dancers.error
+  if (failed) throw new Error(failed.message)
+  return {
+    listing: listing.data as FeisListing | null,
+    feeSchedule: feeSchedule.data as FeeSchedule | null,
+    dancers: (dancers.data ?? []) as OrderDancer[],
+    competitions
+  }
+```
+with:
+```ts
+        .range(from, to)
+    ),
+    // The family's paid orders for this feis: a new order is priced on top of them (spec §4)
+    service
+      .from('registrations')
+      .select(
+        'id, confirmation_number, event_fee_cents, purchase_snapshot, registration_entries(dancer_id, feis_competition_id, base_fee_cents, late_fee_cents)'
+      )
+      .eq('feis_listing_id', feisListingId)
+      .eq('household_id', householdId)
+      .eq('status', 'paid')
+  ])
+  const failed = listing.error ?? feeSchedule.error ?? dancers.error ?? paidOrders.error
+  if (failed) throw new Error(failed.message)
+  return {
+    listing: listing.data as FeisListing | null,
+    feeSchedule: feeSchedule.data as FeeSchedule | null,
+    dancers: (dancers.data ?? []) as OrderDancer[],
+    competitions,
+    paidOrderRows: (paidOrders.data ?? []) as unknown as PaidOrderRow[]
+  }
+```
+
+(e) Replace:
+```ts
+  if (!loaded) return { error: 'The feis details could not be loaded. Please try again.' }
+  const { listing, feeSchedule, dancers, competitions } = loaded
+  if (!listing) return { error: 'This feis could not be found.' }
+  if (!feeSchedule) return { error: "This feis hasn't set its fees yet, so entries can't be paid." }
+
+  const now = new Date()
+  const levels = listing.syllabus_snapshot?.levels ?? []
+  const validation = validateOrderRequest({
+    now,
+    householdId: ctx.household.id,
+    listing: { ...listing, levels },
+    dancers,
+    competitions,
+    entries: input.entries
+  })
+```
+with:
+```ts
+  if (!loaded) return { error: 'The feis details could not be loaded. Please try again.' }
+  const { listing, feeSchedule, dancers, competitions, paidOrderRows } = loaded
+  if (!listing) return { error: 'This feis could not be found.' }
+  if (!feeSchedule) return { error: "This feis hasn't set its fees yet, so entries can't be paid." }
+
+  const now = new Date()
+  const levels = listing.syllabus_snapshot?.levels ?? []
+  // What the family's paid orders covered, each entry with its own order's family-max flag
+  const paidOrders = paidOrdersFrom(paidOrderRows, competitions)
+  const validation = validateOrderRequest({
+    now,
+    householdId: ctx.household.id,
+    listing: { ...listing, levels },
+    dancers,
+    competitions,
+    entries: input.entries,
+    paidOrders
+  })
+```
+
+(f) Replace:
+```ts
+      entries: input.entries,
+      feeSchedule
+    })
+```
+with:
+```ts
+      entries: input.entries,
+      feeSchedule,
+      paidOrders
+    })
+```
+
+(g) Replace:
+```ts
+
+  // Stripe can't take a card payment this small, so no order is made that could never be paid.
+  // Pay's claim blocks such an order too, with the same message.
+  if (belowCardMinimum(payload.total_cents)) {
+    return { error: CHECKOUT_BLOCK_MESSAGES.amount_too_small }
+```
+with:
+```ts
+
+  // Stripe can't take a card payment of 1 to 49 cents, so no order is made that could never be paid
+  // (Decision 10); create_order refuses it too. A $0 order is made: Pay confirms it without Stripe.
+  if (tooSmallToCharge(payload.total_cents)) {
+    return { error: CHECKOUT_BLOCK_MESSAGES.amount_too_small }
+```
+
+(h) Replace:
+```ts
+  try {
+    return await pay(checkoutDeps(), { registrationId, householdId: ctx.household.id })
+  } catch (err) {
+```
+with:
+```ts
+  try {
+    const result = await pay(checkoutDeps(), { registrationId, householdId: ctx.household.id })
+    if (result.kind === 'paid') {
+      // A confirmation queues its email. Send it now as a best effort, as the webhook does: a $0 order
+      // has no webhook, and the 5-minute job retries anything that fails
+      after(() =>
+        processNotifications(notificationDeps(), { limit: 5 }).catch((err) =>
+          console.error('[NOTIFICATIONS] immediate send failed:', err)
+        )
+      )
+    }
+    return result
+  } catch (err) {
+```
+
+- [ ] **Step 7: The register page loads every paid order and the family's open message A**
+
+In `src/app/feiseanna/[id]/register/page.tsx`:
+
+(a) Replace:
+```tsx
+import { isHouseholdComplete } from '@/lib/household'
+import { getExistingRegistration } from './actions'
+```
+with:
+```tsx
+import { isHouseholdComplete } from '@/lib/household'
+import { openMessageAFor, type PaymentReview } from '@/lib/payment-review-messages'
+import { getExistingRegistration } from './actions'
+```
+
+(b) Replace:
+```tsx
+
+        const [listingResult, feesResult, competitions, dancersResult, heldResult, paidResult] =
+          await Promise.all([
+            supabase
+              .from('feis_listings')
+              .select('*')
+              .eq('id', feisId)
+              .eq('status', 'open')
+              .single(),
+            supabase.from('fee_schedules').select('*').eq('feis_listing_id', feisId).single(),
+            // Every enabled competition, read in pages: PostgREST returns at most 1000 rows per
+            // request, and Submit judges eligibility against the feis's whole list
+            fetchAllRows<FeisCompetition>((from, to) =>
+              supabase
+                .from('feis_competitions')
+                .select('*', { count: 'exact' })
+                .eq('feis_listing_id', feisId)
+                .eq('enabled', true)
+                .order('sort_order', { ascending: true })
+                .order('id', { ascending: true })
+                .range(from, to)
+            ),
+            supabase
+              .from('dancers')
+              .select('*, dance_levels:dancer_dance_levels(*)')
+              .eq('household_id', household.id)
+              .eq('is_active', true)
+              .order('date_of_birth', { ascending: true }),
+            getExistingRegistration(feisId),
+            supabase
+              .from('registrations')
+              .select(`${REGISTRATION_COLUMNS}, registration_entries(*)`)
+              .eq('feis_listing_id', feisId)
+              .eq('household_id', household.id)
+              .eq('status', 'paid')
+              .maybeSingle()
+          ])
+
+```
+with:
+```tsx
+
+        const [
+          listingResult,
+          feesResult,
+          competitions,
+          dancersResult,
+          heldResult,
+          paidResult,
+          ordersResult,
+          reviewsResult
+        ] = await Promise.all([
+          supabase.from('feis_listings').select('*').eq('id', feisId).eq('status', 'open').single(),
+          supabase.from('fee_schedules').select('*').eq('feis_listing_id', feisId).single(),
+          // Every enabled competition, read in pages: PostgREST returns at most 1000 rows per
+          // request, and Submit judges eligibility against the feis's whole list
+          fetchAllRows<FeisCompetition>((from, to) =>
+            supabase
+              .from('feis_competitions')
+              .select('*', { count: 'exact' })
+              .eq('feis_listing_id', feisId)
+              .eq('enabled', true)
+              .order('sort_order', { ascending: true })
+              .order('id', { ascending: true })
+              .range(from, to)
+          ),
+          supabase
+            .from('dancers')
+            .select('*, dance_levels:dancer_dance_levels(*)')
+            .eq('household_id', household.id)
+            .eq('is_active', true)
+            .order('date_of_birth', { ascending: true }),
+          getExistingRegistration(feisId),
+          // Every paid order for this feis, oldest first: anything chosen now is added on top
+          supabase
+            .from('registrations')
+            .select(`${REGISTRATION_COLUMNS}, registration_entries(*)`)
+            .eq('feis_listing_id', feisId)
+            .eq('household_id', household.id)
+            .eq('status', 'paid')
+            .order('paid_at', { ascending: true }),
+          // The family's orders for this feis, and its payment cases: while a message-A case is
+          // open on one of them, no new order starts (Decision 13)
+          supabase
+            .from('registrations')
+            .select('id')
+            .eq('feis_listing_id', feisId)
+            .eq('household_id', household.id),
+          supabase.rpc('get_my_payment_reviews', { p_registration_id: null })
+        ])
+
+```
+
+(c) Replace:
+```tsx
+        }
+        for (const result of [dancersResult, paidResult]) {
+          if (result.error) throw result.error
+```
+with:
+```tsx
+        }
+        for (const result of [dancersResult, paidResult, ordersResult, reviewsResult]) {
+          if (result.error) throw result.error
+```
+
+(d) Replace:
+```tsx
+            heldRegistration: (heldResult.registration as RegistrationWithEntries | null) ?? null,
+            paidRegistration: (paidResult.data as RegistrationWithEntries | null) ?? null,
+            numbers,
+            expiredHold: heldResult.expired === true
+          }
+```
+with:
+```tsx
+            heldRegistration: (heldResult.registration as RegistrationWithEntries | null) ?? null,
+            paidRegistrations: (paidResult.data ?? []) as RegistrationWithEntries[],
+            numbers,
+            expiredHold: heldResult.expired === true,
+            openMessageA: openMessageAFor(
+              (reviewsResult.data ?? []) as PaymentReview[],
+              (ordersResult.data ?? []).map((order) => order.id)
+            )
+          }
+```
+
+- [ ] **Step 8: The entry page**
+
+In `src/components/registration/entry-page.tsx`:
+
+(a) Replace:
+```tsx
+import { formatCents, parseLocalDate } from '@/lib/format'
+import { calculateFees, getActiveLateTier } from '@/lib/engine/fee-calculator'
+import { calculateAgeOnDate, getEligibleCompetitions } from '@/lib/engine/eligibility'
+import {
+  ageCutoffDateFor,
+  toDancerProfile,
+  type RequestedEntry
+} from '@/lib/engine/order-validation'
+import { feeEntriesFor } from '@/lib/engine/purchase-snapshot'
+import { dancerLevelSummary, entryDeadline, entryFeesPerDancer } from '@/lib/entry-display'
+import {
+```
+with:
+```tsx
+import { formatCents, parseLocalDate } from '@/lib/format'
+import { calculateFees, getActiveLateTier, summarisePaidOrders } from '@/lib/engine/fee-calculator'
+import { calculateAgeOnDate, getEligibleCompetitions } from '@/lib/engine/eligibility'
+import {
+  ageCutoffDateFor,
+  canStartOrder,
+  toDancerProfile,
+  type RequestedEntry
+} from '@/lib/engine/order-validation'
+import { feeEntriesFor, paidOrdersFrom } from '@/lib/engine/purchase-snapshot'
+import { dancerLevelSummary, entryDeadline, entryFeesPerDancer } from '@/lib/entry-display'
+import { reviewMessage, type PaymentReview } from '@/lib/payment-review-messages'
+import {
+```
+
+(b) Replace:
+```tsx
+  heldRegistration: RegistrationWithEntries | null
+  paidRegistration: RegistrationWithEntries | null
+  numbers: Record<string, number>
+  expiredHold: boolean
+}
+```
+with:
+```tsx
+  heldRegistration: RegistrationWithEntries | null
+  /** Orders already paid for this feis, oldest first; anything chosen now is added on top */
+  paidRegistrations: RegistrationWithEntries[]
+  numbers: Record<string, number>
+  expiredHold: boolean
+  /** An open message-A case on one of the family's orders for this feis: no new order can start */
+  openMessageA: PaymentReview | null
+}
+```
+
+(c) Replace:
+```tsx
+export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: string }) {
+  const { listing, feeSchedule, competitions, dancers, paidRegistration, numbers } = data
+  const levels = listing.syllabus_snapshot?.levels ?? []
+  // The cutoff Submit uses: the organiser's date, otherwise January 1 of the feis year
+  const ageCutoffDate = useMemo(() => ageCutoffDateFor(listing, new Date()), [listing])
+  const deadline = entryDeadline(listing)
+
+  const [cart, setCart] = useState<Cart>(() => cartFrom(paidRegistration ?? data.heldRegistration))
+  const [editingId, setEditingId] = useState<string | null>(null)
+```
+with:
+```tsx
+export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: string }) {
+  const { listing, feeSchedule, competitions, dancers, paidRegistrations, numbers, openMessageA } =
+    data
+  const levels = listing.syllabus_snapshot?.levels ?? []
+  // The cutoff Submit uses: the organiser's date, otherwise January 1 of the feis year
+  const ageCutoffDate = useMemo(() => ageCutoffDateFor(listing, new Date()), [listing])
+  const deadline = entryDeadline(listing)
+
+  // Only what's being bought now: dances already paid for show as entered, not in the cart
+  const [cart, setCart] = useState<Cart>(() => cartFrom(data.heldRegistration))
+  const [editingId, setEditingId] = useState<string | null>(null)
+```
+
+(d) Replace:
+```tsx
+
+  const paid = paidRegistration !== null
+  const held = registrationId !== null
+  const canEdit = !paid && !held && !deadline.closed && feeSchedule !== null
+
+  const competitionById = useMemo(() => new Map(competitions.map((c) => [c.id, c])), [competitions])
+
+```
+with:
+```tsx
+
+  const paid = paidRegistrations.length > 0
+  const held = registrationId !== null
+  // The one gate for a new order, a first order or an add-on (spec §14): registration is open, the family
+  // holds no unpaid order, and no message-A case is open for this feis
+  const canStart = canStartOrder({
+    listing,
+    now: new Date(),
+    hasUnpaidOrder: held,
+    hasOpenMessageA: openMessageA !== null
+  })
+  const canEdit = canStart && feeSchedule !== null
+
+  const competitionById = useMemo(() => new Map(competitions.map((c) => [c.id, c])), [competitions])
+
+  // Dances already entered and paid for, per dancer, across every paid order
+  const entered: Cart = useMemo(() => {
+    const map: Cart = {}
+    for (const registration of paidRegistrations) {
+      for (const [dancerId, ids] of Object.entries(cartFrom(registration))) {
+        map[dancerId] = [...(map[dancerId] ?? []), ...ids]
+      }
+    }
+    return map
+  }, [paidRegistrations])
+  const paidTotalCents = paidRegistrations.reduce((sum, r) => sum + r.total_cents, 0)
+  const latestPaid = paidRegistrations[paidRegistrations.length - 1] ?? null
+
+  // What the paid orders already covered, counted as Submit counts them, so the estimate doesn't charge the
+  // family fee twice and the family max runs across orders. Submit's own price is the one that counts.
+  const prior = useMemo(
+    () => summarisePaidOrders(paidOrdersFrom(paidRegistrations, competitions)),
+    [paidRegistrations, competitions]
+  )
+
+```
+
+(e) Replace:
+```tsx
+      feeSchedule && requestedEntries.length > 0
+        ? calculateFees(feeSchedule, feeEntriesFor(requestedEntries, competitionById))
+        : null,
+    [feeSchedule, requestedEntries, competitionById]
+  )
+```
+with:
+```tsx
+      feeSchedule && requestedEntries.length > 0
+        ? calculateFees(
+            feeSchedule,
+            feeEntriesFor(requestedEntries, competitionById),
+            new Date(),
+            prior
+          )
+        : null,
+    [feeSchedule, requestedEntries, competitionById, prior]
+  )
+```
+
+(f) Replace:
+```tsx
+
+  // Where a family goes once Stripe has taken a payment for the order: the success page
+  // confirms it, or says what happens next
+  const successHref = `/feiseanna/${feisId}/register/success`
+
+```
+with:
+```tsx
+
+  // Where a family goes once an order is paid or confirmed, or Stripe may have taken the payment: the
+  // success page for that order confirms it, or says what happens next
+  const successHref = (orderId: string) =>
+    `/feiseanna/${feisId}/register/success?order=${encodeURIComponent(orderId)}`
+
+```
+
+(g) Replace:
+```tsx
+        case 'checking':
+          // Stripe has, or may have, the money: the success page says what happens next
+          leaving = true
+          window.location.href = successHref
+          return
+```
+with:
+```tsx
+        case 'checking':
+          // Confirmed (a $0 order is confirmed without Stripe), or Stripe has or may have the money: the
+          // success page says what happens next
+          leaving = true
+          window.location.href = successHref(regId)
+          return
+```
+
+(h) Replace:
+```tsx
+          leaving = true
+          window.location.href = successHref
+          return
+```
+with:
+```tsx
+          leaving = true
+          window.location.href = successHref(registrationId)
+          return
+```
+
+(i) Replace:
+```tsx
+                      .filter((c): c is FeisCompetition => c !== undefined)}
+                    feeSchedule={feeSchedule}
+                    editing={canEdit && editingId === dancer.id}
+                    canEdit={canEdit}
+                    lockedNote={
+                      held
+                        ? 'To add dances, choose Change entries under the family total.'
+                        : undefined
+                    }
+```
+with:
+```tsx
+                      .filter((c): c is FeisCompetition => c !== undefined)}
+                    entered={(entered[dancer.id] ?? [])
+                      .map((id) => competitionById.get(id))
+                      .filter((c): c is FeisCompetition => c !== undefined)}
+                    feeSchedule={feeSchedule}
+                    editing={canEdit && editingId === dancer.id}
+                    canEdit={canEdit}
+                    lockedNote={
+                      openMessageA
+                        ? 'No new entries while we check your payment.'
+                        : held
+                          ? 'To add dances, choose Change entries under the family total.'
+                          : undefined
+                    }
+```
+
+(j) Replace:
+```tsx
+
+        {paid ? (
+          <PaidReceipt
+            familyName={data.familyName}
+            totalCents={paidRegistration.total_cents}
+            confirmationNumber={paidRegistration.confirmation_number}
+            contactEmail={listing.contact_email}
+            cardsHref={`/dashboard/numbers/${feisId}`}
+            canAdd={false}
+          />
+```
+with:
+```tsx
+
+        {openMessageA ? (
+          // Message A says not to pay again: nothing here offers a new order, or Pay for a held one
+          <aside className="feis-receipt px-[18px] py-5">
+            <h2 className="text-[22px] font-extrabold [font-stretch:75%]">
+              We&apos;re checking your registration
+            </h2>
+            <p role="status" className="mt-2 text-sm">
+              {reviewMessage('A', openMessageA.support_ref)}
+            </p>
+            <Link href="/dashboard" className="feis-btn feis-btn-outline mt-4">
+              All my entries
+            </Link>
+          </aside>
+        ) : paid && dancesChosen === 0 && !held ? (
+          <PaidReceipt
+            familyName={data.familyName}
+            totalCents={paidTotalCents}
+            confirmationNumber={latestPaid?.confirmation_number ?? null}
+            contactEmail={listing.contact_email}
+            cardsHref={`/dashboard/numbers/${feisId}`}
+            canAdd={canEdit}
+          />
+```
+
+(k) Replace:
+```tsx
+              familyName={data.familyName}
+              lines={receiptLines}
+```
+with:
+```tsx
+              familyName={data.familyName}
+              title={paid ? 'Adding to your entry' : undefined}
+              note={
+                paid
+                  ? `You've already paid ${formatCents(paidTotalCents)} for this feis. This is only for what you're adding.`
+                  : undefined
+              }
+              lines={receiptLines}
+```
+
+(l) Replace:
+```tsx
+
+      {!paid && dancesChosen > 0 && !receiptVisible && (
+        <div className="fixed inset-x-0 bottom-0 flex items-center justify-between gap-3 bg-[var(--color-feis-charcoal)] px-4 pt-3 pb-[max(12px,env(safe-area-inset-bottom))] text-white lg:hidden">
+```
+with:
+```tsx
+
+      {dancesChosen > 0 && !receiptVisible && !openMessageA && (
+        <div className="fixed inset-x-0 bottom-0 flex items-center justify-between gap-3 bg-[var(--color-feis-charcoal)] px-4 pt-3 pb-[max(12px,env(safe-area-inset-bottom))] text-white lg:hidden">
+```
+
+(m) Replace:
+```tsx
+          >
+            Review and pay
+          </a>
+```
+with:
+```tsx
+          >
+            {totalCents === 0 ? 'Review and confirm' : 'Review and pay'}
+          </a>
+```
+
+- [ ] **Step 9: The receipt at $0**
+
+In `src/components/registration/family-receipt.tsx`:
+
+(a) Replace:
+```tsx
+  const nothingChosen = lines.length === 0
+
+```
+with:
+```tsx
+  const nothingChosen = lines.length === 0
+  // An order that costs nothing (typically an add-on once the family max is reached) is confirmed, not paid
+  const free = !nothingChosen && totalCents === 0
+
+```
+
+(b) Replace:
+```tsx
+
+      {held && <HoldCountdown holdExpiresAt={holdExpiresAt} />}
+```
+with:
+```tsx
+
+      {free && (
+        <p className="mt-3.5 text-[13px]">
+          There&apos;s nothing to pay for these dances. Confirm them to enter.
+        </p>
+      )}
+
+      {held && <HoldCountdown holdExpiresAt={holdExpiresAt} />}
+```
+
+(c) Replace:
+```tsx
+        {loading
+          ? 'Opening payment…'
+          : paymentStarted
+            ? 'Return to payment'
+            : `Pay ${formatCents(totalCents)}`}
+      </button>
+```
+with:
+```tsx
+        {loading
+          ? free
+            ? 'Confirming…'
+            : 'Opening payment…'
+          : paymentStarted
+            ? 'Return to payment'
+            : free
+              ? 'Confirm entries'
+              : `Pay ${formatCents(totalCents)}`}
+      </button>
+```
+
+(d) Replace:
+```tsx
+
+      {!held && !nothingChosen && (
+        <p className="mt-2.5 text-[12.5px] text-muted-foreground">
+```
+with:
+```tsx
+
+      {!held && !nothingChosen && !free && (
+        <p className="mt-2.5 text-[12.5px] text-muted-foreground">
+```
+
+- [ ] **Step 10: The success page and My entries, with several orders per feis**
+
+In `src/app/feiseanna/[id]/register/success/page.tsx`:
+
+(a) Replace:
+```tsx
+import { emailIsConfigured } from '@/lib/email/email-config'
+import {
+```
+with:
+```tsx
+import { emailIsConfigured } from '@/lib/email/email-config'
+import type { PurchaseSnapshot } from '@/lib/engine/purchase-snapshot'
+import { isAddOnOrder } from '@/lib/entry-display'
+import {
+```
+
+(b) Replace:
+```tsx
+  params: Promise<{ id: string }>
+  searchParams: Promise<{ session_id?: string }>
+}
+
+type ServerClient = Awaited<ReturnType<typeof createClient>>
+type OrderSummary = { id: string; status: RegistrationStatus; confirmation_number: string | null }
+
+/** What the page tells the family, most important first */
+type View =
+  | { kind: 'paid'; confirmationNumber: string | null }
+  | { kind: 'case'; code: PaymentReview['message_code']; message: string }
+```
+with:
+```tsx
+  params: Promise<{ id: string }>
+  searchParams: Promise<{ session_id?: string; order?: string }>
+}
+
+type ServerClient = Awaited<ReturnType<typeof createClient>>
+type OrderSummary = {
+  id: string
+  status: RegistrationStatus
+  confirmation_number: string | null
+  total_cents: number
+  purchase_snapshot: Pick<PurchaseSnapshot, 'pricing'> | null
+}
+
+/** What the page tells the family, most important first */
+type View =
+  | { kind: 'paid'; confirmationNumber: string | null; addedToEntry: boolean; totalCents: number }
+  | { kind: 'case'; code: PaymentReview['message_code']; message: string }
+```
+
+(c) Replace:
+```tsx
+/**
+ * The order this page is about: the one this checkout belongs to, otherwise the family's latest
+ * for this feis. The session id from the URL only picks which of the family's own orders to show
+ * (their own client can't read anyone else's); the sync never uses it.
+ */
+async function findOrder(
+  supabase: ServerClient,
+  householdId: string,
+  feisId: string,
+  sessionId: string | null
+): Promise<OrderSummary | null | 'error'> {
+  const orders = () =>
+    supabase
+      .from('registrations')
+      .select('id, status, confirmation_number')
+      .eq('household_id', householdId)
+      .eq('feis_listing_id', feisId)
+
+  if (sessionId) {
+```
+with:
+```tsx
+/**
+ * The order this page is about: the one named by `order` (a registration id, from the entry page and My
+ * entries), or on the return from Stripe the one this checkout belongs to, otherwise the family's latest for
+ * this feis. Either id only picks which of the family's own orders to show (their own client can't read
+ * anyone else's); the sync never uses them.
+ */
+async function findOrder(
+  supabase: ServerClient,
+  householdId: string,
+  feisId: string,
+  picked: { orderId: string | null; sessionId: string | null }
+): Promise<OrderSummary | null | 'error'> {
+  const orders = () =>
+    supabase
+      .from('registrations')
+      .select('id, status, confirmation_number, total_cents, purchase_snapshot')
+      .eq('household_id', householdId)
+      .eq('feis_listing_id', feisId)
+
+  // A registration id is a uuid; anything else in the URL picks nothing
+  if (picked.orderId && /^[0-9a-f-]{36}$/i.test(picked.orderId)) {
+    const { data, error } = await orders().eq('id', picked.orderId).maybeSingle()
+    if (error) return 'error'
+    if (data) return data as OrderSummary
+  }
+  const sessionId = picked.sessionId
+  if (sessionId) {
+```
+
+(d) Replace:
+```tsx
+  feisId: string,
+  sessionId: string | null
+): Promise<View> {
+```
+with:
+```tsx
+  feisId: string,
+  picked: { orderId: string | null; sessionId: string | null }
+): Promise<View> {
+```
+
+(e) Replace:
+```tsx
+
+  const order = await findOrder(supabase, household.id, feisId, sessionId)
+  if (order === 'error') {
+    console.error('Success page: the order failed to load')
+    return { kind: 'unavailable' }
+  }
+  if (!order) redirect(`/feiseanna/${feisId}`)
+  if (order.status === 'paid') {
+    return { kind: 'paid', confirmationNumber: order.confirmation_number }
+  }
+
+```
+with:
+```tsx
+
+  const order = await findOrder(supabase, household.id, feisId, picked)
+  if (order === 'error') {
+    console.error('Success page: the order failed to load')
+    return { kind: 'unavailable' }
+  }
+  if (!order) redirect(`/feiseanna/${feisId}`)
+  const paidView = (confirmationNumber: string | null): View => ({
+    kind: 'paid',
+    confirmationNumber,
+    addedToEntry: isAddOnOrder(order),
+    totalCents: order.total_cents
+  })
+  if (order.status === 'paid') return paidView(order.confirmation_number)
+
+```
+
+(f) Replace:
+```tsx
+  }
+  if (synced?.kind === 'paid') {
+    return { kind: 'paid', confirmationNumber: synced.confirmationNumber }
+  }
+
+```
+with:
+```tsx
+  }
+  if (synced?.kind === 'paid') return paidView(synced.confirmationNumber)
+
+```
+
+(g) Replace:
+```tsx
+  const { id: feisId } = await params
+  const { session_id: sessionId } = await searchParams
+
+  const supabase = await createClient()
+  const user = await getSignedInUser(supabase)
+  if (!user) {
+    const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''
+    const back = `/feiseanna/${feisId}/register/success${query}`
+    redirect(`/auth/login?redirect=${encodeURIComponent(back)}`)
+  }
+
+  const view = await viewFor(supabase, user.id, feisId, sessionId ?? null)
+  const entryHref = `/feiseanna/${feisId}/register`
+```
+with:
+```tsx
+  const { id: feisId } = await params
+  const { session_id: sessionId, order: orderId } = await searchParams
+
+  const supabase = await createClient()
+  const user = await getSignedInUser(supabase)
+  if (!user) {
+    const query = orderId
+      ? `?order=${encodeURIComponent(orderId)}`
+      : sessionId
+        ? `?session_id=${encodeURIComponent(sessionId)}`
+        : ''
+    const back = `/feiseanna/${feisId}/register/success${query}`
+    redirect(`/auth/login?redirect=${encodeURIComponent(back)}`)
+  }
+
+  const view = await viewFor(supabase, user.id, feisId, {
+    orderId: orderId ?? null,
+    sessionId: sessionId ?? null
+  })
+  const entryHref = `/feiseanna/${feisId}/register`
+```
+
+(h) Replace:
+```tsx
+            <p className="mt-1.5 max-w-[52ch] opacity-85">
+              Payment received. Your dancers&apos; competitor numbers are ready.
+            </p>
+```
+with:
+```tsx
+            <p className="mt-1.5 max-w-[52ch] opacity-85">
+              {view.addedToEntry
+                ? 'These dances were added to your entry. Your dancers keep their competitor numbers.'
+                : view.totalCents === 0
+                  ? 'Your entries are confirmed. There was nothing to pay.'
+                  : 'Payment received. Your dancers’ competitor numbers are ready.'}
+            </p>
+```
+
+(i) Replace:
+```tsx
+                <span className="rounded-[2px] bg-[var(--color-feis-green-light)] px-1.5 py-0.5 text-xs font-bold text-[var(--color-feis-green-700)]">
+                  Paid in full
+                </span>
+```
+with:
+```tsx
+                <span className="rounded-[2px] bg-[var(--color-feis-green-light)] px-1.5 py-0.5 text-xs font-bold text-[var(--color-feis-green-700)]">
+                  {view.totalCents === 0 ? 'Confirmed, nothing to pay' : 'Paid in full'}
+                </span>
+```
+
+In `src/app/dashboard/page.tsx`:
+
+(a) Replace:
+```tsx
+import Link from 'next/link'
+import { formatDate, formatCents } from '@/lib/format'
+import { REGISTRATION_COLUMNS } from '@/lib/registration-columns'
+import { isHouseholdComplete } from '@/lib/household'
+import {
+  openReviewsByOrder,
+  reviewMessage,
+  type PaymentReview
+} from '@/lib/payment-review-messages'
+import type { Registration, Dancer, RegistrationStatus } from '@/lib/types/feis-listing'
+import { PageTitle } from '@/components/page-title'
+```
+with:
+```tsx
+import Link from 'next/link'
+import { canStartOrder } from '@/lib/engine/order-validation'
+import { isAddOnOrder } from '@/lib/entry-display'
+import { formatDate, formatCents } from '@/lib/format'
+import { REGISTRATION_COLUMNS } from '@/lib/registration-columns'
+import { isHouseholdComplete } from '@/lib/household'
+import {
+  openMessageAFor,
+  openReviewsByOrder,
+  reviewMessage,
+  type PaymentReview
+} from '@/lib/payment-review-messages'
+import type {
+  Registration,
+  Dancer,
+  FeisListing,
+  RegistrationStatus
+} from '@/lib/types/feis-listing'
+import { PageTitle } from '@/components/page-title'
+```
+
+(b) Replace:
+```tsx
+        ${REGISTRATION_COLUMNS},
+        feis_listings(name, feis_date, venue_name),
+        registration_entries(dancer_id, feis_competitions(display_name))
+```
+with:
+```tsx
+        ${REGISTRATION_COLUMNS},
+        feis_listings(name, feis_date, venue_name, status, reg_opens_at, reg_closes_at, late_reg_closes_at),
+        registration_entries(dancer_id, feis_competitions(display_name))
+```
+
+(c) Replace:
+```tsx
+  const entriesFailed = dancersRead.error !== null || registrationsRead.error !== null
+  const openReviews = openReviewsByOrder((reviews.data ?? []) as PaymentReview[])
+
+  // Released and expired holds never became entries, so they stay off the list, unless the order
+  // has an open payment case: then it shows, so its message A or B reaches the family
+  // `unknown` first: the client types a to-one embed (feis_listings) as an array, but each registration has one feis
+  const typedRegistrations = (
+    (registrationsRead.data ?? []) as unknown as (Registration & {
+      feis_listings: { name: string; feis_date: string; venue_name: string }
+      registration_entries: { dancer_id: string; feis_competitions: { display_name: string } }[]
+    })[]
+  ).filter((reg) => LISTED_STATUSES.includes(reg.status) || openReviews.has(reg.id))
+
+```
+with:
+```tsx
+  const entriesFailed = dancersRead.error !== null || registrationsRead.error !== null
+  const reviewRows = (reviews.data ?? []) as PaymentReview[]
+  const openReviews = openReviewsByOrder(reviewRows)
+
+  // `unknown` first: the client types a to-one embed (feis_listings) as an array, but each registration has one feis
+  const allRegistrations = (registrationsRead.data ?? []) as unknown as (Registration & {
+    feis_listings: Pick<
+      FeisListing,
+      'name' | 'feis_date' | 'venue_name' | 'status' | 'reg_opens_at' | 'reg_closes_at' | 'late_reg_closes_at'
+    >
+    registration_entries: { dancer_id: string; feis_competitions: { display_name: string } }[]
+  })[]
+
+  // Whether each feis can take a new order now (spec §14): the feis's newest paid order offers Add dances
+  // then. Newest first, so the first paid order found for a feis is its newest
+  const now = new Date()
+  const addDancesOn = new Set<string>()
+  for (const feisId of new Set(allRegistrations.map((reg) => reg.feis_listing_id))) {
+    const forFeis = allRegistrations.filter((reg) => reg.feis_listing_id === feisId)
+    const newestPaid = forFeis.find((reg) => reg.status === 'paid')
+    if (!newestPaid) continue
+    const hasUnpaidOrder = forFeis.some(
+      (reg) =>
+        (reg.status === 'draft' || reg.status === 'pending_payment') &&
+        (reg.hold_expires_at === null || new Date(reg.hold_expires_at) > now)
+    )
+    const canAdd = canStartOrder({
+      listing: newestPaid.feis_listings,
+      now,
+      hasUnpaidOrder,
+      hasOpenMessageA: openMessageAFor(reviewRows, forFeis.map((reg) => reg.id)) !== null
+    })
+    if (canAdd) addDancesOn.add(newestPaid.id)
+  }
+
+  // Released and expired holds never became entries, so they stay off the list, unless the order
+  // has an open payment case: then it shows, so its message A or B reaches the family
+  const typedRegistrations = allRegistrations.filter(
+    (reg) => LISTED_STATUSES.includes(reg.status) || openReviews.has(reg.id)
+  )
+
+```
+
+(d) Replace:
+```tsx
+            const canPayAgain = review?.message_code !== 'A'
+            // Name the session only when there is one (never `session_id=null`); the success
+            // page finds the family's order without it too
+            const receiptHref = `/feiseanna/${reg.feis_listing_id}/register/success${
+              reg.stripe_checkout_session_id ? `?session_id=${reg.stripe_checkout_session_id}` : ''
+            }`
+            const dancerIds = [...new Set(reg.registration_entries.map((e) => e.dancer_id))]
+```
+with:
+```tsx
+            const canPayAgain = review?.message_code !== 'A'
+            // Each receipt names its own order: a family can have several for one feis
+            const receiptHref = `/feiseanna/${reg.feis_listing_id}/register/success?order=${reg.id}`
+            const dancerIds = [...new Set(reg.registration_entries.map((e) => e.dancer_id))]
+```
+
+(e) Replace:
+```tsx
+                    </span>
+                  </div>
+```
+with:
+```tsx
+                    </span>
+                    {isAddOnOrder(reg) && (
+                      <span className="rounded-[2px] border border-[var(--color-feis-charcoal)] px-1.5 py-0.5 text-xs font-bold">
+                        Added
+                      </span>
+                    )}
+                  </div>
+```
+
+(f) Replace:
+```tsx
+                  )}
+                  {(reg.status === 'draft' || reg.status === 'pending_payment') && canPayAgain && (
+```
+with:
+```tsx
+                  )}
+                  {addDancesOn.has(reg.id) && (
+                    <Link
+                      href={`/feiseanna/${reg.feis_listing_id}/register`}
+                      className="feis-btn feis-btn-outline"
+                    >
+                      Add dances
+                    </Link>
+                  )}
+                  {(reg.status === 'draft' || reg.status === 'pending_payment') && canPayAgain && (
+```
+
+- [ ] **Step 11: Check nothing writes the order tables, and run everything**
+
+```bash
+test -z "$(git grep -n -e confirmFreeOrder -e generateConfirmationNumber -e confirmation-number -e send-confirmation -- src ':!src/app/_payments/order-store.ts' ':!src/app/_payments/checkout-workflow.ts')"
+test -z "$(git grep -n -A3 -E "from\('registration(s|_entries|_snapshots)'\)" -- src ':!src/lib/bridge.ts' | grep -E '\.(insert|update|upsert|delete)\(')" && echo "no direct order writes"
+```
+Expected: `no direct order writes`. `order-store.ts` and `checkout-workflow.ts` name `confirmFreeOrder` only as the store wrapper for `confirm_free_order` and its caller. `src/lib/bridge.ts` is left out of the second check: it writes Phase 1's `public.registrations` through its own client, not these tables.
+
+Run: `npx tsc --noEmit && npm run lint && npm test && npm run test:db && npm run build`
+Expected: all pass, with no lint errors: 24 files and 310 tests, then 10 files and 243 tests, then a clean build.
+
+- [ ] **Step 12: Commit**
+
+```bash
+git add src/lib/payment-review-messages.ts src/lib/entry-display.ts src/lib/email/templates.ts \
+  src/app/_payments/checkout-workflow.ts 'src/app/feiseanna/[id]/register/actions.ts' \
+  'src/app/feiseanna/[id]/register/page.tsx' 'src/app/feiseanna/[id]/register/success/page.tsx' \
+  src/app/dashboard/page.tsx src/components/registration/entry-page.tsx src/components/registration/family-receipt.tsx \
+  tests/payment-review-messages.test.ts tests/entry-display.test.ts tests/email-templates.test.ts \
+  tests/db/checkout-workflow.test.ts
+git commit -q -m "feat: add dances after paying, and \$0 orders confirmed without Stripe"
+```
+
+---
+
+### Task 21: The runbook and the project rules for add-on and $0 orders
+
+Spec §6, §11 and the "Changes in Revision 5" table. The runbook (`docs/runbooks/payment-exceptions.md`) gets four changes:
+- its "newer order" wording allows several paid orders
+- step 3a's conditions become Decision 12's rule
+- it says how to read `details.why`
+- it covers $0 orders, which never have a Stripe payment or a case
+
+`CLAUDE.md`'s rule that only `confirm_order_payment` marks an order paid also names `confirm_free_order` and `payments_admin.confirm_late_payment`.
+
+**Files:**
+- Modify: `docs/runbooks/payment-exceptions.md`, `CLAUDE.md`, `docs/known-issues.md`
+
+**Interfaces:**
+- Consumes: the functions and rules from Tasks 18–20.
+- Produces: a runbook and project rules that match add-on and $0 orders.
+
+- [ ] **Step 1: The runbook**
+
+In `docs/runbooks/payment-exceptions.md`:
+
+(a) Replace:
+```markdown
+Every case has a reference like `PAY-7KQ2M`. The family sees it on the success page and their dashboard when
+their charge went through but their registration isn't confirmed. Alerts arrive by email once email is turned on (it's paused for now; see below), and the Vercel
+logs always have a `[PAYMENT_EXCEPTION] PAY-…` line.
+```
+with:
+```markdown
+Every case has a reference like `PAY-7KQ2M`. The family sees it on the success page and their dashboard when
+their charge went through but their registration isn't confirmed.
+
+A family can have several orders for one feis: their first, then an add-on order each time they come back to add
+dances or dancers after paying. Any number can be paid, but only one can be unpaid at a time. Each order's price
+counted the family's paid orders at the time (no second family fee, the family max across orders, no second late
+fee for a dancer), and the order's `purchase_snapshot -> 'pricing' -> 'prior'` records which ones. An order that
+costs nothing (typically an add-on once the family max is reached) is confirmed without Stripe: it has no checkout,
+no payment and never a case. Alerts arrive by email once email is turned on (it's paused for now; see below), and the Vercel
+logs always have a `[PAYMENT_EXCEPTION] PAY-…` line.
+```
+
+(b) Replace:
+```markdown
+
+Then find the payment in Stripe: Dashboard → Connect → the account named in the case's `stripe_account_id` →
+```
+with:
+````markdown
+
+The family's orders for the feis, oldest first, with what each one's price counted (put the case's
+`household_id` and `feis_listing_id` in):
+```sql
+SELECT r.id, r.status, r.total_cents, r.event_fee_cents, r.confirmation_number, r.created_at, r.paid_at,
+       r.checkout_claim_id IS NOT NULL AS reached_checkout,
+       (SELECT coalesce(jsonb_agg(o ->> 'id'), '[]') FROM jsonb_array_elements(
+          coalesce(r.purchase_snapshot -> 'pricing' -> 'prior' -> 'orders', '[]')) AS o) AS counted_orders
+FROM pre_registration.registrations r
+WHERE r.household_id = '<household_id>' AND r.feis_listing_id = '<feis_listing_id>'
+ORDER BY r.created_at;
+```
+
+Then find the payment in Stripe: Dashboard → Connect → the account named in the case's `stripe_account_id` →
+````
+
+(c) Replace:
+```markdown
+|---|---|---|
+| `late_payment_conflict` | The family paid after their order expired, and they have a newer order for the same feis. | Ring or email the family. If they want the paid order and the newer order never reached checkout, confirm it (3a). Otherwise refund the late payment (3b). Once recorded, the system never confirms this payment by itself, even if the newer order later ends: only 3a does. |
+| `amount_mismatch` | Stripe charged a different amount from the order total. | Refund it (3b). The family registers again. |
+```
+with:
+```markdown
+|---|---|---|
+| `late_payment_conflict` | The family paid for an order after it expired (or, rarely, for one awaiting payment), and another of their orders for the feis gets in the way. The case's `details -> 'why'` lists each rule that failed, with the orders involved: `unpaid_order_exists` (they hold another unpaid order, which may repeat these dances) and `paid_orders_changed` (another order was paid after this one was priced, so its price may be wrong). | Ring or email the family. Use the family's-orders query in section 1. If they want the paid order and 3a's conditions hold, confirm it (3a). Otherwise refund the late payment (3b). Once recorded, the system never confirms this payment by itself, even if the other order later ends: only 3a does. |
+| `amount_mismatch` | Stripe charged a different amount from the order total. | Refund it (3b). The family registers again. |
+```
+
+(d) Replace:
+```markdown
+| `payment_failed` | A delayed payment failed. No money moved. | Close it with no action (3c). The family can register again. |
+| `listing_account_changed` (notice) | The order is confirmed, but the feis has switched Stripe accounts since checkout. | Check the new account is right, then acknowledge it (3d). |
+```
+with:
+```markdown
+| `payment_failed` | A delayed payment failed. No money moved. | Close it with no action (3c). The family can register again. |
+| (none: a $0 order) | An order that cost nothing was confirmed without Stripe. It has no checkout session or payment intent, and the snapshot's payment shows an amount of 0. | Nothing. It never raises a case. |
+| `listing_account_changed` (notice) | The order is confirmed, but the feis has switched Stripe accounts since checkout. | Check the new account is right, then acknowledge it (3d). |
+```
+
+(e) Replace:
+```markdown
+
+**3a. Confirm a late payment** (only `late_payment_conflict`). This cancels the family's newer unpaid order, then
+confirms the paid one: confirmation number, snapshot, competitor numbers and confirmation email. The order's
+`paid_at` becomes the time of this confirmation, so its competitor numbers come after every family confirmed
+before now. It refuses if any other order for the family and feis is paid, or reached checkout and isn't
+cancelled: a delayed payment for it could still arrive. Refund instead (3b).
+
+```
+with:
+```markdown
+
+**3a. Confirm a late payment** (only `late_payment_conflict`). This cancels the family's unpaid drafts for the feis
+that never reached checkout (they were priced without the late payment), then confirms the paid order: confirmation
+number, snapshot, competitor numbers and confirmation email. The order's `paid_at` becomes the time of this
+confirmation, so its competitor numbers come after every family confirmed before now.
+
+It confirms only when every other order of the family for the feis is one of these:
+- paid, and counted by this order's price (it's in this order's `counted_orders` in the family's-orders query)
+- cancelled or expired, including a newer order that reached checkout and then expired unpaid: if a payment for that
+  one arrives later, it becomes a case of its own
+- an unpaid draft that never reached checkout, which it cancels
+
+It refuses, and you refund instead (3b), when another order was paid that this one didn't count (`why` says
+`paid_orders_changed`: its price no longer holds), or when another order is at checkout right now (a draft that
+reached checkout, or one awaiting payment), since a payment for it may arrive at any moment.
+
+```
+
+- [ ] **Step 2: Check the new query against real orders**
+
+The runbook's new family's-orders query is the only new SQL. Check it on the test database with a temporary test, then delete the test.
+
+Create `tests/db/runbook-r5.test.ts`:
+```ts
+import { afterAll, beforeAll, expect, it } from 'vitest'
+import { createTestDatabase, type TestDatabase } from './helpers/db'
+import { createAddOnOrder, createDancer, createDraftOrder, payOrder } from './helpers/fixtures'
+
+let db: TestDatabase
+
+beforeAll(async () => {
+  db = await createTestDatabase()
+})
+
+afterAll(async () => {
+  await db?.drop()
+})
+
+// The runbook's family's-orders query (section 1), with the placeholders filled in
+const FAMILY_ORDERS = `
+SELECT r.id, r.status, r.total_cents, r.event_fee_cents, r.confirmation_number, r.created_at, r.paid_at,
+       r.checkout_claim_id IS NOT NULL AS reached_checkout,
+       (SELECT coalesce(jsonb_agg(o ->> 'id'), '[]') FROM jsonb_array_elements(
+          coalesce(r.purchase_snapshot -> 'pricing' -> 'prior' -> 'orders', '[]')) AS o) AS counted_orders
+FROM pre_registration.registrations r
+WHERE r.household_id = '<household_id>' AND r.feis_listing_id = '<feis_listing_id>'
+ORDER BY r.created_at;`
+
+it("lists the family's orders for the feis with what each one counted", async () => {
+  const first = await createDraftOrder(db.pool)
+  await payOrder(db.pool, first)
+  const niamh = await createDancer(db.pool, first.family.householdId, { firstName: 'Niamh' })
+  const addOn = await createAddOnOrder(
+    db.pool,
+    { family: first.family, listing: first.listing, dancers: [...first.dancers, niamh] },
+    [{ dancerId: niamh.id, competitionId: first.listing.competitions[0].id }]
+  )
+  const sql = FAMILY_ORDERS.replace('<household_id>', first.family.householdId).replace(
+    '<feis_listing_id>',
+    first.listing.listing.id
+  )
+  const { rows } = await db.pool.query(sql)
+  expect(rows.map((r) => [r.id, r.status, r.reached_checkout, r.counted_orders])).toEqual([
+    [first.registrationId, 'paid', true, []],
+    [addOn.registrationId, 'draft', false, [first.registrationId]]
+  ])
+})
+```
+```bash
+npm run test:db -- tests/db/runbook-r5.test.ts
+rm tests/db/runbook-r5.test.ts
+```
+Expected: PASS (1 test). If it fails, fix the query in the runbook, and make the test's copy of it match.
+
+- [ ] **Step 3: The project rules**
+
+In `CLAUDE.md`, replace:
+```markdown
+- Don't let template edits mutate existing listings — frozen snapshots are immutable
+- Only `confirm_order_payment` marks an order paid or, for a late-payment case, a person running `payments_admin.confirm_late_payment`. The webhook and the success-page sync both call `confirm_order_payment` with data they fetched from Stripe themselves; never trust payment data from a URL
+- Order state changes go through the Postgres functions in migrations 012–017 (via `src/app/_payments/`). Never write `registrations`, `registration_entries` or `registration_snapshots` directly
+- A submitted order never changes. To change entries, cancel it and create a new one
+- Reads of `registrations` with a user's client select `REGISTRATION_COLUMNS` (`src/lib/registration-columns.ts`) or a subset of it, never `*`. `consent_ip` and `checkout_config` are private: the database refuses them to a user's client, so a new `registrations` column stays private until a migration grants it and it is added to that list
+- Submit refuses an order under Stripe's 50-cent card minimum (`belowCardMinimum()` in `src/lib/engine/checkout-policy.ts`), so no order is made that could never be paid
+- Eligibility engine is pure — no Supabase, no side effects
+```
+with:
+```markdown
+- Don't let template edits mutate existing listings — frozen snapshots are immutable
+- Only three functions mark an order paid, all through `_fulfil_order` (migration 012 refuses any other move into `paid`): `confirm_order_payment` for a Stripe payment, `confirm_free_order` for a $0 order (Pay calls it; no Stripe), and, for a late-payment case, a person running `payments_admin.confirm_late_payment`. The webhook and the success-page sync both call `confirm_order_payment` with data they fetched from Stripe themselves; never trust payment data from a URL
+- Order state changes go through the Postgres functions in migrations 012–017 (via `src/app/_payments/`); 020 checks 019's unpaid-order index. Never write `registrations`, `registration_entries` or `registration_snapshots` directly
+- A submitted order never changes. To change entries, cancel it and create a new one. A paid order never changes either: adding dances or dancers after paying is a new add-on order for just what's added
+- A family holds at most one unpaid order per feis and any number of paid ones. Every new order is priced on top of the family's paid orders for the feis (`paidOrdersFrom()` and `priceOrder({ paidOrders })` in `src/lib/engine/purchase-snapshot.ts`), and `create_order` refuses a price whose counted orders aren't exactly the paid orders now. Whether a new order may start is `canStartOrder()` (`src/lib/engine/order-validation.ts`), everywhere
+- Reads of `registrations` with a user's client select `REGISTRATION_COLUMNS` (`src/lib/registration-columns.ts`) or a subset of it, never `*`. `consent_ip` and `checkout_config` are private: the database refuses them to a user's client, so a new `registrations` column stays private until a migration grants it and it is added to that list
+- Submit refuses an order of 1 to 49 cents (`tooSmallToCharge()` in `src/lib/engine/checkout-policy.ts`), below Stripe's card minimum, and `create_order` refuses it too, so no order is made that could never be paid. A $0 order is allowed: Pay confirms it without Stripe
+- Eligibility engine is pure — no Supabase, no side effects
+```
+
+- [ ] **Step 4: Known issues**
+
+In `docs/known-issues.md`:
+
+(a) Replace:
+```markdown
+## Already tracked elsewhere
+Payment and Stripe webhook problems, and changing entries after paying, are being handled on the `payment-hardening` branch.
+
+```
+with:
+```markdown
+## Already tracked elsewhere
+Payment and Stripe webhook problems are handled by the payment hardening work (`docs/2026-10-16-payment-hardening-design.md`). Dropping or swapping a dance after paying waits on Steve's refund and withdrawal policy.
+
+```
+
+(b) Replace:
+```markdown
+- **Organiser late entries and changes after paying** wait on the payment-hardening order step (its Task 6), so they're built once on the new model.
+- **Adding to a feis after paying** works (add-on orders, migration 019): parents add dances or dancers and pay only for what's new. Dropping a dance after paying still goes through the organiser. When payment hardening lands, its add-on model replaces this one.
+
+```
+with:
+```markdown
+- **Organiser late entries and changes after paying** wait on the payment-hardening order step (its Task 6), so they're built once on the new model.
+- **Adding to a feis after paying** works: each visit after paying is a new order for just what's added, priced on top of what the family already paid (payment hardening's add-on orders, spec §14). Dropping or swapping a dance after paying still goes through the organiser.
+
+```
+
+- [ ] **Step 4b: The runbook says email is on**
+
+Email is live (Daniel, 2026-10-17): the sending domain is verified and `EMAIL_FROM` is `RunFeis <entries@runfeis.com>`. In `docs/runbooks/payment-exceptions.md`, replace every "email is paused" passage with the email-on version:
+- the opening paragraph (around line 7): alerts arrive by email, and the Vercel logs have a `[PAYMENT_EXCEPTION] PAY-…` line;
+- the "Email is paused for now" note (around line 14): delete it, or turn it into one line saying alerts go to `PAYMENTS_ALERT_EMAIL` (Daniel and Steve) from `entries@runfeis.com`;
+- around line 133: after closing a message-A case, the family still gets no automatic email about the closing, so email them yourself; drop "while email is paused it sends nothing at all";
+- the env list (around line 190): `PAYMENTS_ALERT_EMAIL` is Daniel's and Steve's addresses, comma-separated;
+- "Turning email on" (around line 200): replace with a short "If email stops" note: check `RESEND_API_KEY`, `EMAIL_FROM` and `PAYMENTS_ALERT_EMAIL` on Vercel, the domain in Resend, and the stuck-emails query;
+- the cron section (around line 244): drop the "`\"paused\":true` until email is set up" remark.
+Keep everything else. Run `grep -n -i paused docs/runbooks/payment-exceptions.md`: only unrelated uses of the word may remain.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add docs/runbooks/payment-exceptions.md CLAUDE.md docs/known-issues.md
+git commit -q -m "docs: runbook and project rules for add-on orders, \$0 orders and the late-payment rule"
+```
+
+---
+
 ### Task 16: Live check, rehearsal, live verification and rollout
+
+**Runs after Tasks 17–21.** Spec revision 5 brought add-on orders and $0 orders into this work before go-live. Tasks 17–21 build them, starting from a merge of `main`, so this branch has 019 as live does. This task then rolls out 012–017 and 020 together; live already has 019.
 
 This task touches the live project. Steps 3, 4, 7, 8 and 12 need Daniel's go-ahead at the time: Step 3 copies the live data to this machine, Step 4 sets Vercel settings, Step 7 applies the migrations, pushes to `main` (which deploys) and adds the new Stripe webhook events, Step 8 schedules a job, and Step 12 turns email on. Ask before each one. Don't treat approval of this plan as approval for them.
 
-**Email goes live paused (Daniel's decision, 2026-10-17).** Resend's sender is still the sandbox `onboarding@resend.dev`, which delivers only to the Resend account owner. So `PAYMENTS_ALERT_EMAIL` stays unset on Vercel: `emailIsConfigured()` is false, nothing is sent, and the queue waits as `pending` without using attempts. Payment-case alerts are watched through the logs and the runbook's daily queries. A verified sending domain, `EMAIL_FROM` and `PAYMENTS_ALERT_EMAIL` must be set up before the first real feis opens (Step 12).
+**Email is on at go-live (Daniel, 2026-10-17: "emails are live now").** RunFeis's sending domain is verified in Resend, and Vercel already has `EMAIL_FROM` = `RunFeis <entries@runfeis.com>`, `RESEND_API_KEY` and `NEXT_PUBLIC_BASE_URL` = `https://www.runfeis.com`. Step 4 sets `PAYMENTS_ALERT_EMAIL` to Daniel's and Steve's addresses, so confirmations and payment-case alerts go out from the first order. Step 12 confirms they are flowing.
 
 **Files:**
 - Create: `supabase/checks/payment-hardening-live-check.sql`
@@ -9946,8 +15508,8 @@ This task touches the live project. Steps 3, 4, 7, 8 and 12 need Daniel's go-ahe
 - Modify: `docs/2026-10-16-payment-hardening-design.md` (record the results)
 
 **Interfaces:**
-- Consumes: migrations 012–017, and the Supabase stand-ins in `tests/db/sql/supabase-standins.sql` (Task 1).
-- Produces: a read-only live check, a rehearsal of 012–017 on a copy of the live data, and a live test script that always rolls back.
+- Consumes: migrations 012–017 and 020 (with 019, which live already has), the add-on and $0 order functions (Task 19), and the Supabase stand-ins in `tests/db/sql/supabase-standins.sql` (Task 1).
+- Produces: a read-only live check, a rehearsal of 012–017 and 020 on a copy of the live data, and a live test script that always rolls back.
 
 - [ ] **Step 1: Write the live test script, and prove it locally first**
 
@@ -9958,16 +15520,19 @@ The script checks the rules the way the local suite does:
 - the three row guards and the three `TRUNCATE` guards, and that the service role can't `TRUNCATE`
 - who can reach `payments_admin` and its audit table (no one but the SQL editor: not parents, `anon` or the service
   role), and who can run 016's email queue functions (not `anon` or `authenticated`)
-- that the one-active-order index is `idx_registrations_active_unique` with 002's predicate, since 015 tells a
-  late-payment conflict apart from any other uniqueness failure by that name
+- that the one-unpaid-order index is `idx_registrations_active_unique` with 019's predicate (`draft` and
+  `pending_payment` only), which 012–017 rely on and 020 checks
 
 It also reads a test feis's orders as its organiser, the way the organiser entries view (`getFeisEntries`) does.
+
+Then it runs add-on and $0 orders through the real functions, as the spec's Live verification asks: the family's first order is paid through `claim_checkout`, `attach_checkout_session` and `confirm_order_payment`; an add-on for a dance already paid for is refused; a $0 add-on counts the paid order and is confirmed by `confirm_free_order`; a late payment for an add-on whose counted orders hold is confirmed; a late payment after another order was paid that it didn't count becomes a case; and the organiser reads the family's add-on entries. Its create_order payloads carry `pricing.fee_schedule`, since `create_order` checks the family fee against it (Task 19).
 
 Create `supabase/tests/payment_hardening_live_tests.sql`:
 ```sql
 -- payment_hardening_live_tests.sql
--- Permission tests for migrations 012–017, with throwaway test identities: what parents, anon and
--- organisers can do, and the privileges, row-level security and guards that make it so.
+-- Live tests for migrations 012–017 and 020, with throwaway test identities: what parents, anon and
+-- organisers can do, and the privileges, row-level security and guards that make it so; then add-on
+-- orders and $0 orders through the real order functions (spec, Live verification).
 -- Run the whole file as ONE transaction (Supabase MCP apply_migration, or the SQL editor). The last
 -- statement always raises, so nothing is kept (and apply_migration records nothing). Read the result
 -- from the error: "PAYMENT HARDENING LIVE TESTS: <passed>/<total> passed; FAILED: ...".
@@ -10004,14 +15569,86 @@ CREATE FUNCTION pg_temp.ok(p_name text, p_ok boolean, p_detail text DEFAULT NULL
   INSERT INTO t_results (name, ok, detail) VALUES (p_name, COALESCE(p_ok, false), p_detail)
 $$;
 
+-- A one-dance create_order payload at the test feis: no family fee, a $15.00 family max, and the given dance fee
+-- and family-max saving, counting `p_prior` (what _counted_orders returns; null for a first order). create_order
+-- checks it against the snapshot exactly as it checks Submit's.
+CREATE FUNCTION pg_temp.payload(p_dancer uuid, p_comp uuid, p_fee integer, p_saving integer, p_prior jsonb)
+RETURNS jsonb LANGUAGE sql AS $$
+  SELECT jsonb_build_object(
+    'total_cents', p_fee - p_saving, 'application_fee_cents', round((p_fee - p_saving) * 0.05)::integer,
+    'event_fee_cents', 0, 'is_late', false,
+    'consent_ip', '203.0.113.7', 'consent_version', 'live-test', 'platform_terms_version', 'live-test',
+    'entries', jsonb_build_array(e.entry || jsonb_build_object('feis_competition_id', p_comp)),
+    'purchase_snapshot', jsonb_build_object(
+      'version', 1,
+      -- create_order checks the order's consent and terms versions against the snapshot's rules
+      'rules', jsonb_build_object('consent_version', 'live-test', 'platform_terms_version', 'live-test'),
+      'entries', jsonb_build_array(e.entry || jsonb_build_object('competition_id', p_comp)),
+      'competitions', jsonb_build_array(jsonb_build_object('id', c.id, 'exclude_from_family_cap', c.exclude_from_family_cap)),
+      'pricing', jsonb_build_object(
+        'fee_schedule', jsonb_build_object('event_fee_cents', 0, 'family_cap_cents', 1500),
+        'breakdown', jsonb_build_object('grand_total_cents', p_fee - p_saving, 'event_fee_cents', 0,
+                                        'family_cap_savings_cents', p_saving),
+        'prior', p_prior)))
+  FROM pre_registration.feis_competitions c
+  CROSS JOIN LATERAL (SELECT jsonb_build_object('dancer_id', p_dancer, 'fee_category', 'solo', 'base_fee_cents', p_fee,
+                        'late_fee_cents', 0, 'day_of_surcharge_cents', 0) AS entry) AS e
+  WHERE c.id = p_comp
+$$;
+-- What the test family's paid orders for the test feis count for its next order, as create_order rebuilds it
+CREATE FUNCTION pg_temp.counted() RETURNS jsonb LANGUAGE sql AS $$
+  SELECT pre_registration._counted_orders(pg_temp.id('household'), pg_temp.id('feis'))
+$$;
+-- Takes an order to checkout as Pay does: claim_checkout with a frozen request, then attach_checkout_session
+CREATE FUNCTION pg_temp.to_checkout(p_order uuid) RETURNS jsonb LANGUAGE plpgsql AS $$
+DECLARE
+  v_order pre_registration.registrations%ROWTYPE;
+  v_claim uuid := gen_random_uuid();
+  v_session text := 'cs_live_test_' || replace(gen_random_uuid()::text, '-', '');
+  v_account text;
+  v_result jsonb;
+BEGIN
+  SELECT * INTO v_order FROM pre_registration.registrations WHERE id = p_order;
+  SELECT stripe_account_id INTO v_account FROM pre_registration.feis_listings WHERE id = v_order.feis_listing_id;
+  v_result := pre_registration.claim_checkout(p_order, v_order.household_id, v_claim, jsonb_build_object(
+    'account', v_account, 'currency', 'usd', 'total_cents', v_order.total_cents,
+    'application_fee_cents', v_order.application_fee_cents,
+    'line_items', jsonb_build_array(jsonb_build_object('name', 'Live test entries', 'amount_cents', v_order.total_cents,
+                                                       'quantity', 1)),
+    'metadata', jsonb_build_object('registration_id', p_order, 'claim_id', v_claim),
+    'idempotency_key', 'checkout:' || p_order || ':' || v_claim,
+    'payment_method_types', jsonb_build_array('card'),
+    'expires_at', extract(epoch FROM now() + interval '60 minutes')::bigint));
+  IF v_result ->> 'result' IS DISTINCT FROM 'claimed' THEN
+    RAISE EXCEPTION 'claim_checkout did not claim order %: %', p_order, v_result;
+  END IF;
+  PERFORM pre_registration.attach_checkout_session(p_order, v_claim, v_session);
+  RETURN jsonb_build_object('claim_id', v_claim, 'session_id', v_session, 'account', v_account);
+END $$;
+-- The payment for a checkout, as the webhook reports it
+CREATE FUNCTION pg_temp.pay(p_order uuid, p_checkout jsonb) RETURNS jsonb LANGUAGE sql AS $$
+  SELECT pre_registration.confirm_order_payment(p_order, (p_checkout ->> 'claim_id')::uuid, p_checkout ->> 'session_id',
+    p_checkout ->> 'account', (SELECT total_cents FROM pre_registration.registrations WHERE id = p_order), 'usd', 'paid',
+    'pi_' || (p_checkout ->> 'session_id'), NULL, 'evt_live_test', 'webhook')
+$$;
+-- Stripe's expiry of a checkout, so a payment for it arrives late
+CREATE FUNCTION pg_temp.expire(p_order uuid, p_checkout jsonb) RETURNS jsonb LANGUAGE sql AS $$
+  SELECT pre_registration.expire_checkout(p_order, (p_checkout ->> 'claim_id')::uuid, p_checkout ->> 'session_id',
+    p_checkout ->> 'account')
+$$;
+
 -- ---------- Fixtures (as admin): two families, one test feis, one order made by create_order ----------
+-- The test feis has a $15.00 family max and three dances: Test Reel and Test Slip Jig at $15.00, and Test
+-- Special at $10.00, outside the family max. The parent has two dancers.
 DO $$
 DECLARE
   v_household uuid;
   v_listing uuid;
   v_comp uuid;
+  v_comp2 uuid;
+  v_special uuid;
   v_dancer uuid;
-  v_entry jsonb;
+  v_dancer2 uuid;
   v_result jsonb;
 BEGIN
   INSERT INTO t_ids VALUES ('parent', gen_random_uuid()), ('stranger', gen_random_uuid()), ('organiser', gen_random_uuid());
@@ -10028,28 +15665,29 @@ BEGIN
   VALUES ('Payment Hardening Test Feis', 'open', now() - interval '1 day', now() + interval '1 day',
           pg_temp.id('organiser'), 'acct_live_test')
   RETURNING id INTO v_listing;
-  INSERT INTO pre_registration.feis_competitions (feis_listing_id, competition_type, fee_category, display_name, enabled)
-  VALUES (v_listing, 'solo', 'solo', 'Test Reel', true)
+  INSERT INTO pre_registration.feis_competitions (feis_listing_id, competition_type, fee_category, display_name, enabled,
+    dance_key)
+  VALUES (v_listing, 'solo', 'solo', 'Test Reel', true, 'reel')
   RETURNING id INTO v_comp;
+  INSERT INTO pre_registration.feis_competitions (feis_listing_id, competition_type, fee_category, display_name, enabled,
+    dance_key)
+  VALUES (v_listing, 'solo', 'solo', 'Test Slip Jig', true, 'slip_jig')
+  RETURNING id INTO v_comp2;
+  INSERT INTO pre_registration.feis_competitions (feis_listing_id, competition_type, fee_category, display_name, enabled,
+    fee_cents, exclude_from_family_cap)
+  VALUES (v_listing, 'special', 'solo', 'Test Special', true, 1000, true)
+  RETURNING id INTO v_special;
   INSERT INTO pre_registration.dancers (household_id, first_name, last_name, date_of_birth, gender)
   VALUES (v_household, 'Test', 'Dancer', '2016-01-01', 'female')
   RETURNING id INTO v_dancer;
+  INSERT INTO pre_registration.dancers (household_id, first_name, last_name, date_of_birth, gender)
+  VALUES (v_household, 'Second', 'Dancer', '2017-01-01', 'female')
+  RETURNING id INTO v_dancer2;
 
-  v_entry := jsonb_build_object('dancer_id', v_dancer, 'fee_category', 'solo', 'base_fee_cents', 1500,
-                                'late_fee_cents', 0, 'day_of_surcharge_cents', 0);
-  v_result := pre_registration.create_order(v_household, v_listing, jsonb_build_object(
-    'total_cents', 1500, 'application_fee_cents', 75, 'event_fee_cents', 0, 'is_late', false,
-    'consent_ip', '203.0.113.7', 'consent_version', 'live-test', 'platform_terms_version', 'live-test',
-    'entries', jsonb_build_array(v_entry || jsonb_build_object('feis_competition_id', v_comp)),
-    'purchase_snapshot', jsonb_build_object(
-      'version', 1,
-      -- create_order checks the order's consent and terms versions against the snapshot's rules
-      'rules', jsonb_build_object('consent_version', 'live-test', 'platform_terms_version', 'live-test'),
-      'entries', jsonb_build_array(v_entry || jsonb_build_object('competition_id', v_comp)),
-      'pricing', jsonb_build_object('breakdown', jsonb_build_object(
-        'grand_total_cents', 1500, 'event_fee_cents', 0, 'family_cap_savings_cents', 0)))));
+  -- The family's first order: Test Reel, $15.00, which uses the whole family max
+  v_result := pre_registration.create_order(v_household, v_listing, pg_temp.payload(v_dancer, v_comp, 1500, 0, NULL));
   INSERT INTO t_ids VALUES ('order', (v_result ->> 'registration_id')::uuid), ('dancer', v_dancer), ('comp', v_comp),
-    ('feis', v_listing);
+    ('feis', v_listing), ('household', v_household), ('comp2', v_comp2), ('special', v_special), ('dancer2', v_dancer2);
 END $$;
 
 -- ---------- Reads ----------
@@ -10287,13 +15925,13 @@ DO $$ DECLARE v_callable text; BEGIN
   PERFORM pg_temp.ok('anon and authenticated cannot run the email queue functions', v_callable IS NULL, v_callable);
 END $$;
 
--- 013 and 015 copy this index's predicate, and 015 relabels a unique violation as late_payment_conflict only when
--- it names this index, so live must have exactly this index under exactly this name
+-- One unpaid order per family per feis is 019's index, which 020 checked when it was applied: draft and
+-- pending_payment only, so a family can hold any number of paid orders
 DO $$ DECLARE v_def text; BEGIN
   v_def := pg_get_indexdef(to_regclass('pre_registration.idx_registrations_active_unique'));
-  PERFORM pg_temp.ok('the one-active-order index is idx_registrations_active_unique, as 002 made it', v_def =
+  PERFORM pg_temp.ok('the one-unpaid-order index is idx_registrations_active_unique, as 019 made it', v_def =
     'CREATE UNIQUE INDEX idx_registrations_active_unique ON pre_registration.registrations USING btree '
-    '(feis_listing_id, household_id) WHERE (status <> ALL (ARRAY[''expired''::text, ''cancelled''::text]))',
+    '(feis_listing_id, household_id) WHERE (status = ANY (ARRAY[''draft''::text, ''pending_payment''::text]))',
     coalesce(v_def, 'no index by that name'));
 END $$;
 
@@ -10303,6 +15941,97 @@ DO $$ DECLARE v_jobs text; v_command text; BEGIN
   FROM cron.job WHERE command ILIKE '%hold_expires_at%';
   PERFORM pg_temp.ok('one hold-expiry job, and it names its schema',
     v_jobs = 'expire-registration-holds' AND v_command LIKE '%pre_registration.registrations%', v_jobs);
+END $$;
+
+-- ---------- Add-on orders and $0 orders, through the real order functions (as admin) ----------
+-- The fixture order is paid; each later order counts the family's paid orders as Submit does (_counted_orders).
+-- After the first order, the family max is used up, so more dances inside it cost nothing.
+
+DO $$ DECLARE v_result jsonb; BEGIN
+  v_result := pg_temp.pay(pg_temp.id('order'), pg_temp.to_checkout(pg_temp.id('order')));
+  PERFORM pg_temp.ok('the first order is paid through claim, attach and confirm_order_payment',
+    v_result ->> 'result' = 'confirmed', v_result::text);
+EXCEPTION WHEN OTHERS THEN PERFORM pg_temp.ok('the first order is paid through claim, attach and confirm_order_payment', false, SQLERRM); END $$;
+
+DO $$ DECLARE v_result jsonb; BEGIN
+  v_result := pre_registration.create_order(pg_temp.id('household'), pg_temp.id('feis'),
+    pg_temp.payload(pg_temp.id('dancer'), pg_temp.id('comp'), 1500, 1500, pg_temp.counted()));
+  PERFORM pg_temp.ok('an add-on for a dance already paid for is refused',
+    v_result = '{"status": "refused", "reason": "already_entered"}'::jsonb, v_result::text);
+EXCEPTION WHEN OTHERS THEN PERFORM pg_temp.ok('an add-on for a dance already paid for is refused', false, SQLERRM); END $$;
+
+DO $$ DECLARE v_result jsonb; v_free uuid; v_row record; v_payment jsonb; BEGIN
+  v_result := pre_registration.create_order(pg_temp.id('household'), pg_temp.id('feis'),
+    pg_temp.payload(pg_temp.id('dancer'), pg_temp.id('comp2'), 1500, 1500, pg_temp.counted()));
+  v_free := (v_result ->> 'registration_id')::uuid;
+  INSERT INTO t_ids VALUES ('free', v_free);
+  v_result := pre_registration.confirm_free_order(v_free, pg_temp.id('household'));
+  SELECT status, total_cents, stripe_checkout_session_id, purchase_snapshot -> 'pricing' -> 'prior' -> 'orders' -> 0 ->> 'id' AS counted
+  INTO v_row FROM pre_registration.registrations WHERE id = v_free;
+  SELECT snapshot_data -> 'payment' INTO v_payment FROM pre_registration.registration_snapshots WHERE registration_id = v_free;
+  PERFORM pg_temp.ok('a $0 add-on counts the paid order and is confirmed by confirm_free_order, with no Stripe payment',
+    v_result ->> 'result' = 'confirmed' AND v_row.status = 'paid' AND v_row.total_cents = 0
+      AND v_row.stripe_checkout_session_id IS NULL AND v_row.counted = pg_temp.id('order')::text
+      AND (v_payment ->> 'amount_cents')::int = 0 AND v_payment ->> 'payment_intent_id' IS NULL,
+    concat_ws(' | ', v_result::text, row_to_json(v_row)::text, v_payment::text));
+EXCEPTION WHEN OTHERS THEN
+  PERFORM pg_temp.ok('a $0 add-on counts the paid order and is confirmed by confirm_free_order, with no Stripe payment', false, SQLERRM);
+END $$;
+
+-- Test Special is outside the family max, so it costs $10.00 and goes through Stripe
+DO $$ DECLARE v_result jsonb; v_order uuid; v_checkout jsonb; BEGIN
+  v_result := pre_registration.create_order(pg_temp.id('household'), pg_temp.id('feis'),
+    pg_temp.payload(pg_temp.id('dancer'), pg_temp.id('special'), 1000, 0, pg_temp.counted()));
+  v_order := (v_result ->> 'registration_id')::uuid;
+  v_checkout := pg_temp.to_checkout(v_order);
+  PERFORM pg_temp.expire(v_order, v_checkout);
+  v_result := pg_temp.pay(v_order, v_checkout);
+  PERFORM pg_temp.ok('a late payment for an add-on whose counted orders still hold is confirmed',
+    v_result ->> 'result' = 'confirmed', v_result::text);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM pg_temp.ok('a late payment for an add-on whose counted orders still hold is confirmed', false, SQLERRM);
+END $$;
+
+DO $$ DECLARE v_result jsonb; v_late uuid; v_since uuid; v_checkout jsonb; v_why jsonb; BEGIN
+  v_result := pre_registration.create_order(pg_temp.id('household'), pg_temp.id('feis'),
+    pg_temp.payload(pg_temp.id('dancer2'), pg_temp.id('special'), 1000, 0, pg_temp.counted()));
+  v_late := (v_result ->> 'registration_id')::uuid;
+  v_checkout := pg_temp.to_checkout(v_late);
+  PERFORM pg_temp.expire(v_late, v_checkout);
+  -- The family starts again and another order is paid (here a $0 one), priced without the expired order
+  v_result := pre_registration.create_order(pg_temp.id('household'), pg_temp.id('feis'),
+    pg_temp.payload(pg_temp.id('dancer2'), pg_temp.id('comp'), 1500, 1500, pg_temp.counted()));
+  v_since := (v_result ->> 'registration_id')::uuid;
+  PERFORM pre_registration.confirm_free_order(v_since, pg_temp.id('household'));
+  v_result := pg_temp.pay(v_late, v_checkout);
+  SELECT details -> 'why' INTO v_why FROM pre_registration.payment_exceptions
+  WHERE registration_id = v_late AND reason = 'late_payment_conflict';
+  PERFORM pg_temp.ok('a late payment after another order was paid that it did not count is a case',
+    v_result ->> 'reason' = 'late_payment_conflict'
+      AND v_why = jsonb_build_array(jsonb_build_object('rule', 'paid_orders_changed', 'orders', jsonb_build_array(v_since)))
+      AND (SELECT status FROM pre_registration.registrations WHERE id = v_late) = 'expired',
+    concat_ws(' | ', v_result::text, v_why::text));
+EXCEPTION WHEN OTHERS THEN
+  PERFORM pg_temp.ok('a late payment after another order was paid that it did not count is a case', false, SQLERRM);
+END $$;
+
+-- The organiser entries view lists the family's add-on entries too: four paid orders, one dance each (the
+-- expired order's entry stays off the list)
+DO $$ DECLARE v_orders int; v_entries int; v_named int; BEGIN
+  PERFORM pg_temp.as_user('organiser');
+  SELECT count(*) INTO v_orders FROM pre_registration.registrations
+  WHERE feis_listing_id = pg_temp.id('feis') AND status = 'paid';
+  SELECT count(*), count(d.first_name) INTO v_entries, v_named
+  FROM pre_registration.registration_entries e
+  JOIN pre_registration.registrations r ON r.id = e.registration_id
+  LEFT JOIN pre_registration.dancers d ON d.id = e.dancer_id
+  WHERE r.feis_listing_id = pg_temp.id('feis') AND r.status IN ('paid', 'pending_payment', 'draft');
+  PERFORM pg_temp.as_admin();
+  PERFORM pg_temp.ok('the organiser reads every paid order and entry, add-ons included',
+    v_orders = 4 AND v_entries = 4 AND v_named = 4,
+    format('paid orders %s, entries %s, dancer names %s', v_orders, v_entries, v_named));
+EXCEPTION WHEN OTHERS THEN
+  PERFORM pg_temp.ok('the organiser reads every paid order and entry, add-ons included', false, SQLERRM);
 END $$;
 
 -- ---------- Report (always raises, so everything above rolls back) ----------
@@ -10357,7 +16086,7 @@ Expected: PASS. If a check fails here, fix the script or the migrations before g
 
 Create `supabase/checks/payment-hardening-live-check.sql`:
 ```sql
--- payment-hardening-live-check.sql: READ ONLY. Run before applying 012–017 (Rollout step 1) and after.
+-- payment-hardening-live-check.sql: READ ONLY. Run before applying 012–017 and 020 (Rollout step 1) and after.
 
 -- 1. Who can do what on the three order tables
 SELECT tablename, policyname, cmd, array_to_string(roles, ',') AS roles, qual, with_check
@@ -10469,10 +16198,30 @@ FROM unnest(ARRAY['id', 'feis_listing_id', 'household_id', 'status', 'confirmati
 WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
                   WHERE table_schema = 'pre_registration' AND table_name = 'registrations' AND column_name = c);
 
--- 9. Indexes on orders. 013 and 015 copy the one-active-order index's predicate, and 015 tells a late-payment
--- conflict apart from any other uniqueness failure by the index's name, idx_registrations_active_unique
+-- 9. Indexes on orders. One unpaid order per family per feis is 019's idx_registrations_active_unique (draft and
+-- pending_payment only). 012–017 rely on it and never create or drop it, and 020 refuses to apply without it
 SELECT indexname, indexdef FROM pg_indexes
 WHERE schemaname = 'pre_registration' AND tablename = 'registrations' ORDER BY indexname;
+
+-- 10. Add-ons made by main's live code (019 lets a family pay for several orders per feis)
+-- Families with more than one paid order for a feis
+SELECT household_id, feis_listing_id, count(*) AS paid_orders
+FROM pre_registration.registrations WHERE status = 'paid'
+GROUP BY household_id, feis_listing_id HAVING count(*) > 1;
+-- A dancer paid for twice in one competition (main checked this in TypeScript only)
+SELECT r.feis_listing_id, e.dancer_id, e.feis_competition_id, array_agg(r.id ORDER BY r.paid_at) AS orders
+FROM pre_registration.registration_entries e
+JOIN pre_registration.registrations r ON r.id = e.registration_id
+WHERE r.status = 'paid'
+GROUP BY r.feis_listing_id, e.dancer_id, e.feis_competition_id HAVING count(*) > 1;
+-- The family fee paid on more than one order for a feis (main's add-on path took no lock)
+SELECT household_id, feis_listing_id, array_agg(id ORDER BY paid_at) AS orders, sum(event_fee_cents) AS event_fees
+FROM pre_registration.registrations WHERE status = 'paid' AND event_fee_cents > 0
+GROUP BY household_id, feis_listing_id HAVING count(*) > 1;
+-- Paid orders with a total of 0 (main's free path: no claim and no session); section 4 lists paid orders with no
+-- snapshot row, which these are too
+SELECT id, household_id, feis_listing_id, confirmation_number, paid_at, stripe_checkout_session_id
+FROM pre_registration.registrations WHERE status = 'paid' AND total_cents = 0;
 ```
 Run it against live. Use the Supabase connector's `execute_sql`, once it's reconnected to the RunFeis organisation, or Daniel pastes it into the SQL editor. Record the answers. **Stop and ask Daniel** if any of these is true:
 - an order is `confirmed`, or has a `payment_method` (pay at the door was used)
@@ -10481,18 +16230,21 @@ Run it against live. Use the Supabase connector's `execute_sql`, once it's recon
 - a paid order's total doesn't match its entries
 - section 8 lists a missing column
 - section 3 shows a hold-expiry job other than `expire-registration-holds`. That is 002's job under another name. It would keep running beside 012's, so Step 7 unschedules it.
-- section 9 doesn't show `idx_registrations_active_unique` exactly as `CREATE UNIQUE INDEX idx_registrations_active_unique ON pre_registration.registrations USING btree (feis_listing_id, household_id) WHERE (status <> ALL (ARRAY['expired'::text, 'cancelled'::text]))`, or shows another unique index on `feis_listing_id` and `household_id`. 015 recognises a one-active-order failure by that name only: under another name, a late payment that hits the rule would roll back and Stripe would retry it forever, instead of becoming a `late_payment_conflict` case.
+- section 9 doesn't show `idx_registrations_active_unique` exactly as `CREATE UNIQUE INDEX idx_registrations_active_unique ON pre_registration.registrations USING btree (feis_listing_id, household_id) WHERE (status = ANY (ARRAY['draft'::text, 'pending_payment'::text]))` (019's), or shows another unique index on `feis_listing_id` and `household_id`. 012–017 rely on 019's index, and 020 refuses to apply without it.
+- section 10 lists a dancer paid for twice in one competition, or the family fee paid on more than one order for a feis. `main`'s add-on code checked for a dance already paid for only in TypeScript, and took no lock. A pair paid for twice goes to the organiser before go-live; an extra family fee is refunded in Stripe (spec Rollout step 2). Decide with Daniel before Step 7.
+
+Section 10's other findings are for information: families with several paid orders, and paid $0 orders (no claim or session, and no snapshot row, so section 4 lists them too). Those orders keep `purchase_snapshot = NULL`, and later orders count them from their rows (spec §4). Record the counts.
 
 Otherwise, carry on. Note whether `cron.job_run_details` shows the old hold-expiry job failing; 012 replaces it either way.
 
 Also read `STRIPE_APPLICATION_FEE_PERCENT` for Production and Preview in Vercel (project "project-f06v2" → Settings → Environment Variables), and record it. Today's Submit reads it with `parseInt`, so `2.9` charges 2%. From Task 7 on, Submit reads it with `parseFloat` and charges the whole percentage, worked out in basis points, so a fractional value raises the platform fee at deploy. If it's fractional, tell Daniel before Step 7. If it's missing, today's Submit falls back to 5%, but from this branch on a missing value makes every Submit fail to price ("Your entries could not be priced"), so no family can enter until it's set: Step 4 sets it, before Step 7.
 
-- [ ] **Step 3: Rehearse 012–017 on a copy of the live data (ask first)**
+- [ ] **Step 3: Rehearse 012–017 and 020 on a copy of the live data (ask first)**
 
-The spec's Rollout step 1 asks for a rehearsal on a copy of the live data before 012–017 go live. The script below:
+The spec's Rollout step 1 asks for a rehearsal on a copy of the live data, which has 019 applied, before 012–017 and 020 go live. The script below:
 - reads live once (`pg_dump` and two small `\copy` reads) and writes nothing there
 - restores the copy into a throwaway local Postgres 17, with the tests' Supabase stand-ins
-- applies 012–017 the way `apply_migration` will, one transaction per file
+- applies 012–017 and then 020 the way `apply_migration` will, one transaction per file
 - compares the orders before and after, and runs the live test script (Step 1) on the copy
 
 Ask Daniel first: it needs the database password, and the copy holds family data. It only ever lives in a temporary folder, which the script deletes when it ends.
@@ -10500,8 +16252,8 @@ Ask Daniel first: it needs the database password, and the copy holds family data
 Create `supabase/checks/rehearse-on-live-copy.sh`:
 ```bash
 #!/usr/bin/env bash
-# rehearse-on-live-copy.sh: applies migrations 012–017 to a copy of the live pre_registration data
-# (spec, Rollout step 1). It reads live once and never writes to it. The copy only ever lives in a
+# rehearse-on-live-copy.sh: applies migrations 012–017 and then 020 to a copy of the live pre_registration
+# data, which already has 019 (spec, Rollout step 1). It reads live once and never writes to it. The copy only ever lives in a
 # temporary folder and a throwaway Postgres 17, and both are deleted when the script ends.
 # Usage: LIVE_DB_URL='<connection string>' supabase/checks/rehearse-on-live-copy.sh
 set -euo pipefail
@@ -10569,6 +16321,12 @@ LEFTOVERS="SELECT coalesce(string_agg(proname, ', ' ORDER BY proname), 'none') F
 HOLD_JOBS="SELECT coalesce(string_agg(coalesce(jobname, jobid::text) || ': ' || regexp_replace(command, '\s+', ' ', 'g'),
     ' | ' ORDER BY jobid), 'none')
   FROM cron.job WHERE command ILIKE '%hold_expires_at%'"
+# Add-ons made by main's live code: families with several paid orders for a feis, and paid $0 orders
+SEVERAL_PAID="SELECT count(*) FROM (SELECT 1 FROM pre_registration.registrations WHERE status = 'paid'
+  GROUP BY household_id, feis_listing_id HAVING count(*) > 1) AS f"
+FREE_PAID="SELECT count(*) FROM pre_registration.registrations WHERE status = 'paid' AND total_cents = 0"
+UNPAID_INDEX="SELECT coalesce(pg_get_indexdef(to_regclass('pre_registration.idx_registrations_active_unique')), 'none')"
+INDEX_019="CREATE UNIQUE INDEX idx_registrations_active_unique ON pre_registration.registrations USING btree (feis_listing_id, household_id) WHERE (status = ANY (ARRAY['draft'::text, 'pending_payment'::text]))"
 
 report() {
   echo "   orders by status:       $(value "SELECT coalesce(string_agg(status || ' ' || n, ', ' ORDER BY status), 'none')
@@ -10583,16 +16341,21 @@ report() {
   echo "   triggers on orders:     $(value "SELECT coalesce(string_agg(tgname, ', ' ORDER BY tgname), 'none') FROM pg_trigger
     WHERE tgrelid = 'pre_registration.registrations'::regclass AND NOT tgisinternal")"
   echo "   hold-expiry jobs:       $(value "$HOLD_JOBS")"
+  echo "   several paid orders:    $(value "$SEVERAL_PAID") families"
+  echo "   paid \$0 orders:        $(value "$FREE_PAID")"
+  echo "   unpaid-order index:     $(value "$UNPAID_INDEX")"
 }
 
-echo '== 3. Before 012–017'
+echo '== 3. Before 012–017 and 020'
 report
 paid_before="$(value "$PAID")"
 paid_no_row_before="$(value "$PAID_NO_SNAPSHOT_ROW")"
+several_paid_before="$(value "$SEVERAL_PAID")"
+free_paid_before="$(value "$FREE_PAID")"
 expired_expected=$(( $(value "$EXPIRED") + $(value "$UNPAID") ))
 
-echo '== 4. Applying 012–017, one transaction per file, as apply_migration does'
-for file in "$ROOT"/supabase/migrations/01[2-7]_*.sql; do
+echo '== 4. Applying 012–017, then 020, one transaction per file, as apply_migration does'
+for file in "$ROOT"/supabase/migrations/01[2-7]_*.sql "$ROOT"/supabase/migrations/020_*.sql; do
   echo "   $(basename "$file")"
   copy --single-transaction -f "$file" >/dev/null
 done
@@ -10602,6 +16365,9 @@ report
 failures=()
 [[ "$(value "$PAID")" == "$paid_before" ]] || failures+=('paid orders changed')
 [[ "$(value "$PAID_NO_SNAPSHOT_ROW")" == "$paid_no_row_before" ]] || failures+=('paid orders without a snapshot row changed')
+[[ "$(value "$SEVERAL_PAID")" == "$several_paid_before" ]] || failures+=('families with several paid orders changed')
+[[ "$(value "$FREE_PAID")" == "$free_paid_before" ]] || failures+=('paid $0 orders changed')
+[[ "$(value "$UNPAID_INDEX")" == "$INDEX_019" ]] || failures+=("the unpaid-order index is not 019's")
 [[ "$(value "$UNPAID")" == 0 ]] || failures+=('unpaid orders remain')
 [[ "$(value "$EXPIRED")" == "$expired_expected" ]] || failures+=('not every legacy unpaid order expired')
 [[ "$(value "$LEFTOVERS")" == none ]] || failures+=('011 functions remain')
@@ -10635,14 +16401,16 @@ Run it. Daniel pastes the connection string (Dashboard → Connect → Session p
 cd ~/FEISSTAB-PRE-REG && chmod +x supabase/checks/rehearse-on-live-copy.sh
 read -rs LIVE_DB_URL && export LIVE_DB_URL && supabase/checks/rehearse-on-live-copy.sh; unset LIVE_DB_URL
 ```
-Expected: the last two lines are `PAYMENT HARDENING LIVE TESTS: N/N passed; FAILED: none` and `REHEARSAL PASSED`. The before and after reports cover each kind of order and leftover that live may hold:
+Expected: the last two lines are `PAYMENT HARDENING LIVE TESTS: N/N passed; FAILED: none` and `REHEARSAL PASSED` (34/34 against a copy that has 019 and `main`'s add-ons). The before and after reports cover each kind of order and leftover that live may hold:
 - **Unpaid orders from before purchase snapshots** (`draft` and `pending_payment`): after, none is unpaid, and each one is `expired`.
 - **Paid orders, which keep `purchase_snapshot = NULL`:** their fingerprint is the same before and after, and so is the number of paid orders with no `registration_snapshots` row. Nothing can add a snapshot to those later; Launch keeps reading their live data.
-- **Leftovers from 011:** after, `confirm_pay_at_door`, `mark_registration_paid` and the `guard_parent_registration_write` trigger and function are gone. A status check that still allows `'confirmed'` does no harm once 012 is on, because its guard never lets an order move into or out of `'confirmed'`. Tidying that check is a later migration (019 or above), not part of this rollout.
+- **Leftovers from 011:** after, `confirm_pay_at_door`, `mark_registration_paid` and the `guard_parent_registration_write` trigger and function are gone. A status check that still allows `'confirmed'` does no harm once 012 is on, because its guard never lets an order move into or out of `'confirmed'`. Tidying that check is a later migration (021 or above), not part of this rollout.
 - **Hold-expiry jobs:** after, exactly one, `expire-registration-holds`, naming `pre_registration.registrations`.
+- **Add-ons from `main`'s live code:** the number of families with several paid orders, and of paid $0 orders, is the same before and after (the paid fingerprint covers those orders too), and the unpaid-order index is 019's before and after: 020 applied over it.
+- **An add-on and a $0 add-on on the copy:** the live test script (Step 1) runs them, and late payments against several orders, through the real functions on the migrated copy.
 
 **Stop and ask Daniel** if the script prints `REHEARSAL FAILED`, or the restore or a migration stops with an error.
-- A `'confirmed'` order fails the rehearsal on purpose. 012 freezes it: it can never change status again, and it still counts as active in `idx_registrations_active_unique`, so that family's next Submit fails. Decide what to do with it before Step 7.
+- A `'confirmed'` order fails the rehearsal on purpose. 012 freezes it: it can never change status again, and `create_order` counts it as unpaid, so that family's next Submit is refused (`unpaid_order_exists`). Decide what to do with it before Step 7.
 - If the restore stops on a Supabase object the stand-ins lack (a function in `auth`, say), add a stand-in for it to the script's prelude and run it again. Never edit the copied data.
 
 - [ ] **Step 4: Set and check the Vercel settings (ask first)**
@@ -10652,7 +16420,7 @@ For project "project-f06v2" (team cgds-projects), in Production and Preview (Set
 - `NEXT_PUBLIC_BASE_URL`: the site's real URL, with `https://` and no trailing slash. For Preview, the URL previews are tested on, never `localhost`. It's inlined at build time, and it's frozen into every order's Stripe return URLs (at Pay's claim) and into every email, so check it here, before Step 7. Without it they all point to `http://localhost:3000`. After changing it, redeploy, since a built site keeps the old value.
 - `SUPABASE_SERVICE_ROLE_KEY`: Submit, Pay, Cancel, the webhook and the email job use it.
 - `NOTIFICATIONS_CRON_SECRET`: from `openssl rand -hex 32`. Step 8 stores the same value in Vault.
-- `PAYMENTS_ALERT_EMAIL`: **leave it unset** (Daniel's decision, 2026-10-17). `EMAIL_FROM` is still Resend's sandbox sender, `onboarding@resend.dev`, which delivers only to the Resend account owner, so with the contacts set, every confirmation and alert to anyone else would be refused and use up its attempts. While it's unset, `emailIsConfigured()` is false: the success page promises no email, nothing is sent, and the queue waits as `pending` without using attempts. Payment cases are watched through the logs and the runbook's daily queries. Step 12 turns email on: a verified sending domain in Resend, then `EMAIL_FROM` and `PAYMENTS_ALERT_EMAIL`. Queued emails then go out.
+- `PAYMENTS_ALERT_EMAIL`: set it to Daniel's and Steve's addresses, comma-separated (ask Daniel for Steve's). Check that `EMAIL_FROM` is `RunFeis <entries@runfeis.com>` (a verified domain) and `RESEND_API_KEY` is set. With all three set, `emailIsConfigured()` is true: confirmations and alerts send, and the success page promises the email.
 
 `RESEND_API_KEY`, `STRIPE_SECRET_KEY` and `STRIPE_CONNECT_WEBHOOK_SECRET` come with the email and real-Stripe work. Until the Stripe ones are set, Pay reports that payment couldn't start.
 
@@ -10667,9 +16435,9 @@ Expected: all pass.
 
 Have a fresh reviewer check `git diff main...payment-hardening` against the spec. Fix what it finds, re-run Step 5, and commit.
 
-- [ ] **Step 7: Apply 012–017 live, then deploy straight away (ask first)**
+- [ ] **Step 7: Apply 012–017 and 020 live, then deploy straight away (ask first)**
 
-1. Apply `012_order_integrity.sql` through `017_payments_admin.sql`, in order: with `apply_migration` (one call per file) or in the SQL editor. If Step 2 found 002's hold-expiry job under another name, unschedule it straight after 012, with `SELECT cron.unschedule(<that job's jobid>);`.
+1. Apply `012_order_integrity.sql` through `017_payments_admin.sql`, in order, then `020_assert_unpaid_index.sql`: with `apply_migration` (one call per file) or in the SQL editor. 019 is already live; don't apply it again. If Step 2 found 002's hold-expiry job under another name, unschedule it straight after 012, with `SELECT cron.unschedule(<that job's jobid>);`. If 020 raises, the unpaid-order index isn't 019's: stop and ask before deploying.
 2. Make the API load the new functions, so Submit, Pay and the webhook don't fail with "not in the schema cache". In the SQL editor:
    ```sql
    NOTIFY pgrst, 'reload schema';
@@ -10681,7 +16449,7 @@ Have a fresh reviewer check `git diff main...payment-hardening` against the spec
      -H 'Content-Profile: pre_registration' -H 'Content-Type: application/json' -d '{}'
    ```
    Expected: code `42501`, "permission denied for function get_my_payment_reviews". That's right: the API has the new function, and `anon` may not run it. Code `PGRST202` ("Could not find the function … in the schema cache") means the reload hasn't happened yet: send the `NOTIFY` again, wait a few seconds, and repeat. Any other answer (for example an API-key or JWT error, which can happen if the project uses the newer publishable keys): stop and ask before going on.
-3. Straight after, merge `payment-hardening` into `main` and push. Vercel deploys `main`. The old code can't write under the new permissions, so do these back to back, at a quiet time.
+3. Straight after, merge `payment-hardening` into `main` and push. Vercel deploys `main`. Task 17 merged `main` into this branch; if `main` has moved since, merge it in again first the same way (keeping this branch's order flow), re-run Step 5, and only then merge back. The old code can't write under the new permissions, including `main`'s add-on code, which writes the order tables directly, so do these back to back, at a quiet time.
 4. Once the deploy is live, and not before (`main`'s old handler doesn't expect them), add three events to the Connect webhook endpoint for `/api/webhooks/stripe` (Stripe dashboard → Developers → Webhooks; the endpoint that listens to connected accounts): `checkout.session.expired`, `checkout.session.async_payment_succeeded` and `checkout.session.async_payment_failed`. It then sends four, with `checkout.session.completed` (runbook §5).
 5. Sign in to the deployed site as a test parent and open My entries. It should show no "We couldn't check for messages about your payments" banner, which appears when `get_my_payment_reviews` fails.
 
@@ -10704,7 +16472,7 @@ Expected: `succeeded`. The endpoint answers `{"paused":true,...}` until email is
 - [ ] **Step 9: Verify live**
 
 Run `supabase/tests/payment_hardening_live_tests.sql` as one transaction (`apply_migration` or the SQL editor).
-Expected error text: `PAYMENT HARDENING LIVE TESTS: N/N passed; FAILED: none`. Besides the order tables, this covers `payments_admin` and `admin_actions` (refused to parents, `anon` and the service role), 016's email queue functions (refused to `anon` and `authenticated`), and the one-active-order index's name and definition.
+Expected error text: `PAYMENT HARDENING LIVE TESTS: N/N passed; FAILED: none`. Besides the order tables, this covers `payments_admin` and `admin_actions` (refused to parents, `anon` and the service role), 016's email queue functions (refused to `anon` and `authenticated`), the one-unpaid-order index's name and definition (019's), and add-on and $0 orders run through the real functions: a paid first order, a refused repeat of a paid dance, a $0 add-on confirmed by `confirm_free_order`, and late payments judged against several orders.
 
 Re-run the live check (Step 2). Section 1 should now show:
 - only the six read-only policies
@@ -10713,9 +16481,9 @@ Re-run the live check (Step 2). Section 1 should now show:
 - `service_role_can_truncate` false on all three tables
 - the three guard triggers and the three `TRUNCATE` guards, all enabled (`O`)
 
-Section 3 should show the schema-qualified hold-expiry job and no other. Section 9 should show `idx_registrations_active_unique` as in Step 2, and no other unique index on `feis_listing_id` and `household_id`.
+Section 3 should show the schema-qualified hold-expiry job and no other. Section 9 should show `idx_registrations_active_unique` as 019 made it (Step 2), and no other unique index on `feis_listing_id` and `household_id`. Section 10 should show the same findings as before the rollout: migrations never change a paid order.
 
-Then check the organiser entries view on the deployed site. Sign in as the organiser of a feis that has paid orders, and open its Entries tab: the entries show, with dancer names and competitor numbers. If no feis has paid orders yet, the live test script's organiser check stands in for this; record which one you used.
+Then check the organiser entries view on the deployed site. Sign in as the organiser of a feis that has paid orders, and open its Entries tab: the entries show, with dancer names and competitor numbers, including any family's add-on entries (section 10 of Step 2 lists families with several paid orders). If no feis has paid orders yet, the live test script's organiser checks stand in for this; record which one you used.
 
 - [ ] **Step 10: Record the results in the spec and commit**
 
@@ -10723,13 +16491,14 @@ Append to the "Rollout" section of `docs/2026-10-16-payment-hardening-design.md`
 ```markdown
 ### Live verification (YYYY-MM-DD)
 - Live check before: <summary of anything found and how it was handled>
+- Add-ons from main's live code: <families with several paid orders, pairs paid twice, family fees paid twice, paid $0 orders, and what was done about each>
 - Rehearsal on a copy of the live data: <REHEARSAL PASSED, and the before and after counts>
 - STRIPE_APPLICATION_FEE_PERCENT: <the value in Production and Preview>
 - NEXT_PUBLIC_BASE_URL: <the value in Production and Preview>; Fluid compute: <on, or the maxDuration set>
-- Email: paused (PAYMENTS_ALERT_EMAIL unset), until Step 12
+- Email: on (EMAIL_FROM RunFeis <entries@runfeis.com>, PAYMENTS_ALERT_EMAIL set)
 - Schema reload: <the smoke call's answer>
 - Stripe webhook events: <the four events, added at <time>>
-- Migrations 012–017 applied: <time>; deployed commit <sha>
+- Migrations 012–017 and 020 applied: <time>; deployed commit <sha>
 - Live tests: <N>/<N> passed
 - Organiser entries view: <checked on the site, or covered by the live test script>
 - Email job: scheduled, last run <status>
@@ -10754,16 +16523,19 @@ Once Stripe test keys and a connected test account exist, run each of these on a
 | Resend the same event from the Stripe dashboard | Unchanged |
 | Pause the webhook endpoint, pay, wait past the hold, then resume | Confirmed late, or a `late_payment_conflict` case if a newer order exists |
 | Send an expiry notice for an old session (Stripe CLI `stripe trigger`, or resend an old event) | Unchanged |
+| After paying, add a dance by card (Add dances) | A second paid order with no second family fee, priced with the family max across both orders; the email says the dance was added and shows the dancer's number |
+| After paying, add a dance once the family max is reached | The receipt says there's nothing to pay and the button reads Confirm entries; confirmed without Stripe, with an `RF-` number and a $0.00 email |
+| Add a dance already paid for (from a second tab opened before the first add-on was paid) | Refused: "One of these dances is already entered and paid for…" or "…is already entered in…" |
+| A family whose late payment is an open message-A case | The entry page shows message A and offers no way to choose dances or pay, and My entries offers no Add dances |
 
 Record the results under "Live verification".
 
-- [ ] **Step 12: Turn email on, before the first real feis opens (ask first)**
+- [ ] **Step 12: Confirm email is flowing**
 
-Email went live paused (see the top of this task). Before the first real feis opens for entries:
-1. In Resend, add and verify RunFeis's sending domain.
-2. On Vercel, in Production (and Preview if previews should send), set `EMAIL_FROM` to an address on that domain and `PAYMENTS_ALERT_EMAIL` to Daniel's and Steve's addresses, comma-separated (ask Daniel for Steve's). Redeploy.
-3. Confirm that the queued emails go out: within a few runs of the email job (every 5 minutes, 20 at a time), the `pending` rows in `pre_registration.notifications` become `sent`, and Resend's dashboard (Emails) shows them delivered. Then run the runbook's stuck-emails query (§4): no rows expected. The success page now promises a confirmation email.
-4. Record it under "Live verification": `Email turned on: <date>, sending domain <domain>`.
+Email is on from go-live (see the top of this task).
+1. After the end-to-end run (Step 11), the test orders' `registration_confirmation` rows in `pre_registration.notifications` are `sent`, and Resend's dashboard (Emails) shows them delivered from `entries@runfeis.com`.
+2. Run the runbook's stuck-emails query (§4): no rows expected.
+3. Record it under "Live verification": `Email confirmed flowing: <date>, from entries@runfeis.com`.
 
 ---
 
@@ -10786,8 +16558,9 @@ Email went live paused (see the top of this task). Before the first real feis op
   | §11 (resolutions) | 14, 15 |
   | §12 (notifications) | 13 |
   | §13 (expiry) | 3, 8 |
-  | Testing (all four kinds) | 1–16 |
-  | Rollout | 16 |
+  | §14 (add-on orders) and the revision 5 changes to §2–§4, §6, §9, §11 and §12 | 17–21 |
+  | Testing (all four kinds) | 1–21, 16 |
+  | Rollout | 17 (merging `main`), 16 |
 - **Where the plan differs from the spec text:**
   - The spec's "migration 012" is delivered as 012–017, split by concern.
   - The notification claim and backoff rules live in SQL (016) rather than TypeScript, so they're atomic. Only error classification is a pure TypeScript function.
