@@ -32,7 +32,9 @@ describe('email templates', () => {
     expect(email.html).toContain('>210R<')
     expect(email.html).toContain('>Reel<')
     expect(email.html).toContain('RF-2026-7KQ2M')
+    expect(email.html).toContain('>Paid<')
     expect(email.html).toContain('$40.00')
+    expect(email.html).not.toContain('Nothing to pay')
     expect(email.html).toContain('https://runfeis.test/dashboard')
   })
 
@@ -71,8 +73,11 @@ describe('email templates', () => {
     expect(email.html.match(/>210R</g)).toHaveLength(1)
     expect(email.html).not.toContain('110H')
     expect(email.html).not.toContain('Hornpipe')
-    // A $0 add-on shows what was paid: nothing
-    expect(email.html).toContain('$0.00')
+    // A $0 add-on was confirmed, not paid: the total reads "Nothing to pay", not "Paid $0.00"
+    expect(email.html).toContain('>Total<')
+    expect(email.html).toContain('>Nothing to pay<')
+    expect(email.html).not.toContain('>Paid<')
+    expect(email.html).not.toContain('$0.00')
   })
 
   it("keeps a first order's wording", () => {

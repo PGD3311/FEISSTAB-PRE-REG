@@ -128,9 +128,16 @@ export default function RegisterPage() {
           })
           return
         }
-        for (const result of [dancersResult, paidResult, ordersResult, reviewsResult]) {
+        for (const result of [dancersResult, paidResult, ordersResult]) {
           if (result.error) throw result.error
         }
+        // The payment cases only decide whether a new order may start. If they can't be read, the
+        // page still loads, so a paid family keeps their entries and number-card link, and new
+        // orders stay blocked, as they are on the server (My entries degrades the same way)
+        if (reviewsResult.error) {
+          console.error('Payment reviews failed to load:', reviewsResult.error)
+        }
+        const reviewsUnavailable = reviewsResult.error !== null
         if ('error' in heldResult) throw new Error(heldResult.error)
 
         const dancers = (dancersResult.data ?? []) as DancerWithLevels[]
@@ -189,7 +196,8 @@ export default function RegisterPage() {
             openMessageA: openMessageAFor(
               (reviewsResult.data ?? []) as PaymentReview[],
               (ordersResult.data ?? []).map((order) => order.id)
-            )
+            ),
+            reviewsUnavailable
           }
         })
       } catch (err) {

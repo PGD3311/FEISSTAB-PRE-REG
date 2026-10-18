@@ -19,7 +19,11 @@ import {
   entryFeesPerDancer,
   repricedNotice
 } from '@/lib/entry-display'
-import { reviewMessage, type PaymentReview } from '@/lib/payment-review-messages'
+import {
+  NEW_ORDER_CHECK_FAILED_MESSAGE,
+  reviewMessage,
+  type PaymentReview
+} from '@/lib/payment-review-messages'
 import {
   createDraftRegistration,
   createCheckoutSession,
@@ -66,6 +70,8 @@ export type EntryPageData = {
   expiredHold: boolean
   /** An open message-A case on one of the family's orders for this feis: no new order can start */
   openMessageA: PaymentReview | null
+  /** The payment cases couldn't be read, so none can be ruled out: no new order can start */
+  reviewsUnavailable: boolean
 }
 
 function cartFrom(registration: RegistrationWithEntries | null): Cart {
@@ -85,7 +91,8 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
     dancers,
     paidRegistrations,
     numbers,
-    openMessageA
+    openMessageA,
+    reviewsUnavailable
   } = data
   const levels = listing.syllabus_snapshot?.levels ?? []
   // The cutoff Submit uses: the organiser's date, otherwise January 1 of the feis year
@@ -138,13 +145,14 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
 
   const paid = paidRegistrations.length > 0
   const held = registrationId !== null
-  // The one gate for a new order, a first order or an add-on (spec §14): registration is open, the family
-  // holds no unpaid order, and no message-A case is open for this feis
+  // The one gate for a new order, a first order or an add-on (spec §14): registration is open, the
+  // family holds no unpaid order, and no message-A case is open for this feis. If the payment cases
+  // couldn't be read, one can't be ruled out, so it counts as open: the server refuses the same way
   const canStart = canStartOrder({
     listing,
     now: new Date(),
     hasUnpaidOrder: held,
-    hasOpenMessageA: openMessageA !== null
+    hasOpenMessageA: openMessageA !== null || reviewsUnavailable
   })
   const canEdit = canStart && feeSchedule !== null
 
@@ -437,9 +445,11 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
                     lockedNote={
                       openMessageA
                         ? 'No new entries while we check your payment.'
-                        : held
-                          ? 'To add dances, choose Change entries under the family total.'
-                          : undefined
+                        : reviewsUnavailable
+                          ? NEW_ORDER_CHECK_FAILED_MESSAGE
+                          : held
+                            ? 'To add dances, choose Change entries under the family total.'
+                            : undefined
                     }
                     onEdit={() => setEditingId(dancer.id)}
                     onDone={() => setEditingId(null)}
@@ -474,14 +484,26 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
             </Link>
           </aside>
         ) : paid && dancesChosen === 0 && !held ? (
-          <PaidReceipt
-            familyName={data.familyName}
-            totalCents={paidTotalCents}
-            confirmationNumber={latestPaid?.confirmation_number ?? null}
-            contactEmail={listing.contact_email}
-            cardsHref={`/dashboard/numbers/${feisId}`}
-            canAdd={canEdit}
-          />
+          // A paid family keeps their receipt and number cards even if the payment cases can't be
+          // read; the notice says why they can't add anything for now
+          <div className="grid gap-4">
+            {reviewsUnavailable && (
+              <p
+                role="status"
+                className="border-l-4 border-[var(--color-feis-orange)] bg-[var(--color-feis-orange-light)] px-4 py-2.5 text-sm text-[var(--color-feis-orange-ink)]"
+              >
+                {NEW_ORDER_CHECK_FAILED_MESSAGE}
+              </p>
+            )}
+            <PaidReceipt
+              familyName={data.familyName}
+              totalCents={paidTotalCents}
+              confirmationNumber={latestPaid?.confirmation_number ?? null}
+              contactEmail={listing.contact_email}
+              cardsHref={`/dashboard/numbers/${feisId}`}
+              canAdd={canEdit}
+            />
+          </div>
         ) : deadline.closed && !held ? (
           <aside className="feis-receipt px-[18px] py-5">
             <h2 className="text-[22px] font-extrabold [font-stretch:75%]">Entries are closed</h2>
@@ -491,6 +513,16 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
                 ? ` To ask about a late entry, email ${listing.contact_email}.`
                 : ''}
             </p>
+          </aside>
+        ) : reviewsUnavailable ? (
+          // Where message A would show: the check can't be made, so no choosing and no Pay
+          <aside className="feis-receipt px-[18px] py-5">
+            <p role="status" className="text-sm">
+              {NEW_ORDER_CHECK_FAILED_MESSAGE}
+            </p>
+            <Link href="/dashboard" className="feis-btn feis-btn-outline mt-4">
+              All my entries
+            </Link>
           </aside>
         ) : !feeSchedule ? (
           <aside className="feis-receipt px-[18px] py-5">
@@ -524,7 +556,7 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
         )}
       </main>
 
-      {dancesChosen > 0 && !receiptVisible && !openMessageA && (
+      {dancesChosen > 0 && !receiptVisible && !openMessageA && !reviewsUnavailable && (
         <div className="fixed inset-x-0 bottom-0 flex items-center justify-between gap-3 bg-[var(--color-feis-charcoal)] px-4 pt-3 pb-[max(12px,env(safe-area-inset-bottom))] text-white lg:hidden">
           <div>
             <span className="block text-xs opacity-70">

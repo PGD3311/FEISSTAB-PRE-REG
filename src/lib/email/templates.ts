@@ -82,6 +82,8 @@ export function renderConfirmationEmail(data: ConfirmationEmailData): string {
     baseUrl,
     addedToEntry = false
   } = data
+  // An order that cost nothing (often an add-on past the family max) was confirmed, not paid
+  const nothingToPay = totalCents === 0
   const intro = addedToEntry
     ? "These dances were added to your entry. Dancers who were already entered keep their competitor numbers. Keep this email with your first one; you'll need the numbers on the day."
     : "Here are your competitor numbers and dances. Keep this email; you'll need the numbers on the day."
@@ -113,8 +115,8 @@ export function renderConfirmationEmail(data: ConfirmationEmailData): string {
       <td style="background:#FFFFFF;border:2px solid #17191B;padding:16px 18px;">
         <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
           <tr>
-            <td style="font-size:14px;color:#615D55;">Paid</td>
-            <td style="font-size:22px;font-weight:bold;color:#17191B;text-align:right;">${formatCents(totalCents)}</td>
+            <td style="font-size:14px;color:#615D55;">${nothingToPay ? 'Total' : 'Paid'}</td>
+            <td style="font-size:22px;font-weight:bold;color:#17191B;text-align:right;">${nothingToPay ? 'Nothing to pay' : formatCents(totalCents)}</td>
           </tr>
           <tr>
             <td style="font-size:14px;color:#615D55;padding-top:6px;">Confirmation</td>
@@ -136,7 +138,7 @@ export function renderConfirmationEmail(data: ConfirmationEmailData): string {
     }
     <tr>
       <td style="padding:20px 2px 0;font-size:13px;line-height:1.6;color:#615D55;">
-        To add or drop a dance, contact the organiser${contactEmail ? ` at <a href="mailto:${escapeHtml(contactEmail)}" style="color:#2F7A52;">${escapeHtml(contactEmail)}</a>` : ''}. Entry fees aren't refundable.
+        To drop or swap a dance, contact the organiser${contactEmail ? ` at <a href="mailto:${escapeHtml(contactEmail)}" style="color:#2F7A52;">${escapeHtml(contactEmail)}</a>` : ''}. While entries are open, you can add dances yourself from My entries. Entry fees aren't refundable.
       </td>
     </tr>
     <tr>

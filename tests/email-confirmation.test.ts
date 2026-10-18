@@ -37,6 +37,38 @@ describe('renderConfirmationEmail', () => {
     expect(html).toContain('https://project-f06v2.vercel.app/dashboard')
   })
 
+  it('shows what was paid for an order that cost money', () => {
+    const html = renderConfirmationEmail(sample)
+    expect(html).toContain('>Paid<')
+    expect(html).toContain('>$90.00<')
+    expect(html).not.toContain('Nothing to pay')
+  })
+
+  it('says there was nothing to pay, not "Paid $0.00", for an order that cost nothing', () => {
+    const html = renderConfirmationEmail({ ...sample, totalCents: 0, addedToEntry: true })
+    expect(html).toContain('>Total<')
+    expect(html).toContain('>Nothing to pay<')
+    expect(html).not.toContain('>Paid<')
+    expect(html).not.toContain('$0.00')
+    // The confirmation number still shows
+    expect(html).toContain('NF27-0042')
+  })
+
+  it('sends drop and swap to the organiser, and add to My entries', () => {
+    const html = renderConfirmationEmail(sample)
+    expect(html).toContain('To drop or swap a dance, contact the organiser at')
+    expect(html).toContain('mailto:feis@example.com')
+    expect(html).toContain('While entries are open, you can add dances yourself from My entries.')
+    expect(html).toContain("Entry fees aren't refundable.")
+    expect(html).not.toContain('add or drop')
+  })
+
+  it('keeps the add and drop wording when the organiser has no contact email', () => {
+    const html = renderConfirmationEmail({ ...sample, contactEmail: null })
+    expect(html).toContain('To drop or swap a dance, contact the organiser. While entries are open')
+    expect(html).not.toContain('mailto:')
+  })
+
   it('shows a dash when a number has not been assigned', () => {
     const html = renderConfirmationEmail({
       ...sample,

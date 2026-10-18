@@ -302,7 +302,7 @@ export default async function DashboardPage() {
                       href={`/feiseanna/${reg.feis_listing_id}/register`}
                       className="feis-btn feis-btn-primary"
                     >
-                      Finish and pay
+                      {reg.total_cents === 0 ? 'Finish and confirm' : 'Finish and pay'}
                     </Link>
                   )}
                   {reg.status === 'expired' && canPayAgain && (

@@ -230,7 +230,10 @@ interface PaidReceiptProps {
   canAdd: boolean
 }
 
-/** Shown once the family has paid: what they paid and how to change anything. */
+/**
+ * Shown once the family has paid: what they paid and how to change anything. A family whose orders
+ * all cost nothing (`totalCents` is 0) was confirmed, not paid.
+ */
 export function PaidReceipt({
   familyName,
   totalCents,
@@ -244,7 +247,7 @@ export function PaidReceipt({
       <h2 className="text-[22px] leading-tight font-extrabold [font-stretch:75%]">Paid</h2>
       <p className="mb-3 text-[13px] text-muted-foreground">{familyName}</p>
       <div className="flex items-baseline justify-between border-t-[3px] border-[var(--color-feis-gold)] pt-2.5">
-        <span className="font-bold">Paid in full</span>
+        <span className="font-bold">{totalCents === 0 ? 'Confirmed' : 'Paid in full'}</span>
         <strong className="text-[40px] leading-none font-black tabular-nums [font-stretch:65%]">
           {formatCents(totalCents)}
         </strong>
