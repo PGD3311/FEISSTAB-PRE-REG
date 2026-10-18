@@ -161,8 +161,9 @@ export interface PaidOrder {
 }
 
 /**
- * What an order's price counted: the family's paid orders for the feis and what they covered. Frozen
- * as purchase_snapshot.pricing.prior, which create_order rebuilds and compares exactly (spec §4).
+ * What an order's price counted: the family's paid orders for the feis and what they covered.
+ * Frozen as purchase_snapshot.pricing.prior, which create_order rebuilds and compares exactly
+ * (spec §4).
  */
 export interface CountedOrders extends PriorPaidFees {
   orders: PaidOrder[]

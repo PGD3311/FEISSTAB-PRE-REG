@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   calculateFees,
+  compareIds,
   competitionFeeCents,
   getActiveLateTier,
   summarisePaidOrders
@@ -363,5 +364,30 @@ describe('summarisePaidOrders', () => {
       late_fee_dancer_ids: ['d1', 'd3'],
       late_fees_paid_cents: 1000
     })
+  })
+
+  it('lists a dancer once however many of their entries paid a late fee', () => {
+    const prior = summarisePaidOrders([
+      {
+        id: 'o1',
+        confirmation_number: null,
+        event_fee_cents: 1000,
+        entries: [entry('d1', 'r', 1300, 500), entry('d1', 'lj', 1300, 500)]
+      }
+    ])
+    expect(prior?.late_fee_dancer_ids).toEqual(['d1'])
+    expect(prior?.late_fees_paid_cents).toBe(1000)
+  })
+})
+
+// Plain code-unit order, not locale order (spec §4): it has to match Postgres's uuid order
+describe('compareIds', () => {
+  it('sorts by code unit, where localeCompare would put b before B', () => {
+    expect(['b', 'B', 'a'].sort(compareIds)).toEqual(['B', 'a', 'b'])
+    expect(['b', 'B', 'a'].sort((a, b) => a.localeCompare(b))).not.toEqual(['B', 'a', 'b'])
+  })
+
+  it('is 0 for equal ids', () => {
+    expect(compareIds('a', 'a')).toBe(0)
   })
 })

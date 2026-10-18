@@ -139,7 +139,9 @@ export interface CreateOrderPayload {
   purchase_snapshot: PurchaseSnapshot
 }
 
-/** A paid order as Submit and the entry page read it: the row, its entries and its purchase snapshot */
+/**
+ * A paid order as Submit and the entry page read it: the row, its entries and its purchase snapshot
+ */
 export interface PaidOrderRow {
   id: string
   confirmation_number: string | null
@@ -154,9 +156,9 @@ export interface PaidOrderRow {
 }
 
 /**
- * The family's paid orders as later orders count them. Whether an entry counted toward the family max
- * comes from its own order's purchase snapshot; an older order without one (made before snapshots)
- * uses the competition's current setting. create_order reads the rows by the same rule.
+ * The family's paid orders as later orders count them. Whether an entry counted toward the family
+ * max comes from its own order's purchase snapshot; an older order without one (made before
+ * snapshots) uses the competition's current setting. create_order reads the rows by the same rule.
  */
 export function paidOrdersFrom(
   rows: PaidOrderRow[],

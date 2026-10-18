@@ -12,9 +12,9 @@ export function belowCardMinimum(totalCents: number): boolean {
 }
 
 /**
- * Whether Submit refuses a total (Decision 10): 1 to 49 cents is more than nothing but less than a card
- * can be charged, so no order is made that could never be paid. create_order refuses it too. A total
- * of 0 is allowed: Pay confirms it without Stripe (spec §6).
+ * Whether Submit refuses a total (Decision 10): 1 to 49 cents is more than nothing but less than a
+ * card can be charged, so no order is made that could never be paid. create_order refuses it too. A
+ * total of 0 is allowed: Pay confirms it without Stripe (spec §6).
  */
 export function tooSmallToCharge(totalCents: number): boolean {
   return totalCents > 0 && belowCardMinimum(totalCents)

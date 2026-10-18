@@ -146,7 +146,9 @@ export function summarisePaidOrders(orders: PaidOrder[]): PriorPaidFees | null {
       .filter((entry) => entry.counts_toward_family_cap)
       .reduce((sum, entry) => sum + entry.base_fee_cents, 0),
     late_fee_dancer_ids: [
-      ...new Set(entries.filter((entry) => entry.late_fee_cents > 0).map((entry) => entry.dancer_id))
+      ...new Set(
+        entries.filter((entry) => entry.late_fee_cents > 0).map((entry) => entry.dancer_id)
+      )
     ].sort(compareIds),
     late_fees_paid_cents: entries.reduce((sum, entry) => sum + entry.late_fee_cents, 0)
   }

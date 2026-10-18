@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   ageCutoffDateFor,
   canStartOrder,
+  registrationWindowBlock,
   toDancerProfile,
   validateOrderRequest,
   type OrderDancer,
@@ -268,5 +269,47 @@ describe('canStartOrder', () => {
 
   it('is false while message A is open, for a first order as much as an add-on', () => {
     expect(start({ hasOpenMessageA: true })).toBe(false)
+  })
+})
+
+// The one window check behind canStartOrder and validateOrderRequest
+describe('registrationWindowBlock', () => {
+  const listing = {
+    status: 'open' as const,
+    reg_opens_at: '2026-10-01T00:00:00Z',
+    reg_closes_at: '2026-12-01T00:00:00Z',
+    late_reg_closes_at: null
+  }
+
+  it('is null while registration is open', () => {
+    expect(registrationWindowBlock(listing, NOW)).toBeNull()
+  })
+
+  it('is not_open when the listing is not open, whatever the dates say', () => {
+    expect(registrationWindowBlock({ ...listing, status: 'draft' }, NOW)).toBe('not_open')
+    expect(registrationWindowBlock({ ...listing, status: 'closed' }, NOW)).toBe('not_open')
+  })
+
+  it('is not_yet_open before the opening time, and open from that exact moment', () => {
+    const opens = new Date(listing.reg_opens_at)
+    expect(registrationWindowBlock(listing, new Date(opens.getTime() - 1))).toBe('not_yet_open')
+    expect(registrationWindowBlock(listing, opens)).toBeNull()
+  })
+
+  it('is closed after the close time, and still open at that exact moment', () => {
+    const closes = new Date(listing.reg_closes_at)
+    expect(registrationWindowBlock(listing, closes)).toBeNull()
+    expect(registrationWindowBlock(listing, new Date(closes.getTime() + 1))).toBe('closed')
+  })
+
+  it('closes at the late deadline when there is one, not the normal one', () => {
+    const late = { ...listing, late_reg_closes_at: '2026-12-15T00:00:00Z' }
+    expect(registrationWindowBlock(late, new Date('2026-12-10T00:00:00Z'))).toBeNull()
+    expect(registrationWindowBlock(late, new Date('2026-12-15T00:00:00.001Z'))).toBe('closed')
+  })
+
+  it('has no close time to pass when neither deadline is set', () => {
+    const open = { ...listing, reg_opens_at: null, reg_closes_at: null }
+    expect(registrationWindowBlock(open, new Date('2030-01-01T00:00:00Z'))).toBeNull()
   })
 })

@@ -411,4 +411,23 @@ describe('paidOrdersFrom', () => {
       ]
     })
   })
+
+  it("counts an entry toward the family max when its competition can't be found at all", () => {
+    const [order] = paidOrdersFrom([row({ competitions: [] })], [])
+    expect(order.entries[0].counts_toward_family_cap).toBe(true)
+    const [older] = paidOrdersFrom([row(null)], [])
+    expect(older.entries[0].counts_toward_family_cap).toBe(true)
+  })
+
+  it("uses the current flag when the snapshot doesn't list the entry's competition", () => {
+    const other = { ...comp('c9', '999R', 'reel'), exclude_from_family_cap: true }
+    const otherOnly = { competitions: [other] }
+    // The current flag is false (counts), the opposite of the c9 entry in the snapshot
+    const [order] = paidOrdersFrom([row(otherOnly)], [comp('c1', '210R', 'reel')])
+    expect(order.entries[0].counts_toward_family_cap).toBe(true)
+    // And with the current flag true (excluded), the fallback excludes it
+    const excluded = [{ ...comp('c1', '210R', 'reel'), exclude_from_family_cap: true }]
+    const [again] = paidOrdersFrom([row(otherOnly)], excluded)
+    expect(again.entries[0].counts_toward_family_cap).toBe(false)
+  })
 })

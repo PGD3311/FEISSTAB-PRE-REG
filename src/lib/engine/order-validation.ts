@@ -73,9 +73,33 @@ export function toDancerProfile(dancer: OrderDancer): DancerProfile {
   }
 }
 
+/** Why registration isn't taking orders right now, or null when it is */
+export type RegistrationWindowBlock = 'not_open' | 'not_yet_open' | 'closed'
+
+type RegistrationWindowListing = Pick<
+  FeisListing,
+  'status' | 'reg_opens_at' | 'reg_closes_at' | 'late_reg_closes_at'
+>
+
+/**
+ * Whether registration is taking orders at `now`: the listing is open, has opened, and hasn't
+ * passed its close time (the late deadline when there is one). The one check behind both
+ * canStartOrder and validateOrderRequest, so the two can't disagree.
+ */
+export function registrationWindowBlock(
+  listing: RegistrationWindowListing,
+  now: Date
+): RegistrationWindowBlock | null {
+  if (listing.status !== 'open') return 'not_open'
+  if (listing.reg_opens_at && now < new Date(listing.reg_opens_at)) return 'not_yet_open'
+  const close = registrationCloseTime(listing)
+  if (close && now > close) return 'closed'
+  return null
+}
+
 /** Whether a new order can start: a family's first order or an add-on (spec §14, Decision 13) */
 export interface OrderStartInput {
-  listing: Pick<FeisListing, 'status' | 'reg_opens_at' | 'reg_closes_at' | 'late_reg_closes_at'>
+  listing: RegistrationWindowListing
   now: Date
   /** The family holds a draft or pending_payment order for this feis */
   hasUnpaidOrder: boolean
@@ -89,11 +113,7 @@ export interface OrderStartInput {
  * opens, after it closes, while the family holds an unpaid order, or while message A is open.
  */
 export function canStartOrder(input: OrderStartInput): boolean {
-  const { listing, now } = input
-  if (listing.status !== 'open') return false
-  if (listing.reg_opens_at && now < new Date(listing.reg_opens_at)) return false
-  const close = registrationCloseTime(listing)
-  if (close && now > close) return false
+  if (registrationWindowBlock(input.listing, input.now) !== null) return false
   return !input.hasUnpaidOrder && !input.hasOpenMessageA
 }
 
@@ -105,12 +125,10 @@ function fail(error: string): OrderValidation {
 export function validateOrderRequest(request: OrderRequest): OrderValidation {
   const { listing, now } = request
 
-  if (listing.status !== 'open') return fail('Registration for this feis is not open.')
-  if (listing.reg_opens_at && now < new Date(listing.reg_opens_at)) {
-    return fail('Registration for this feis has not opened yet.')
-  }
-  const close = registrationCloseTime(listing)
-  if (close && now > close) return fail('Registration for this feis has closed.')
+  const windowBlock = registrationWindowBlock(listing, now)
+  if (windowBlock === 'not_open') return fail('Registration for this feis is not open.')
+  if (windowBlock === 'not_yet_open') return fail('Registration for this feis has not opened yet.')
+  if (windowBlock === 'closed') return fail('Registration for this feis has closed.')
 
   if (request.entries.length === 0) return fail('Choose at least one competition.')
 
