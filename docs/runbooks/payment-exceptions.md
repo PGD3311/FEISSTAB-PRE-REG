@@ -1,6 +1,6 @@
 # Payment cases and emails: runbook
 
-Who: the payments contacts, Daniel and Steve to start (their addresses are in `PAYMENTS_ALERT_EMAIL`).
+Who: the payments contacts: Daniel to start (his address is in `PAYMENTS_ALERT_EMAIL`), with Steve to be added.
 Where: the Supabase SQL editor for the RunFeis project, and the Stripe dashboard (the connected account named in the case).
 
 Every case has a reference like `PAY-7KQ2M`. The family sees it on the success page and their dashboard when
@@ -14,14 +14,13 @@ costs nothing (typically an add-on once the family max is reached) is confirmed 
 no payment and never a case. Alerts arrive by email (to `PAYMENTS_ALERT_EMAIL`, from `entries@runfeis.com`), and the Vercel
 logs always have a `[PAYMENT_EXCEPTION] PAY-…` line.
 
-During registration, run the open-cases query (section 1) and the stuck-emails query (section 4) routinely, for
-example every day. A payment-case alert that fails to send is found only by the second query. Also watch the Vercel
-logs for `[NOTIFICATION_FAILED]` lines: they mean an email failed or needs checking.
+During registration, run the open-cases query (section 1) and the stuck-emails query (section 4) every day: a
+payment-case alert that fails to send is found only by the second query, and Vercel keeps its logs only for a short
+time, so the queries are the record. Also watch the Vercel logs for `[NOTIFICATION_FAILED]` lines: they mean an email
+failed or needs checking.
 
 **Email.** RunFeis sends from `entries@runfeis.com`: confirmations to families, and payment-case alerts to
-`PAYMENTS_ALERT_EMAIL`. An alert that fails to send is found only by the stuck-emails query (section 4), so keep
-running both queries every day during registration: Vercel keeps its logs only for a short time, so the queries are
-the record. If email stops, see "If email stops" in section 5.
+`PAYMENTS_ALERT_EMAIL`. If email stops, see "If email stops" in section 5.
 
 ## 1. Look up a case
 
@@ -52,6 +51,9 @@ WHERE r.household_id = '<household_id>' AND r.feis_listing_id = '<feis_listing_i
 ORDER BY r.created_at;
 ```
 
+`reached_checkout` and `counted_orders` come from payment hardening: an order paid before it went live shows `false`
+and `[]`, even if it was paid by card.
+
 Then find the payment in Stripe: Dashboard → Connect → the account named in the case's `stripe_account_id` →
 Payments → search for `stripe_payment_intent_id`, or open the checkout session `stripe_checkout_session_id`. That
 account is usually the feis's, but for `account_mismatch` it is a different one, so don't assume.
@@ -80,6 +82,10 @@ WHERE stripe_payment_intent_id = '<pi>';
 | (none: a $0 order) | An order that cost nothing was confirmed without Stripe. It has no checkout session or payment intent, and the snapshot's payment shows an amount of 0. | Nothing. It never raises a case. |
 | `listing_account_changed` (notice) | The order is confirmed, but the feis has switched Stripe accounts since checkout. | Check the new account is right, then acknowledge it (3d). |
 
+While a case that showed message A is open, the family can't start or pay any order for that feis: the entry page
+offers no way to choose or pay, and Submit and Pay refuse with message A. Close these cases promptly, so a family who
+needs to register again can before registration closes.
+
 ## 3. Resolve it
 
 Every function needs a note saying what you checked and decided. Each one writes an `admin_actions` row.
@@ -91,7 +97,8 @@ never the person, so the note is the only record of who decided.
 **3a. Confirm a late payment** (only `late_payment_conflict`). This cancels the family's unpaid drafts for the feis
 that never reached checkout (they were priced without the late payment), then confirms the paid order: confirmation
 number, snapshot, competitor numbers and confirmation email. The order's `paid_at` becomes the time of this
-confirmation, so its competitor numbers come after every family confirmed before now.
+confirmation, so a dancer in it with no number at this feis yet gets one after every family confirmed before now
+(dancers already entered keep theirs).
 
 It confirms only when every other order of the family for the feis is one of these:
 - paid, and counted by this order's price (it's in this order's `counted_orders` in the family's-orders query)
@@ -99,8 +106,10 @@ It confirms only when every other order of the family for the feis is one of the
   one arrives later, it becomes a case of its own
 - an unpaid draft that never reached checkout, which it cancels
 
-It refuses, and you refund instead (3b), when another order was paid that this one didn't count (`why` says
-`paid_orders_changed`: its price no longer holds), or when another order is at checkout right now (a draft that
+It refuses, and you refund instead (3b), when the case's order isn't `expired` (`order_status` in the case lookup; the
+rare case on an order still awaiting payment), when another order is paid but isn't in this order's `counted_orders`
+(its price no longer holds; `why` says `paid_orders_changed` only if that order was already paid when the case was
+recorded, so judge by the family's-orders query now), or when another order is at checkout right now (a draft that
 reached checkout, or one awaiting payment), since a payment for it may arrive at any moment.
 
 This function is the only way a payment recorded as a `late_payment_conflict` case is ever confirmed. The
@@ -214,7 +223,7 @@ address>'` to the `SET`. If it fails again, no second delivery-failure email is 
 
 Environment variables on Vercel:
 - `SUPABASE_SERVICE_ROLE_KEY`
-- `PAYMENTS_ALERT_EMAIL` (the payments contacts, comma-separated: Daniel and Steve)
+- `PAYMENTS_ALERT_EMAIL` (the payments contacts, comma-separated (Daniel for now; add Steve's address to bring him in))
 - `NOTIFICATIONS_CRON_SECRET` (`openssl rand -hex 32`)
 - `RESEND_API_KEY` and `EMAIL_FROM`
 - `STRIPE_SECRET_KEY` and `STRIPE_CONNECT_WEBHOOK_SECRET`

@@ -15552,7 +15552,7 @@ git commit -q -m "docs: runbook and project rules for add-on orders, \$0 orders 
 
 This task touches the live project. Steps 3, 4, 7 and 8 need Daniel's go-ahead at the time: Step 3 copies the live data to this machine, Step 4 sets Vercel settings, Step 7 applies the migrations, pushes to `main` (which deploys) and adds the new Stripe webhook events, and Step 8 schedules a job. Ask before each one. Don't treat approval of this plan as approval for them.
 
-**Email is on at go-live (Daniel, 2026-10-17: "emails are live now").** RunFeis's sending domain is verified in Resend, and Vercel already has `EMAIL_FROM` = `RunFeis <entries@runfeis.com>`, `RESEND_API_KEY` and `NEXT_PUBLIC_BASE_URL` = `https://www.runfeis.com`. Step 4 sets `PAYMENTS_ALERT_EMAIL` to Daniel's and Steve's addresses, so confirmations and payment-case alerts go out from the first order. Step 8 checks the email job isn't paused, and Step 12 confirms the first real email arrives.
+**Email is on at go-live (Daniel, 2026-10-17: "emails are live now").** RunFeis's sending domain is verified in Resend, and Vercel already has `EMAIL_FROM` = `RunFeis <entries@runfeis.com>`, `RESEND_API_KEY` and `NEXT_PUBLIC_BASE_URL` = `https://www.runfeis.com`. Step 4 sets `PAYMENTS_ALERT_EMAIL` to Daniel's address only for now, with Steve added later (Daniel, 2026-10-18), so confirmations and payment-case alerts go out from the first order. Step 8 checks the email job isn't paused, and Step 12 confirms the first real email arrives.
 
 **Files:**
 - Create: `supabase/checks/payment-hardening-live-check.sql`
@@ -16470,11 +16470,11 @@ Expected: the last two lines are `PAYMENT HARDENING LIVE TESTS: N/N passed; FAIL
 - [ ] **Step 4: Set and check the Vercel settings (ask first)**
 
 For project "project-f06v2" (team cgds-projects), in Production and Preview (Settings → Environment Variables). Use the Vercel connector once it's reconnected to that team, or Daniel does it in the dashboard. Set or confirm:
-- `STRIPE_APPLICATION_FEE_PERCENT`: RunFeis's platform fee, as a percentage (`2.9` means 2.9%). Ask Daniel and Steve for the value; Step 2 recorded what's there now. From this branch on, Submit refuses to price an order without it, so every family's Submit would fail.
+- `STRIPE_APPLICATION_FEE_PERCENT`: RunFeis's platform fee, as a percentage (`2.9` means 2.9%). Daniel hasn't decided the value yet (2026-10-18): ask him then; Step 2 recorded what's there now. It's a percentage of the order total, taken from the organiser's payout as Stripe's application fee; the family's total doesn't change. From this branch on, Submit refuses to price an order without it, so every family's Submit would fail, and Step 7 can't start without it.
 - `NEXT_PUBLIC_BASE_URL`: the site's real URL, with `https://` and no trailing slash. For Preview, the URL previews are tested on, never `localhost`. It's inlined at build time, and it's frozen into every order's Stripe return URLs (at Pay's claim) and into every email, so check it here, before Step 7. Without it they all point to `http://localhost:3000`. After changing it, redeploy, since a built site keeps the old value.
 - `SUPABASE_SERVICE_ROLE_KEY`: Submit, Pay, Cancel, the webhook and the email job use it.
 - `NOTIFICATIONS_CRON_SECRET`: from `openssl rand -hex 32`. Step 8 stores the same value in Vault.
-- `PAYMENTS_ALERT_EMAIL`: set it to Daniel's and Steve's addresses, comma-separated (ask Daniel for Steve's). Check that `EMAIL_FROM` is `RunFeis <entries@runfeis.com>` (a verified domain) and `RESEND_API_KEY` is set. With all three set, `emailIsConfigured()` is true: confirmations and alerts send, and the success page promises the email.
+- `PAYMENTS_ALERT_EMAIL`: set it to Daniel's address only for now; Steve is added later by adding his address, comma-separated (Daniel, 2026-10-18). Check that `EMAIL_FROM` is `RunFeis <entries@runfeis.com>` (a verified domain) and `RESEND_API_KEY` is set. With all three set, `emailIsConfigured()` is true: confirmations and alerts send, and the success page promises the email.
 
 `STRIPE_SECRET_KEY` and `STRIPE_CONNECT_WEBHOOK_SECRET` come with the real-Stripe work. Until the Stripe ones are set, Pay reports that payment couldn't start.
 
@@ -16491,7 +16491,7 @@ Have a fresh reviewer check `git diff main...payment-hardening` against the spec
 
 - [ ] **Step 7: Apply 012–017 and 020 live, then deploy straight away (ask first)**
 
-First, re-run sections 4 and 10 of the live check (Step 2), right before item 1. `main`'s add-on code keeps running until the deploy, so real families may have started or paid orders since Step 2. Stop on any unpaid order (`draft` or `pending_payment`) that belongs to a real family, not a test account: 012 expires unpaid orders, so wait for it to be paid or lapse, or close registration first. Keep this output: Step 9 compares against it.
+First, re-run sections 4, 9 and 10 of the live check (Step 2), right before item 1. `main`'s add-on code keeps running until the deploy, so real families may have started or paid orders since Step 2. Stop on any unpaid order (`draft` or `pending_payment`) that belongs to a real family, not a test account: 012 expires unpaid orders, so wait for it to be paid or lapse, or close registration first. Stop if section 9 no longer shows 019's index exactly: 020 would raise only after 012–017 are already live, and by then the old app can't write orders. Keep this output: Step 9 compares against it.
 
 1. Apply `012_order_integrity.sql` through `017_payments_admin.sql`, in order, then `020_assert_unpaid_index.sql`: with `apply_migration` (one call per file) or in the SQL editor. 019 is already live; don't apply it again. If Step 2 found 002's hold-expiry job under another name, unschedule it straight after 012, with `SELECT cron.unschedule(<that job's jobid>);`. If 020 raises, the unpaid-order index isn't 019's: stop and ask before deploying.
 2. Make the API load the new functions, so Submit, Pay and the webhook don't fail with "not in the schema cache". In the SQL editor:
@@ -16583,12 +16583,13 @@ Once Stripe test keys and a connected test account exist, run each of these on a
 | Cancel mid-checkout | Cancelled; the old Stripe link shows as expired |
 | Let the session expire | Expired |
 | Resend the same event from the Stripe dashboard | Unchanged |
-| Pause the webhook endpoint, pay, wait past the hold, then resume | Confirmed late, or a `late_payment_conflict` case if a newer order exists |
+| Pause the webhook endpoint, pay, wait past the hold, then resume | Confirmed late; a `late_payment_conflict` case only if, meanwhile, the family started another order that is still unpaid, or paid one this order didn't count |
 | Send an expiry notice for an old session (Stripe CLI `stripe trigger`, or resend an old event) | Unchanged |
 | After paying, add a dance by card (Add dances) | A second paid order with no second family fee, priced with the family max across both orders; the email says the dance was added and shows the dancer's number |
 | After paying, add a dance once the family max is reached | The receipt says there's nothing to pay and the button reads Confirm entries; confirmed without Stripe, with an `RF-` number and a $0.00 email |
 | Add a dance already paid for (from a second tab opened before the first add-on was paid) | Refused: "One of these dances is already entered and paid for…" or "…is already entered in…" |
 | A family whose late payment is an open message-A case | The entry page shows message A and offers no way to choose dances or pay, and My entries offers no Add dances |
+| With an entry page opened before the case existed (a second tab), press Pay, or choose dances and Submit | Refused with message A and its reference; no checkout opens |
 
 Record the results under "Live verification".
 
