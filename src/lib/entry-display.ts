@@ -1,11 +1,14 @@
+import { canStartOrder, type OrderStartInput } from '@/lib/engine/order-validation'
 import { formatCents } from '@/lib/format'
+import { openMessageAFor, type PaymentReview } from '@/lib/payment-review-messages'
 import type {
   ChampionshipStatus,
   DancerDanceLevel,
   EligibleCompetition,
   FeeBreakdown,
   FeisListing,
-  Level
+  Level,
+  RegistrationStatus
 } from '@/lib/types/feis-listing'
 
 /** One line describing a dancer's level, e.g. "Novice", "Mixed levels", "Prelim champion". */
@@ -142,4 +145,51 @@ export function enteredByDancer<T>(
     }
   }
   return entered
+}
+
+/** What My entries' Add dances choice reads from each of the family's orders */
+export interface AddDancesOrder {
+  id: string
+  feis_listing_id: string
+  status: RegistrationStatus
+  hold_expires_at: string | null
+  feis_listings: OrderStartInput['listing']
+}
+
+/**
+ * The orders that offer Add dances on My entries: the newest paid order of each feis that can take
+ * a new order now (`canStartOrder`, spec §14). `registrations` are the family's orders, newest
+ * first, so the first paid order found for a feis is its newest. A feis isn't offered while the
+ * family holds an unpaid order whose hold hasn't run out, or has an open message-A case. If the
+ * payment cases couldn't be read (`reviewsFailed`), whether message A is open can't be judged, so
+ * nothing is offered.
+ */
+export function addDancesOrderIds(
+  registrations: AddDancesOrder[],
+  reviews: PaymentReview[],
+  reviewsFailed: boolean,
+  now: Date
+): Set<string> {
+  const offered = new Set<string>()
+  if (reviewsFailed) return offered
+  const feisIds = new Set(registrations.map((reg) => reg.feis_listing_id))
+  for (const feisId of feisIds) {
+    const forFeis = registrations.filter((reg) => reg.feis_listing_id === feisId)
+    const orderIds = forFeis.map((reg) => reg.id)
+    const newestPaid = forFeis.find((reg) => reg.status === 'paid')
+    if (!newestPaid) continue
+    const hasUnpaidOrder = forFeis.some(
+      (reg) =>
+        (reg.status === 'draft' || reg.status === 'pending_payment') &&
+        (reg.hold_expires_at === null || new Date(reg.hold_expires_at) > now)
+    )
+    const canAdd = canStartOrder({
+      listing: newestPaid.feis_listings,
+      now,
+      hasUnpaidOrder,
+      hasOpenMessageA: openMessageAFor(reviews, orderIds) !== null
+    })
+    if (canAdd) offered.add(newestPaid.id)
+  }
+  return offered
 }

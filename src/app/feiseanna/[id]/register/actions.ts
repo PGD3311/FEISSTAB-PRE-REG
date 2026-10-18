@@ -28,8 +28,13 @@ import { checkoutDeps } from '@/app/_payments/checkout-deps'
 import { cancel, pay, type CancelResult, type PayResult } from '@/app/_payments/checkout-workflow'
 import { notificationDeps } from '@/app/_payments/notification-deps'
 import { processNotifications } from '@/app/_payments/notification-worker'
-import { newOrderGate, type NewOrderGate, type PaymentReview } from '@/lib/payment-review-messages'
+import type { NewOrderGate } from '@/lib/payment-review-messages'
 import { REGISTRATION_COLUMNS } from '@/lib/registration-columns'
+import {
+  checkNewOrderGate,
+  userClientNewOrderReader,
+  type NewOrderTarget
+} from '@/app/_payments/new-order-gate'
 import { createOrderStore, type CreateOrderResult } from '@/app/_payments/order-store'
 import { supabaseRpc } from '@/app/_payments/rpc'
 import type {
@@ -82,51 +87,13 @@ async function currentHousehold(): Promise<HouseholdContext> {
 }
 
 /**
- * Decision 13 on the server (spec §14): while the family has an open message-A case for a feis,
- * Submit and Pay refuse, even from an entry page opened before the case existed. Both read the
- * family's orders for the feis and its payment cases with the family's own client, as the register
- * page does, and ask `newOrderGate`. A read that fails refuses (fails closed): the gate can't be
- * judged, and a second payment can't be undone. `order` names the feis, or an order of the
- * family's whose feis is looked up.
+ * Decision 13 on the server (spec §14): Submit and Pay refuse while the family has an open
+ * message-A case for the feis, even from an entry page opened before the case existed.
+ * `checkNewOrderGate` judges it, from reads made with the family's own client. `order` names the
+ * feis, or an order of the family's whose feis is looked up.
  */
-async function newOrderGateFor(
-  ctx: SignedInHousehold,
-  order: { feisListingId: string } | { registrationId: string }
-): Promise<NewOrderGate> {
-  try {
-    let feisListingId: string
-    if ('feisListingId' in order) {
-      feisListingId = order.feisListingId
-    } else {
-      const { data, error } = await ctx.supabase
-        .from('registrations')
-        .select('feis_listing_id')
-        .eq('id', order.registrationId)
-        .eq('household_id', ctx.household.id)
-        .maybeSingle()
-      if (error) throw error
-      // Not one of this family's orders: Pay answers "not found" for it
-      if (!data) return { allowed: true }
-      feisListingId = data.feis_listing_id
-    }
-    const [orders, reviews] = await Promise.all([
-      ctx.supabase
-        .from('registrations')
-        .select('id')
-        .eq('feis_listing_id', feisListingId)
-        .eq('household_id', ctx.household.id),
-      ctx.supabase.rpc('get_my_payment_reviews', { p_registration_id: null })
-    ])
-    const failed = orders.error ?? reviews.error
-    if (failed) throw failed
-    return newOrderGate({
-      registrationIds: (orders.data ?? []).map((row) => row.id),
-      reviews: (reviews.data ?? []) as PaymentReview[]
-    })
-  } catch (err) {
-    console.error('Could not check for an open payment case:', err)
-    return newOrderGate(null)
-  }
+function newOrderGateFor(ctx: SignedInHousehold, order: NewOrderTarget): Promise<NewOrderGate> {
+  return checkNewOrderGate(userClientNewOrderReader(ctx.supabase, ctx.household.id), order)
 }
 
 /**

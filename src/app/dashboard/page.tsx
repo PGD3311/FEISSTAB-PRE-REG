@@ -1,13 +1,11 @@
 import { createClient, getSignedInUser } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
-import { canStartOrder } from '@/lib/engine/order-validation'
-import { isAddOnOrder } from '@/lib/entry-display'
+import { addDancesOrderIds, isAddOnOrder } from '@/lib/entry-display'
 import { formatDate, formatCents } from '@/lib/format'
 import { REGISTRATION_COLUMNS } from '@/lib/registration-columns'
 import { isHouseholdComplete } from '@/lib/household'
 import {
-  openMessageAFor,
   openReviewsByOrder,
   reviewMessage,
   type PaymentReview
@@ -119,29 +117,14 @@ export default async function DashboardPage() {
     registration_entries: { dancer_id: string; feis_competitions: { display_name: string } }[]
   })[]
 
-  // Whether each feis can take a new order now (spec §14): the feis's newest paid order offers Add
-  // dances then. Newest first, so the first paid order found for a feis is its newest. If the
-  // payment cases couldn't be read, whether message A is open can't be judged: no Add dances
-  const now = new Date()
-  const addDancesOn = new Set<string>()
-  const feisIds = reviews.error ? [] : new Set(allRegistrations.map((reg) => reg.feis_listing_id))
-  for (const feisId of feisIds) {
-    const forFeis = allRegistrations.filter((reg) => reg.feis_listing_id === feisId)
-    const newestPaid = forFeis.find((reg) => reg.status === 'paid')
-    if (!newestPaid) continue
-    const hasUnpaidOrder = forFeis.some(
-      (reg) =>
-        (reg.status === 'draft' || reg.status === 'pending_payment') &&
-        (reg.hold_expires_at === null || new Date(reg.hold_expires_at) > now)
-    )
-    const canAdd = canStartOrder({
-      listing: newestPaid.feis_listings,
-      now,
-      hasUnpaidOrder,
-      hasOpenMessageA: openMessageAFor(reviewRows, forFeis.map((reg) => reg.id)) !== null
-    })
-    if (canAdd) addDancesOn.add(newestPaid.id)
-  }
+  // Which paid orders offer Add dances: the feis's newest paid order, while the feis can take a new
+  // order now (spec §14). Nothing is offered if the payment cases couldn't be read
+  const addDancesOn = addDancesOrderIds(
+    allRegistrations,
+    reviewRows,
+    reviews.error !== null,
+    new Date()
+  )
 
   // Released and expired holds never became entries, so they stay off the list, unless the order
   // has an open payment case: then it shows, so its message A or B reaches the family
