@@ -244,10 +244,12 @@ export function PaidReceipt({
 }: PaidReceiptProps) {
   return (
     <aside id="family-total" className="feis-receipt px-[18px] pt-5 pb-[18px]">
-      <h2 className="text-[22px] leading-tight font-extrabold [font-stretch:75%]">Paid</h2>
+      <h2 className="text-[22px] leading-tight font-extrabold [font-stretch:75%]">
+        {totalCents === 0 ? 'Confirmed' : 'Paid'}
+      </h2>
       <p className="mb-3 text-[13px] text-muted-foreground">{familyName}</p>
       <div className="flex items-baseline justify-between border-t-[3px] border-[var(--color-feis-gold)] pt-2.5">
-        <span className="font-bold">{totalCents === 0 ? 'Confirmed' : 'Paid in full'}</span>
+        <span className="font-bold">{totalCents === 0 ? 'Total' : 'Paid in full'}</span>
         <strong className="text-[40px] leading-none font-black tabular-nums [font-stretch:65%]">
           {formatCents(totalCents)}
         </strong>
