@@ -4,11 +4,20 @@ import type { ListingStatus } from '@/lib/types/feis-listing'
 export const MIN_CHARGE_CENTS = 50
 
 /**
- * Whether an order's total is too small to pay by card. Submit refuses to create such an order;
- * claim_checkout's amount_too_small block is the database's backstop.
+ * Whether an order's total is too small to pay by card. claim_checkout blocks such an order
+ * (amount_too_small); a $0 order never claims a checkout, because Pay confirms it without Stripe.
  */
 export function belowCardMinimum(totalCents: number): boolean {
   return totalCents < MIN_CHARGE_CENTS
+}
+
+/**
+ * Whether Submit refuses a total (Decision 10): 1 to 49 cents is more than nothing but less than a card
+ * can be charged, so no order is made that could never be paid. create_order refuses it too. A total
+ * of 0 is allowed: Pay confirms it without Stripe (spec §6).
+ */
+export function tooSmallToCharge(totalCents: number): boolean {
+  return totalCents > 0 && belowCardMinimum(totalCents)
 }
 
 export type CheckoutBlock =

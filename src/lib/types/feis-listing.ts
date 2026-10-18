@@ -142,6 +142,32 @@ export interface PriorPaidFees {
   late_fees_paid_cents: number
 }
 
+/** An entry of one of the family's paid orders, as a later order counts it */
+export interface PaidOrderEntry {
+  dancer_id: string
+  competition_id: string
+  base_fee_cents: number
+  late_fee_cents: number
+  /** Whether it counted toward the family max when it was bought */
+  counts_toward_family_cap: boolean
+}
+
+/** One of the family's paid orders for a feis, as a later order counts it (spec §4) */
+export interface PaidOrder {
+  id: string
+  confirmation_number: string | null
+  event_fee_cents: number
+  entries: PaidOrderEntry[]
+}
+
+/**
+ * What an order's price counted: the family's paid orders for the feis and what they covered. Frozen
+ * as purchase_snapshot.pricing.prior, which create_order rebuilds and compares exactly (spec §4).
+ */
+export interface CountedOrders extends PriorPaidFees {
+  orders: PaidOrder[]
+}
+
 export interface FeeLineItem {
   dancer_id: string
   base_fee_cents: number

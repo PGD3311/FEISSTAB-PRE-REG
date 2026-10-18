@@ -24,7 +24,7 @@ function snapshot(fees: number[]): PurchaseSnapshot {
       grades_only: false, fee_category: 'solo' as const, fee_cents: null, exclude_from_family_cap: false })),
     entries: fees.map((fee, i) => ({ dancer_id: 'd1', competition_id: `c${i}`, fee_category: 'solo' as const,
       base_fee_cents: fee, late_fee_cents: 0, day_of_surcharge_cents: 0 })),
-    pricing: { fee_schedule: {} as never, breakdown: {} as never, priced_at: '2026-11-01T12:00:00.000Z' },
+    pricing: { fee_schedule: {} as never, breakdown: {} as never, priced_at: '2026-11-01T12:00:00.000Z', prior: null },
     rules: { age_cutoff_date: '2027-01-01', levels: [], consent_version: 'x', platform_terms_version: 'y',
       feis_terms_url: null, pricing_version: 'p', eligibility_version: 'e' },
   }

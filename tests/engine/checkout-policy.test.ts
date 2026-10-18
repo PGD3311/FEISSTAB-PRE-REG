@@ -3,7 +3,8 @@ import {
   belowCardMinimum,
   CHECKOUT_BLOCK_MESSAGES,
   checkoutBlockReason,
-  MIN_CHARGE_CENTS
+  MIN_CHARGE_CENTS,
+  tooSmallToCharge
 } from '@/lib/engine/checkout-policy'
 
 const base = {
@@ -39,7 +40,7 @@ describe('belowCardMinimum', () => {
     expect(belowCardMinimum(4000)).toBe(false)
   })
 
-  it('blocks Pay exactly where Submit refuses, with one message for both', () => {
+  it("blocks a card checkout below the minimum, with Submit's message", () => {
     for (const totalCents of [0, 49, 50, 51]) {
       const blocked = checkoutBlockReason({ ...base, totalCents }) === 'amount_too_small'
       expect(blocked).toBe(belowCardMinimum(totalCents))
@@ -47,5 +48,15 @@ describe('belowCardMinimum', () => {
     expect(CHECKOUT_BLOCK_MESSAGES.amount_too_small).toBe(
       'This order is too small to pay by card. Please contact the organiser.'
     )
+  })
+})
+
+// Decision 10: Submit refuses 1 to 49 cents. A $0 order is confirmed without Stripe instead
+describe('tooSmallToCharge', () => {
+  it('is true from 1 to 49 cents, and false for 0 and from 50 cents up', () => {
+    expect(tooSmallToCharge(0)).toBe(false)
+    expect(tooSmallToCharge(1)).toBe(true)
+    expect(tooSmallToCharge(49)).toBe(true)
+    expect(tooSmallToCharge(50)).toBe(false)
   })
 })

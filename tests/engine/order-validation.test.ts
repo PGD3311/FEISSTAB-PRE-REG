@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   ageCutoffDateFor,
+  canStartOrder,
   toDancerProfile,
   validateOrderRequest,
   type OrderDancer,
@@ -184,5 +185,88 @@ describe('toDancerProfile', () => {
       championshipStatus: 'prelim',
       danceLevels: { reel: 'NOV', treble_jig: 'PW' }
     })
+  })
+})
+
+// Spec §4: an add-on only adds. A dance already in one of the family's paid orders is refused
+describe('validateOrderRequest with paid orders', () => {
+  const paidOrders = [
+    {
+      id: 'o1',
+      confirmation_number: 'RF-2026-AAAAA',
+      event_fee_cents: 1000,
+      entries: [
+        {
+          dancer_id: 'd1',
+          competition_id: 'c1',
+          base_fee_cents: 1500,
+          late_fee_cents: 0,
+          counts_toward_family_cap: true
+        }
+      ]
+    }
+  ]
+
+  it('refuses a dance already entered and paid for, naming the dancer and the dance', () => {
+    expect(validateOrderRequest(request({ paidOrders }))).toEqual({
+      ok: false,
+      error: 'Aoife is already entered in Novice Reel U10. Reload this page to see your entries.'
+    })
+  })
+
+  it('accepts another dance for the same dancer', () => {
+    const slipJig = competition({
+      id: 'c2',
+      dance_key: 'reel',
+      display_name: 'Novice Reel U10 (second)',
+      display_code: '210R2'
+    })
+    const result = validateOrderRequest(
+      request({
+        paidOrders,
+        competitions: [competition(), slipJig],
+        entries: [{ dancerId: 'd1', competitionId: 'c2' }]
+      })
+    )
+    expect(result.ok).toBe(true)
+  })
+})
+
+describe('canStartOrder', () => {
+  const listing = {
+    status: 'open' as const,
+    reg_opens_at: '2026-10-01T00:00:00Z',
+    reg_closes_at: '2026-12-01T00:00:00Z',
+    late_reg_closes_at: null
+  }
+  const start = (overrides: Partial<Parameters<typeof canStartOrder>[0]> = {}) =>
+    canStartOrder({ listing, now: NOW, hasUnpaidOrder: false, hasOpenMessageA: false, ...overrides })
+
+  it('lets a new order start while registration is open', () => {
+    expect(start()).toBe(true)
+  })
+
+  it("is false when the listing isn't open, before it opens and after the close date", () => {
+    expect(start({ listing: { ...listing, status: 'closed' } })).toBe(false)
+    expect(start({ listing: { ...listing, reg_opens_at: '2026-11-02T00:00:00Z' } })).toBe(false)
+    expect(start({ listing: { ...listing, reg_closes_at: '2026-10-31T00:00:00Z' } })).toBe(false)
+    // The late deadline is the close date when there is one
+    expect(
+      start({
+        listing: {
+          ...listing,
+          reg_closes_at: '2026-10-31T00:00:00Z',
+          late_reg_closes_at: '2026-11-15T00:00:00Z'
+        }
+      })
+    ).toBe(true)
+  })
+
+  it('is false while the family holds an unpaid order', () => {
+    expect(start({ hasUnpaidOrder: true })).toBe(false)
+  })
+
+  it('is false while message A is open, for a first order as much as an add-on', () => {
+    expect(start({ hasOpenMessageA: true })).toBe(false)
   })
 })

@@ -5,6 +5,7 @@ import type {
   FeeBreakdown,
   FeeCategoryType,
   LateFeeTier,
+  PaidOrder,
   PriorPaidFees
 } from '@/lib/types/feis-listing'
 
@@ -126,29 +127,27 @@ export function calculateFees(
   }
 }
 
+/** Plain code-unit order, the order Postgres gives uuids. Never localeCompare (spec §4). */
+export function compareIds(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0
+}
+
 /**
- * What a family has already paid for one feis, from the entries of its paid orders.
- * `excludedFromCap` holds the competitions that don't count toward the family max.
+ * What a family has already paid for one feis, from its paid orders. Each entry says itself whether
+ * it counted toward the family max when it was bought (spec §4), so a competition's flag changing
+ * later doesn't change what an earlier order covered.
  */
-export function summarisePaidOrders(
-  orders: { event_fee_cents: number }[],
-  entries: {
-    dancer_id: string
-    feis_competition_id: string
-    base_fee_cents: number
-    late_fee_cents: number
-  }[],
-  excludedFromCap: Set<string>
-): PriorPaidFees | null {
+export function summarisePaidOrders(orders: PaidOrder[]): PriorPaidFees | null {
   if (orders.length === 0) return null
+  const entries = orders.flatMap((order) => order.entries)
   return {
-    event_fee_paid: orders.some((o) => o.event_fee_cents > 0),
+    event_fee_paid: orders.some((order) => order.event_fee_cents > 0),
     cappable_paid_cents: entries
-      .filter((e) => !excludedFromCap.has(e.feis_competition_id))
-      .reduce((sum, e) => sum + e.base_fee_cents, 0),
+      .filter((entry) => entry.counts_toward_family_cap)
+      .reduce((sum, entry) => sum + entry.base_fee_cents, 0),
     late_fee_dancer_ids: [
-      ...new Set(entries.filter((e) => e.late_fee_cents > 0).map((e) => e.dancer_id))
-    ],
-    late_fees_paid_cents: entries.reduce((sum, e) => sum + e.late_fee_cents, 0)
+      ...new Set(entries.filter((entry) => entry.late_fee_cents > 0).map((entry) => entry.dancer_id))
+    ].sort(compareIds),
+    late_fees_paid_cents: entries.reduce((sum, entry) => sum + entry.late_fee_cents, 0)
   }
 }

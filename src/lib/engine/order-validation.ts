@@ -6,7 +6,8 @@ import type {
   DancerProfile,
   FeisCompetition,
   FeisListing,
-  Level
+  Level,
+  PaidOrder
 } from '@/lib/types/feis-listing'
 
 export type OrderListing = Pick<
@@ -34,6 +35,8 @@ export interface OrderRequest {
   /** Every competition of this feis, enabled or not */
   competitions: FeisCompetition[]
   entries: RequestedEntry[]
+  /** The family's paid orders for this feis: their dances can't be entered again */
+  paidOrders?: PaidOrder[]
 }
 
 export type OrderValidation = { ok: true; ageCutoffDate: Date } | { ok: false; error: string }
@@ -68,6 +71,30 @@ export function toDancerProfile(dancer: OrderDancer): DancerProfile {
     championshipStatus: dancer.championship_status,
     danceLevels
   }
+}
+
+/** Whether a new order can start: a family's first order or an add-on (spec §14, Decision 13) */
+export interface OrderStartInput {
+  listing: Pick<FeisListing, 'status' | 'reg_opens_at' | 'reg_closes_at' | 'late_reg_closes_at'>
+  now: Date
+  /** The family holds a draft or pending_payment order for this feis */
+  hasUnpaidOrder: boolean
+  /** The family has an open message-A case for this feis: message A says not to pay again */
+  hasOpenMessageA: boolean
+}
+
+/**
+ * The one gate for starting a new order, used for choosing dances and Pay on the entry page and for
+ * Add dances on My entries and the paid receipt. False while registration isn't open, before it
+ * opens, after it closes, while the family holds an unpaid order, or while message A is open.
+ */
+export function canStartOrder(input: OrderStartInput): boolean {
+  const { listing, now } = input
+  if (listing.status !== 'open') return false
+  if (listing.reg_opens_at && now < new Date(listing.reg_opens_at)) return false
+  const close = registrationCloseTime(listing)
+  if (close && now > close) return false
+  return !input.hasUnpaidOrder && !input.hasOpenMessageA
 }
 
 function fail(error: string): OrderValidation {
@@ -105,6 +132,22 @@ export function validateOrderRequest(request: OrderRequest): OrderValidation {
     if (!dancer.is_active) return fail(`${dancer.first_name} is no longer active on your account.`)
     const competition = competitions.get(entry.competitionId)
     if (!competition || !competition.enabled) return fail('One or more competitions are not available.')
+  }
+
+  // An add-on only adds: a dance already in one of the family's paid orders is never bought twice
+  const entered = new Set(
+    (request.paidOrders ?? []).flatMap((order) =>
+      order.entries.map((entry) => `${entry.dancer_id}:${entry.competition_id}`)
+    )
+  )
+  for (const entry of request.entries) {
+    if (entered.has(`${entry.dancerId}:${entry.competitionId}`)) {
+      const dancer = dancers.get(entry.dancerId)!
+      const competition = competitions.get(entry.competitionId)!
+      return fail(
+        `${dancer.first_name} is already entered in ${competition.display_name}. Reload this page to see your entries.`
+      )
+    }
   }
 
   const ageCutoffDate = ageCutoffDateFor(listing, now)

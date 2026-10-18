@@ -318,25 +318,50 @@ describe('calculateFees with earlier paid orders', () => {
 })
 
 describe('summarisePaidOrders', () => {
-  it('is null when nothing has been paid', () => {
-    expect(summarisePaidOrders([], [], new Set())).toBeNull()
+  const entry = (dancer_id: string, competition_id: string, base: number, late = 0, counts = true) => ({
+    dancer_id,
+    competition_id,
+    base_fee_cents: base,
+    late_fee_cents: late,
+    counts_toward_family_cap: counts
   })
 
-  it('totals the earlier orders, leaving out competitions excluded from the family max', () => {
-    const prior = summarisePaidOrders(
-      [{ event_fee_cents: 2500 }],
-      [
-        { dancer_id: 'd1', feis_competition_id: 'r', base_fee_cents: 1300, late_fee_cents: 2500 },
-        { dancer_id: 'd1', feis_competition_id: 'lj', base_fee_cents: 1300, late_fee_cents: 0 },
-        { dancer_id: 'd2', feis_competition_id: 'team', base_fee_cents: 4000, late_fee_cents: 0 }
-      ],
-      new Set(['team'])
-    )
+  it('is null when nothing has been paid', () => {
+    expect(summarisePaidOrders([])).toBeNull()
+  })
+
+  it("totals the earlier orders, leaving out entries that didn't count toward the family max", () => {
+    const prior = summarisePaidOrders([
+      {
+        id: 'o1',
+        confirmation_number: 'RF-2026-AAAAA',
+        event_fee_cents: 2500,
+        entries: [
+          entry('d1', 'r', 1300, 2500),
+          entry('d1', 'lj', 1300),
+          entry('d2', 'team', 4000, 0, false)
+        ]
+      }
+    ])
     expect(prior).toEqual({
       event_fee_paid: true,
       cappable_paid_cents: 2600,
       late_fee_dancer_ids: ['d1'],
       late_fees_paid_cents: 2500
+    })
+  })
+
+  it("adds up several orders, each entry with its own order's family-max flag", () => {
+    const prior = summarisePaidOrders([
+      { id: 'o2', confirmation_number: null, event_fee_cents: 0, entries: [entry('d3', 'r', 1300, 500, false)] },
+      { id: 'o1', confirmation_number: null, event_fee_cents: 0, entries: [entry('d1', 'r', 1300, 500)] }
+    ])
+    expect(prior).toEqual({
+      // Neither order charged the family fee, so the next one still does
+      event_fee_paid: false,
+      cappable_paid_cents: 1300,
+      late_fee_dancer_ids: ['d1', 'd3'],
+      late_fees_paid_cents: 1000
     })
   })
 })

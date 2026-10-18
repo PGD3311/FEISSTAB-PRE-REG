@@ -3,15 +3,18 @@ import { calculateFees } from '@/lib/engine/fee-calculator'
 import {
   buildCreateOrderPayload,
   CONSENT_VERSION,
+  countedOrdersRecord,
   feeEntriesFor,
   pairLineItems,
+  paidOrdersFrom,
   PRICING_VERSION,
   priceOrder,
+  type PaidOrderRow,
   type PriceOrderInput
 } from '@/lib/engine/purchase-snapshot'
 import type { OrderDancer } from '@/lib/engine/order-validation'
 import { parseLocalDate } from '@/lib/format'
-import type { FeeSchedule, FeisCompetition } from '@/lib/types/feis-listing'
+import type { FeeSchedule, FeisCompetition, PaidOrder } from '@/lib/types/feis-listing'
 
 const schedule: FeeSchedule = {
   id: 's1', feis_listing_id: 'f1', event_fee_cents: 1000, solo_fee_cents: 1500, prelim_champ_fee_cents: 5000,
@@ -83,6 +86,7 @@ describe('priceOrder', () => {
     ])
     expect(snapshot.pricing.priced_at).toBe('2026-11-01T12:00:00.000Z')
     expect(snapshot.rules).toMatchObject({ age_cutoff_date: '2027-01-01', pricing_version: PRICING_VERSION, consent_version: CONSENT_VERSION })
+    expect(PRICING_VERSION).toBe('pricing-2026-10-17')
   })
 
   it("freezes each competition's age bounds, labels and pricing flags as they were at purchase", () => {
@@ -254,5 +258,157 @@ describe('feeEntriesFor', () => {
         is_day_of: false
       }
     ])
+  })
+})
+
+// Spec §4: an add-on is priced on top of the family's paid orders, and freezes what it counted
+describe('pricing with earlier paid orders', () => {
+  const paid = (id: string, overrides: Partial<PaidOrder> = {}): PaidOrder => ({
+    id,
+    confirmation_number: `RF-2026-${id.slice(0, 5).toUpperCase()}`,
+    event_fee_cents: 1000,
+    entries: [
+      {
+        dancer_id: 'd1',
+        competition_id: 'c1',
+        base_fee_cents: 1500,
+        late_fee_cents: 0,
+        counts_toward_family_cap: true
+      }
+    ],
+    ...overrides
+  })
+
+  it('freezes prior as null on a first order', () => {
+    expect(priceOrder(input()).snapshot.pricing.prior).toBeNull()
+    expect(priceOrder(input({ paidOrders: [] })).snapshot.pricing.prior).toBeNull()
+  })
+
+  it("doesn't charge the family fee again, and freezes the counted orders", () => {
+    const first = paid('7d1a0000-0000-4000-8000-000000000001')
+    const { breakdown, snapshot } = priceOrder(
+      input({ entries: [{ dancerId: 'd1', competitionId: 'c2' }], paidOrders: [first] })
+    )
+    expect(breakdown.event_fee_cents).toBe(0)
+    expect(breakdown.grand_total_cents).toBe(1500)
+    expect(snapshot.pricing.prior).toEqual({
+      orders: [first],
+      event_fee_paid: true,
+      cappable_paid_cents: 1500,
+      late_fee_dancer_ids: [],
+      late_fees_paid_cents: 0
+    })
+  })
+
+  it('charges only what the family max leaves after the earlier orders', () => {
+    const capped = { ...schedule, family_cap_cents: 2000 }
+    const { breakdown } = priceOrder(
+      input({
+        feeSchedule: capped,
+        entries: [{ dancerId: 'd1', competitionId: 'c2' }],
+        paidOrders: [paid('7d1a0000-0000-4000-8000-000000000001')]
+      })
+    )
+    // 1500 of the 2000 max already paid leaves 500 for a 1500 dance
+    expect(breakdown.family_cap_savings_cents).toBe(1000)
+    expect(breakdown.grand_total_cents).toBe(500)
+  })
+
+  it('charges nothing once the family max is already reached', () => {
+    const capped = { ...schedule, family_cap_cents: 1500 }
+    const { breakdown } = priceOrder(
+      input({
+        feeSchedule: capped,
+        entries: [{ dancerId: 'd1', competitionId: 'c2' }],
+        paidOrders: [paid('7d1a0000-0000-4000-8000-000000000001')]
+      })
+    )
+    expect(breakdown.grand_total_cents).toBe(0)
+  })
+
+  it("doesn't charge a dancer a second late fee", () => {
+    const late = {
+      ...schedule,
+      late_fee_tiers: [{ starts_at: '2026-10-15T00:00:00Z', fee_cents: 2500, family_max_cents: null }]
+    }
+    const first = paid('7d1a0000-0000-4000-8000-000000000001', {
+      entries: [
+        {
+          dancer_id: 'd1',
+          competition_id: 'c1',
+          base_fee_cents: 1500,
+          late_fee_cents: 2500,
+          counts_toward_family_cap: true
+        }
+      ]
+    })
+    const { snapshot } = priceOrder(
+      input({ feeSchedule: late, entries: [{ dancerId: 'd1', competitionId: 'c2' }], paidOrders: [first] })
+    )
+    expect(snapshot.entries[0].late_fee_cents).toBe(0)
+    expect(snapshot.pricing.prior?.late_fee_dancer_ids).toEqual(['d1'])
+  })
+
+  it('sorts orders by id, and entries by dancer then competition, with plain comparison', () => {
+    const entry = (dancer_id: string, competition_id: string) => ({
+      dancer_id,
+      competition_id,
+      base_fee_cents: 1500,
+      late_fee_cents: 0,
+      counts_toward_family_cap: true
+    })
+    const record = countedOrdersRecord([
+      paid('b0000000-0000-4000-8000-000000000000', { entries: [entry('d2', 'c1'), entry('d1', 'c2'), entry('d1', 'c1')] }),
+      paid('A0000000-0000-4000-8000-000000000000', { confirmation_number: null })
+    ])
+    expect(record?.orders.map((o) => o.id)).toEqual([
+      'a0000000-0000-4000-8000-000000000000',
+      'b0000000-0000-4000-8000-000000000000'
+    ])
+    expect(record?.orders[0].confirmation_number).toBeNull()
+    expect(record?.orders[1].entries.map((e) => `${e.dancer_id}:${e.competition_id}`)).toEqual([
+      'd1:c1',
+      'd1:c2',
+      'd2:c1'
+    ])
+    expect(countedOrdersRecord([])).toBeNull()
+  })
+})
+
+describe('paidOrdersFrom', () => {
+  const row = (purchase_snapshot: PaidOrderRow['purchase_snapshot']): PaidOrderRow => ({
+    id: 'o1',
+    confirmation_number: 'RF-2026-AAAAA',
+    event_fee_cents: 1000,
+    purchase_snapshot,
+    registration_entries: [
+      { dancer_id: 'd1', feis_competition_id: 'c1', base_fee_cents: 1500, late_fee_cents: 0 }
+    ]
+  })
+
+  it("takes each entry's family-max flag from its own order's snapshot", () => {
+    // Excluded when it was bought; the organiser has since counted it toward the max
+    const frozen = { competitions: [{ ...comp('c1', '210R', 'reel'), exclude_from_family_cap: true }] }
+    const [order] = paidOrdersFrom([row(frozen)], [comp('c1', '210R', 'reel')])
+    expect(order.entries[0].counts_toward_family_cap).toBe(false)
+  })
+
+  it("uses the competition's current flag for an order made before snapshots", () => {
+    const now = [{ ...comp('c1', '210R', 'reel'), exclude_from_family_cap: true }]
+    const [order] = paidOrdersFrom([row(null)], now)
+    expect(order).toEqual({
+      id: 'o1',
+      confirmation_number: 'RF-2026-AAAAA',
+      event_fee_cents: 1000,
+      entries: [
+        {
+          dancer_id: 'd1',
+          competition_id: 'c1',
+          base_fee_cents: 1500,
+          late_fee_cents: 0,
+          counts_toward_family_cap: false
+        }
+      ]
+    })
   })
 })

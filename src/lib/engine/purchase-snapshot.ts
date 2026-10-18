@@ -1,5 +1,5 @@
 import { calculateAgeOnDate } from '@/lib/engine/eligibility'
-import { calculateFees } from '@/lib/engine/fee-calculator'
+import { calculateFees, compareIds, summarisePaidOrders } from '@/lib/engine/fee-calculator'
 import {
   toDancerProfile,
   type OrderDancer,
@@ -8,15 +8,18 @@ import {
 } from '@/lib/engine/order-validation'
 import type {
   ChampionshipStatus,
+  CountedOrders,
   FeeBreakdown,
   FeeCategoryType,
   FeeEntry,
   FeeSchedule,
   FeisCompetition,
-  Level
+  Level,
+  PaidOrder
 } from '@/lib/types/feis-listing'
 
-export const PRICING_VERSION = 'pricing-2026-10-16'
+/** pricing-2026-10-17: prices count the family's earlier paid orders for the feis (spec §4) */
+export const PRICING_VERSION = 'pricing-2026-10-17'
 export const ELIGIBILITY_VERSION = 'eligibility-2026-10-16'
 /**
  * The consent checkbox wording in family-receipt.tsx: the person entering the dancers is their parent or guardian,
@@ -80,7 +83,13 @@ export interface PurchaseSnapshot {
   dancers: SnapshotDancer[]
   competitions: SnapshotCompetition[]
   entries: SnapshotEntry[]
-  pricing: { fee_schedule: FeeSchedule; breakdown: FeeBreakdown; priced_at: string }
+  pricing: {
+    fee_schedule: FeeSchedule
+    breakdown: FeeBreakdown
+    priced_at: string
+    /** The paid orders this price counted, and what they covered; null on a family's first order */
+    prior: CountedOrders | null
+  }
   rules: {
     age_cutoff_date: string
     levels: Level[]
@@ -102,6 +111,8 @@ export interface PriceOrderInput {
   competitions: FeisCompetition[]
   entries: RequestedEntry[]
   feeSchedule: FeeSchedule
+  /** The family's paid orders for this feis, from paidOrdersFrom(); none for a first order */
+  paidOrders?: PaidOrder[]
 }
 
 export interface PricedOrder {
@@ -126,6 +137,82 @@ export interface CreateOrderPayload {
     day_of_surcharge_cents: number
   }[]
   purchase_snapshot: PurchaseSnapshot
+}
+
+/** A paid order as Submit and the entry page read it: the row, its entries and its purchase snapshot */
+export interface PaidOrderRow {
+  id: string
+  confirmation_number: string | null
+  event_fee_cents: number
+  purchase_snapshot: Pick<PurchaseSnapshot, 'competitions'> | null
+  registration_entries: {
+    dancer_id: string
+    feis_competition_id: string
+    base_fee_cents: number
+    late_fee_cents: number
+  }[]
+}
+
+/**
+ * The family's paid orders as later orders count them. Whether an entry counted toward the family max
+ * comes from its own order's purchase snapshot; an older order without one (made before snapshots)
+ * uses the competition's current setting. create_order reads the rows by the same rule.
+ */
+export function paidOrdersFrom(
+  rows: PaidOrderRow[],
+  competitions: Pick<FeisCompetition, 'id' | 'exclude_from_family_cap'>[]
+): PaidOrder[] {
+  const current = new Map(competitions.map((c) => [c.id, c.exclude_from_family_cap]))
+  return rows.map((row) => {
+    const frozen = new Map(
+      (row.purchase_snapshot?.competitions ?? []).map((c) => [c.id, c.exclude_from_family_cap])
+    )
+    return {
+      id: row.id,
+      confirmation_number: row.confirmation_number,
+      event_fee_cents: row.event_fee_cents,
+      entries: row.registration_entries.map((entry) => ({
+        dancer_id: entry.dancer_id,
+        competition_id: entry.feis_competition_id,
+        base_fee_cents: entry.base_fee_cents,
+        late_fee_cents: entry.late_fee_cents,
+        counts_toward_family_cap: !(
+          frozen.get(entry.feis_competition_id) ??
+          current.get(entry.feis_competition_id) ??
+          false
+        )
+      }))
+    }
+  })
+}
+
+/**
+ * The counted-orders record exactly as create_order rebuilds it in SQL (spec §4): orders sorted by
+ * id, each order's entries by dancer then competition, ids in lower case, every key present, and
+ * null for a family with no paid orders. The two are compared as jsonb, so any difference refuses.
+ */
+export function countedOrdersRecord(orders: PaidOrder[]): CountedOrders | null {
+  if (orders.length === 0) return null
+  const sorted: PaidOrder[] = orders
+    .map((order) => ({
+      id: order.id.toLowerCase(),
+      confirmation_number: order.confirmation_number ?? null,
+      event_fee_cents: order.event_fee_cents,
+      entries: order.entries
+        .map((entry) => ({
+          dancer_id: entry.dancer_id.toLowerCase(),
+          competition_id: entry.competition_id.toLowerCase(),
+          base_fee_cents: entry.base_fee_cents,
+          late_fee_cents: entry.late_fee_cents,
+          counts_toward_family_cap: entry.counts_toward_family_cap
+        }))
+        .sort(
+          (a, b) =>
+            compareIds(a.dancer_id, b.dancer_id) || compareIds(a.competition_id, b.competition_id)
+        )
+    }))
+    .sort((a, b) => compareIds(a.id, b.id))
+  return { orders: sorted, ...summarisePaidOrders(sorted)! }
 }
 
 /** yyyy-mm-dd of a date made by parseLocalDate */
@@ -182,7 +269,9 @@ export function priceOrder(input: PriceOrderInput): PricedOrder {
   const competitions = new Map(input.competitions.map((c) => [c.id, c]))
   const dancers = new Map(input.dancers.map((d) => [d.id, d]))
   const feeEntries = feeEntriesFor(input.entries, competitions)
-  const breakdown = calculateFees(input.feeSchedule, feeEntries, input.now)
+  // An add-on is priced on top of what the family's paid orders already covered
+  const prior = countedOrdersRecord(input.paidOrders ?? [])
+  const breakdown = calculateFees(input.feeSchedule, feeEntries, input.now, prior)
 
   const dancerIds = [...new Set(input.entries.map((e) => e.dancerId))]
   const competitionIds = [...new Set(input.entries.map((e) => e.competitionId))]
@@ -238,7 +327,12 @@ export function priceOrder(input: PriceOrderInput): PricedOrder {
       late_fee_cents: line.late_fee_cents,
       day_of_surcharge_cents: line.day_of_surcharge_cents
     })),
-    pricing: { fee_schedule: input.feeSchedule, breakdown, priced_at: input.now.toISOString() },
+    pricing: {
+      fee_schedule: input.feeSchedule,
+      breakdown,
+      priced_at: input.now.toISOString(),
+      prior
+    },
     rules: {
       age_cutoff_date: localIsoDate(input.ageCutoffDate),
       levels: input.levels,
