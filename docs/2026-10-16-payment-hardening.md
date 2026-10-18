@@ -73,7 +73,7 @@
     - **The `payment_reused` closing (017):** `close_exception` allows `no_action` for `payment_reused` when Stripe shows no second charge, since the case's payment intent is the other, confirmed order's payment. Batch 4 also revokes `admin_actions` from the service role and both functions from every API role by name, refuses a note without a non-space character, and takes a refund ID only on `refunded`.
     - **The runbook's safety changes (Task 15):** the test-data reset is a read-only preview, then one all-or-nothing block that checks the feis id, its exact name and the order count. Before confirming a late payment (3a), Stripe is checked for refunds and disputes. Before 3a or a refund (3b), the other payments contact is told, and 3b first checks the case is still open. A reused payment's intent is never refunded. Stuck emails have a query and a guarded resend. The family is emailed by hand after any message-A case is closed (3e). Email is paused until a sending domain is verified.
     - **The app (batch 4):** Back from Stripe re-enables Pay. The dashboard says when it couldn't load entries. The success page shows "This payment has been reviewed…" once a message-A case is closed. One bad email row doesn't stall the rest. An ignored failure notice is logged.
-  - **Task 16** is updated to match: the live test fixture's snapshot has `rules`; Step 4 sets `STRIPE_APPLICATION_FEE_PERCENT` and `NEXT_PUBLIC_BASE_URL`, checks Fluid compute and leaves `PAYMENTS_ALERT_EMAIL` unset; Step 7 reloads the API's schema cache and adds the three new webhook events after the deploy; the live script also checks `payments_admin`, the email queue functions and the one-active-order index; Step 8 dry-reads the runbook; Step 12 turns email on.
+  - **Task 16** is updated to match: the live test fixture's snapshot has `rules`; Step 4 sets `STRIPE_APPLICATION_FEE_PERCENT` and `NEXT_PUBLIC_BASE_URL`, checks Fluid compute and sets `PAYMENTS_ALERT_EMAIL` (Task 16 goes live with email on: Daniel, 2026-10-17); Step 7 reloads the API's schema cache and adds the three new webhook events after the deploy; the live script also checks `payments_admin`, the email queue functions and the one-active-order index; Step 8 dry-reads the runbook and checks the email job isn't paused; Step 12 confirms the first real email arrives.
 - **Spec revision 5 (add-on orders and $0 orders, Daniel 2026-10-17) adds Tasks 17–21, which run before Task 16.** Task 17 merges `main` (migration 019 and its add-on screens) into this branch; Tasks 18–20 rebuild add-ons and $0 orders on this branch's order model (012, 013, 015 and 017 change in place, and the new last migration 020 checks 019's index); Task 21 updates the runbook and `CLAUDE.md`. Task 16 is updated for them: it applies 012–017 and then 020, its live check counts main's live add-ons, and its rehearsal and live tests cover an add-on, a $0 add-on and late payments against several orders.
 
 ## Global Constraints
@@ -13692,6 +13692,11 @@ describe('openMessageAFor', () => {
     expect(openMessageAFor([review({ resolved: true })], ['r1'])).toBeNull()
     expect(openMessageAFor([review()], ['r9'])).toBeNull()
   })
+
+  it('finds an open message-A case even when a newer open case on the same order is message B', () => {
+    const newerB = review({ message_code: 'B', support_ref: 'PAY-B', created_at: '2026-10-16T13:00:00+00:00' })
+    expect(openMessageAFor([review(), newerB], ['r1'])).toEqual(review())
+  })
 })
 
 ```
@@ -13883,8 +13888,8 @@ export function openMessageAFor(
 ): PaymentReview | null {
   const ids = new Set(registrationIds)
   let newest: PaymentReview | null = null
-  for (const review of openReviewsByOrder(reviews).values()) {
-    if (!ids.has(review.registration_id) || review.message_code !== 'A') continue
+  for (const review of reviews) {
+    if (review.resolved || review.message_code !== 'A' || !ids.has(review.registration_id)) continue
     if (!newest || Date.parse(review.created_at) > Date.parse(newest.created_at)) newest = review
   }
   return newest
@@ -15280,7 +15285,7 @@ dances or dancers after paying. Any number can be paid, but only one can be unpa
 counted the family's paid orders at the time (no second family fee, the family max across orders, no second late
 fee for a dancer), and the order's `purchase_snapshot -> 'pricing' -> 'prior'` records which ones. An order that
 costs nothing (typically an add-on once the family max is reached) is confirmed without Stripe: it has no checkout,
-no payment and never a case. Alerts arrive by email once email is turned on (it's paused for now; see below), and the Vercel
+no payment and never a case. Alerts arrive by email (to `PAYMENTS_ALERT_EMAIL`, from `entries@runfeis.com`), and the Vercel
 logs always have a `[PAYMENT_EXCEPTION] PAY-…` line.
 ```
 
@@ -15474,14 +15479,63 @@ with:
 
 - [ ] **Step 4b: The runbook says email is on**
 
-Email is live (Daniel, 2026-10-17): the sending domain is verified and `EMAIL_FROM` is `RunFeis <entries@runfeis.com>`. In `docs/runbooks/payment-exceptions.md`, replace every "email is paused" passage with the email-on version:
-- the opening paragraph (around line 7): alerts arrive by email, and the Vercel logs have a `[PAYMENT_EXCEPTION] PAY-…` line;
-- the "Email is paused for now" note (around line 14): delete it, or turn it into one line saying alerts go to `PAYMENTS_ALERT_EMAIL` (Daniel and Steve) from `entries@runfeis.com`;
-- around line 133: after closing a message-A case, the family still gets no automatic email about the closing, so email them yourself; drop "while email is paused it sends nothing at all";
-- the env list (around line 190): `PAYMENTS_ALERT_EMAIL` is Daniel's and Steve's addresses, comma-separated;
-- "Turning email on" (around line 200): replace with a short "If email stops" note: check `RESEND_API_KEY`, `EMAIL_FROM` and `PAYMENTS_ALERT_EMAIL` on Vercel, the domain in Resend, and the stuck-emails query;
-- the cron section (around line 244): drop the "`\"paused\":true` until email is set up" remark.
-Keep everything else. Run `grep -n -i paused docs/runbooks/payment-exceptions.md`: only unrelated uses of the word may remain.
+Email is live (Daniel, 2026-10-17): the sending domain is verified, `EMAIL_FROM` is `RunFeis <entries@runfeis.com>`, and `PAYMENTS_ALERT_EMAIL` holds Daniel's and Steve's addresses. Step 1(a) already rewrote the opening paragraph. Make these replacements in `docs/runbooks/payment-exceptions.md`.
+
+(a) Replace:
+```markdown
+Who: the payments contacts, Daniel and Steve to start (their addresses go in `PAYMENTS_ALERT_EMAIL` once email is on).
+```
+with:
+```markdown
+Who: the payments contacts, Daniel and Steve to start (their addresses are in `PAYMENTS_ALERT_EMAIL`).
+```
+
+(b) Replace the whole paragraph that starts `**Email is paused for now.**` and ends `Turning email on is in section 5.` with:
+```markdown
+**Email.** RunFeis sends from `entries@runfeis.com`: confirmations to families, and payment-case alerts to
+`PAYMENTS_ALERT_EMAIL`. An alert that fails to send is found only by the stuck-emails query (section 4), so keep
+running both queries every day during registration: Vercel keeps its logs only for a short time, so the queries are
+the record. If email stops, see "If email stops" in section 5.
+```
+
+(c) Replace:
+```markdown
+emails about a closed case, and while email is paused it sends nothing at all, not even the confirmation after 3a, so
+all contact with the family is by hand.
+```
+with:
+```markdown
+emails about a closed case. After 3a the family also gets the usual confirmation email, but it doesn't explain the
+case, so write to them anyway.
+```
+
+(d) Replace:
+```markdown
+- `PAYMENTS_ALERT_EMAIL` (comma-separated; leave it unset while email is paused, below)
+```
+with:
+```markdown
+- `PAYMENTS_ALERT_EMAIL` (the payments contacts, comma-separated: Daniel and Steve)
+```
+
+(e) Replace the whole paragraph that starts `**Turning email on.**` (it ends `then run the stuck-emails query (section 4).`) with:
+```markdown
+**If email stops.** The email job's answer (below) says `"paused":true` when `RESEND_API_KEY`, `EMAIL_FROM` or
+`PAYMENTS_ALERT_EMAIL` is missing: set them on Vercel and redeploy. Queued emails then send, up to 20 each time the
+job runs (every 5 minutes). If the job isn't paused but emails stay `pending` with attempts used, check the domain is
+still verified in Resend (Resend dashboard → Domains) and look for `[NOTIFICATION_FAILED]` in the Vercel logs.
+```
+
+(f) Replace:
+```markdown
+`"paused":true` until email is set up):
+```
+with:
+```markdown
+`"paused":false`; `"paused":true` means an email setting is missing, see "If email stops" above):
+```
+
+Then run `grep -n -i 'paused\|turned on\|once email' docs/runbooks/payment-exceptions.md`. Only the line from (f) and "If email stops" may remain.
 
 - [ ] **Step 5: Commit**
 
@@ -15496,9 +15550,9 @@ git commit -q -m "docs: runbook and project rules for add-on orders, \$0 orders 
 
 **Runs after Tasks 17–21.** Spec revision 5 brought add-on orders and $0 orders into this work before go-live. Tasks 17–21 build them, starting from a merge of `main`, so this branch has 019 as live does. This task then rolls out 012–017 and 020 together; live already has 019.
 
-This task touches the live project. Steps 3, 4, 7, 8 and 12 need Daniel's go-ahead at the time: Step 3 copies the live data to this machine, Step 4 sets Vercel settings, Step 7 applies the migrations, pushes to `main` (which deploys) and adds the new Stripe webhook events, Step 8 schedules a job, and Step 12 turns email on. Ask before each one. Don't treat approval of this plan as approval for them.
+This task touches the live project. Steps 3, 4, 7 and 8 need Daniel's go-ahead at the time: Step 3 copies the live data to this machine, Step 4 sets Vercel settings, Step 7 applies the migrations, pushes to `main` (which deploys) and adds the new Stripe webhook events, and Step 8 schedules a job. Ask before each one. Don't treat approval of this plan as approval for them.
 
-**Email is on at go-live (Daniel, 2026-10-17: "emails are live now").** RunFeis's sending domain is verified in Resend, and Vercel already has `EMAIL_FROM` = `RunFeis <entries@runfeis.com>`, `RESEND_API_KEY` and `NEXT_PUBLIC_BASE_URL` = `https://www.runfeis.com`. Step 4 sets `PAYMENTS_ALERT_EMAIL` to Daniel's and Steve's addresses, so confirmations and payment-case alerts go out from the first order. Step 12 confirms they are flowing.
+**Email is on at go-live (Daniel, 2026-10-17: "emails are live now").** RunFeis's sending domain is verified in Resend, and Vercel already has `EMAIL_FROM` = `RunFeis <entries@runfeis.com>`, `RESEND_API_KEY` and `NEXT_PUBLIC_BASE_URL` = `https://www.runfeis.com`. Step 4 sets `PAYMENTS_ALERT_EMAIL` to Daniel's and Steve's addresses, so confirmations and payment-case alerts go out from the first order. Step 8 checks the email job isn't paused, and Step 12 confirms the first real email arrives.
 
 **Files:**
 - Create: `supabase/checks/payment-hardening-live-check.sql`
@@ -16422,7 +16476,7 @@ For project "project-f06v2" (team cgds-projects), in Production and Preview (Set
 - `NOTIFICATIONS_CRON_SECRET`: from `openssl rand -hex 32`. Step 8 stores the same value in Vault.
 - `PAYMENTS_ALERT_EMAIL`: set it to Daniel's and Steve's addresses, comma-separated (ask Daniel for Steve's). Check that `EMAIL_FROM` is `RunFeis <entries@runfeis.com>` (a verified domain) and `RESEND_API_KEY` is set. With all three set, `emailIsConfigured()` is true: confirmations and alerts send, and the success page promises the email.
 
-`RESEND_API_KEY`, `STRIPE_SECRET_KEY` and `STRIPE_CONNECT_WEBHOOK_SECRET` come with the email and real-Stripe work. Until the Stripe ones are set, Pay reports that payment couldn't start.
+`STRIPE_SECRET_KEY` and `STRIPE_CONNECT_WEBHOOK_SECRET` come with the real-Stripe work. Until the Stripe ones are set, Pay reports that payment couldn't start.
 
 Also check how long a function may run. Pay can take about 85 s when Stripe is failing, and it must not be cut off part-way through a claim. Confirm the project runs on Fluid compute (Settings → Functions), where the default limit is 300 s. If it doesn't, turn Fluid compute on, or (ask Daniel) set `export const maxDuration` in the route segment config of the register page (where Pay and Cancel run), the success page and the webhook route, above 85.
 
@@ -16436,6 +16490,8 @@ Expected: all pass.
 Have a fresh reviewer check `git diff main...payment-hardening` against the spec. Fix what it finds, re-run Step 5, and commit.
 
 - [ ] **Step 7: Apply 012–017 and 020 live, then deploy straight away (ask first)**
+
+First, re-run sections 4 and 10 of the live check (Step 2), right before item 1. `main`'s add-on code keeps running until the deploy, so real families may have started or paid orders since Step 2. Stop on any unpaid order (`draft` or `pending_payment`) that belongs to a real family, not a test account: 012 expires unpaid orders, so wait for it to be paid or lapse, or close registration first. Keep this output: Step 9 compares against it.
 
 1. Apply `012_order_integrity.sql` through `017_payments_admin.sql`, in order, then `020_assert_unpaid_index.sql`: with `apply_migration` (one call per file) or in the SQL editor. 019 is already live; don't apply it again. If Step 2 found 002's hold-expiry job under another name, unschedule it straight after 012, with `SELECT cron.unschedule(<that job's jobid>);`. If 020 raises, the unpaid-order index isn't 019's: stop and ask before deploying.
 2. Make the API load the new functions, so Submit, Pay and the webhook don't fail with "not in the schema cache". In the SQL editor:
@@ -16467,7 +16523,13 @@ Then run the SQL in `docs/runbooks/payment-exceptions.md` §5 with the productio
 SELECT status, return_message, start_time FROM cron.job_run_details d JOIN cron.job j USING (jobid)
 WHERE j.jobname = 'process-notifications' ORDER BY start_time DESC LIMIT 3;
 ```
-Expected: `succeeded`. The endpoint answers `{"paused":true,...}` until email is configured.
+Expected: `succeeded`. That only means the request was sent, so check the site's answer too:
+```sql
+SELECT status_code, content::text FROM net._http_response ORDER BY created DESC LIMIT 3;
+```
+Expected: `200` with `"paused":false`. If it says `"paused":true`, stop: `RESEND_API_KEY`, `EMAIL_FROM` or `PAYMENTS_ALERT_EMAIL` is missing on Production, or the site wasn't redeployed after Step 4. Fix it, redeploy, and check again. A `401` means the secret in Vault doesn't match `NOTIFICATIONS_CRON_SECRET`.
+
+Then run the runbook's stuck-emails query (§4). Expected: no rows. Step 12 confirms the first real email arrives.
 
 - [ ] **Step 9: Verify live**
 
@@ -16481,7 +16543,7 @@ Re-run the live check (Step 2). Section 1 should now show:
 - `service_role_can_truncate` false on all three tables
 - the three guard triggers and the three `TRUNCATE` guards, all enabled (`O`)
 
-Section 3 should show the schema-qualified hold-expiry job and no other. Section 9 should show `idx_registrations_active_unique` as 019 made it (Step 2), and no other unique index on `feis_listing_id` and `household_id`. Section 10 should show the same findings as before the rollout: migrations never change a paid order.
+Section 3 should show the schema-qualified hold-expiry job and no other. Section 9 should show `idx_registrations_active_unique` as 019 made it (Step 2), and no other unique index on `feis_listing_id` and `household_id`. Section 10 should show the same findings as the re-run at the start of Step 7: migrations never change a paid order.
 
 Then check the organiser entries view on the deployed site. Sign in as the organiser of a feis that has paid orders, and open its Entries tab: the entries show, with dancer names and competitor numbers, including any family's add-on entries (section 10 of Step 2 lists families with several paid orders). If no feis has paid orders yet, the live test script's organiser checks stand in for this; record which one you used.
 
@@ -16532,8 +16594,8 @@ Record the results under "Live verification".
 
 - [ ] **Step 12: Confirm email is flowing**
 
-Email is on from go-live (see the top of this task).
-1. After the end-to-end run (Step 11), the test orders' `registration_confirmation` rows in `pre_registration.notifications` are `sent`, and Resend's dashboard (Emails) shows them delivered from `entries@runfeis.com`.
+Email is on from go-live, and Step 8 checked the job isn't paused. Don't wait for Step 11: check the first confirmation after the deploy, whether it comes from a real family's order or from Step 11's test orders.
+1. Its `registration_confirmation` row in `pre_registration.notifications` is `sent`, and Resend's dashboard (Emails) shows it delivered from `entries@runfeis.com`.
 2. Run the runbook's stuck-emails query (§4): no rows expected.
 3. Record it under "Live verification": `Email confirmed flowing: <date>, from entries@runfeis.com`.
 
