@@ -172,7 +172,12 @@ async function confirmFree(deps: CheckoutDeps, order: CheckoutOrder): Promise<Pa
     case 'paid_orders_changed':
       return { kind: 'start_again', message: PAID_ORDERS_CHANGED_MESSAGE }
     case 'not_confirmable':
-      return { kind: 'start_again', message: CHECKOUT_MESSAGES.expired }
+      // Another request cancelled it, or its hold ran out: say which, as Pay does for any order
+      return {
+        kind: 'start_again',
+        message:
+          result.status === 'cancelled' ? CHECKOUT_MESSAGES.cancelled : CHECKOUT_MESSAGES.expired
+      }
     case 'not_found':
       return { kind: 'error', message: CHECKOUT_MESSAGES.notFound }
   }

@@ -83,7 +83,7 @@ export function renderConfirmationEmail(data: ConfirmationEmailData): string {
     addedToEntry = false
   } = data
   const intro = addedToEntry
-    ? "These dances were added to your entry. Each dancer keeps the competitor number they already had. Keep this email with your first one; you'll need the numbers on the day."
+    ? "These dances were added to your entry. Dancers who were already entered keep their competitor numbers. Keep this email with your first one; you'll need the numbers on the day."
     : "Here are your competitor numbers and dances. Keep this email; you'll need the numbers on the day."
   return `<!DOCTYPE html>
 <html lang="en">

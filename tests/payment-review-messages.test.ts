@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   messageAWasResolved,
+  NEW_ORDER_CHECK_FAILED_MESSAGE,
+  newOrderGate,
   openMessageAFor,
   openReviewsByOrder,
   REVIEWED_MESSAGE,
@@ -108,5 +110,45 @@ describe('openMessageAFor', () => {
   it('finds an open message-A case even when a newer open case on the same order is message B', () => {
     const newerB = review({ message_code: 'B', support_ref: 'PAY-B', created_at: '2026-10-16T13:00:00+00:00' })
     expect(openMessageAFor([review(), newerB], ['r1'])).toEqual(review())
+  })
+})
+
+// Decision 13 on the server: Submit and Pay ask this before they make or pay an order
+describe('newOrderGate', () => {
+  it("refuses with message A and its reference while a case is open on another of the feis's orders", () => {
+    const gate = newOrderGate({ registrationIds: ['r1', 'r2'], reviews: [review()] })
+    expect(gate).toEqual({ allowed: false, message: reviewMessage('A', 'PAY-7KQ2M') })
+    expect(gate.allowed === false && gate.message).toContain('PAY-7KQ2M')
+  })
+
+  it('names the newest open case when there are several', () => {
+    const newer = review({ support_ref: 'PAY-NEWER', created_at: '2026-10-16T13:00:00+00:00' })
+    expect(newOrderGate({ registrationIds: ['r1'], reviews: [review(), newer] })).toEqual({
+      allowed: false,
+      message: reviewMessage('A', 'PAY-NEWER')
+    })
+  })
+
+  it('allows once the case is resolved, for message B alone, for another feis, or with no cases', () => {
+    const allowed = { allowed: true }
+    expect(newOrderGate({ registrationIds: ['r1'], reviews: [review({ resolved: true })] })).toEqual(allowed)
+    expect(newOrderGate({ registrationIds: ['r1'], reviews: [review({ message_code: 'B' })] })).toEqual(allowed)
+    expect(newOrderGate({ registrationIds: ['r9'], reviews: [review()] })).toEqual(allowed)
+    expect(newOrderGate({ registrationIds: ['r1'], reviews: [] })).toEqual(allowed)
+    expect(newOrderGate({ registrationIds: [], reviews: [] })).toEqual(allowed)
+  })
+
+  it("still refuses for an open message A when a closed one or a newer message B sits beside it", () => {
+    const closedEarlier = review({ resolved: true, support_ref: 'PAY-CLOSED', created_at: '2026-10-16T11:00:00+00:00' })
+    const newerB = review({ message_code: 'B', support_ref: 'PAY-B', created_at: '2026-10-16T13:00:00+00:00' })
+    expect(newOrderGate({ registrationIds: ['r1'], reviews: [closedEarlier, review(), newerB] })).toEqual({
+      allowed: false,
+      message: reviewMessage('A', 'PAY-7KQ2M')
+    })
+  })
+
+  it("fails closed when the orders or the cases couldn't be read", () => {
+    expect(newOrderGate(null)).toEqual({ allowed: false, message: NEW_ORDER_CHECK_FAILED_MESSAGE })
+    expect(NEW_ORDER_CHECK_FAILED_MESSAGE).toBe("We couldn't check your registration just now. Please try again.")
   })
 })

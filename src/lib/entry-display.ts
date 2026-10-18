@@ -1,3 +1,4 @@
+import { formatCents } from '@/lib/format'
 import type {
   ChampionshipStatus,
   DancerDanceLevel,
@@ -107,4 +108,38 @@ export function isAddOnOrder(order: {
   purchase_snapshot: { pricing?: { prior?: unknown } } | null
 }): boolean {
   return order.purchase_snapshot?.pricing?.prior != null
+}
+
+/**
+ * What a family is told when Submit's price isn't the total the page showed (a late fee tier
+ * started, the organiser changed a fee, or their paid orders changed while it was open). The held
+ * order keeps Submit's price, and the button now reads "Confirm entries" at $0, otherwise "Pay".
+ */
+export function repricedNotice(newTotalCents: number): string {
+  const button = newTotalCents === 0 ? 'Confirm entries' : 'Pay'
+  return (
+    `Your total has been updated to ${formatCents(newTotalCents)}. ` +
+    `Check the receipt, then press ${button} to continue.`
+  )
+}
+
+/**
+ * The dances already paid for, per dancer, across the family's paid orders in the order given.
+ * `lookup` finds a competition by id; an id it doesn't know is left out. It should cover every
+ * competition a paid entry is for, enabled or not, since a dance stays entered after the organiser
+ * turns it off.
+ */
+export function enteredByDancer<T>(
+  paidOrders: { registration_entries: { dancer_id: string; feis_competition_id: string }[] }[],
+  lookup: Map<string, T>
+): Record<string, T[]> {
+  const entered: Record<string, T[]> = {}
+  for (const order of paidOrders) {
+    for (const entry of order.registration_entries) {
+      const competition = lookup.get(entry.feis_competition_id)
+      if (competition === undefined) continue
+      entered[entry.dancer_id] = [...(entered[entry.dancer_id] ?? []), competition]
+    }
+  }
+  return entered
 }

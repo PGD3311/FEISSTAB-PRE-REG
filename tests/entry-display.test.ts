@@ -3,9 +3,11 @@ import {
   dancerLevelSummary,
   groupForEntryForm,
   entryFeesPerDancer,
+  enteredByDancer,
   entryDeadline,
   formatDeadline,
-  isAddOnOrder
+  isAddOnOrder,
+  repricedNotice
 } from '@/lib/entry-display'
 import type {
   EligibleCompetition,
@@ -153,5 +155,48 @@ describe('isAddOnOrder', () => {
     expect(isAddOnOrder({ purchase_snapshot: { pricing: { prior: null } } })).toBe(false)
     expect(isAddOnOrder({ purchase_snapshot: { pricing: {} } })).toBe(false)
     expect(isAddOnOrder({ purchase_snapshot: null })).toBe(false)
+  })
+})
+
+describe('enteredByDancer', () => {
+  const order = (entries: [string, string][]) => ({
+    registration_entries: entries.map(([dancer_id, feis_competition_id]) => ({ dancer_id, feis_competition_id }))
+  })
+
+  it('gathers each dancer\'s paid dances across every paid order, oldest order first', () => {
+    const lookup = new Map([['c1', 'Reel'], ['c2', 'Slip Jig'], ['c3', 'Treble Jig']])
+    const entered = enteredByDancer([order([['d1', 'c1'], ['d2', 'c3']]), order([['d1', 'c2']])], lookup)
+    expect(entered).toEqual({ d1: ['Reel', 'Slip Jig'], d2: ['Treble Jig'] })
+  })
+
+  it('keeps a dance the organiser has since turned off, as long as the lookup knows it', () => {
+    const enabledOnly = new Map([['c1', 'Reel']])
+    const withDisabled = new Map([...enabledOnly, ['c9', 'Hornpipe (turned off)']])
+    const paid = [order([['d1', 'c1'], ['d1', 'c9']])]
+    // The enabled-only list loses the paid dance; the lookup that also covers paid entries keeps it
+    expect(enteredByDancer(paid, enabledOnly)).toEqual({ d1: ['Reel'] })
+    expect(enteredByDancer(paid, withDisabled)).toEqual({ d1: ['Reel', 'Hornpipe (turned off)'] })
+  })
+
+  it('has nothing for a dancer with no paid dances, and for no paid orders', () => {
+    expect(enteredByDancer([], new Map([['c1', 'Reel']]))).toEqual({})
+    expect(enteredByDancer([order([['d1', 'cX']])], new Map([['c1', 'Reel']]))).toEqual({})
+  })
+})
+
+describe('repricedNotice', () => {
+  it('names the new total and the Pay button', () => {
+    expect(repricedNotice(4000)).toBe(
+      'Your total has been updated to $40.00. Check the receipt, then press Pay to continue.'
+    )
+  })
+
+  it('follows the button to "Confirm entries" when the new total is $0, and never blames fees', () => {
+    const notice = repricedNotice(0)
+    expect(notice).toBe(
+      'Your total has been updated to $0.00. Check the receipt, then press Confirm entries to continue.'
+    )
+    expect(notice).not.toContain('Fees changed')
+    expect(notice).not.toContain('press Pay')
   })
 })

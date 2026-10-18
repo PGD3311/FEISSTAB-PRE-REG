@@ -219,7 +219,7 @@ export default async function SuccessPage({ params, searchParams }: SuccessPageP
           {view.kind === 'paid' && (
             <p className="mt-1.5 max-w-[52ch] opacity-85">
               {view.addedToEntry
-                ? 'These dances were added to your entry. Your dancers keep their competitor numbers.'
+                ? 'These dances were added to your entry. Dancers who were already entered keep their competitor numbers.'
                 : view.totalCents === 0
                   ? 'Your entries are confirmed. There was nothing to pay.'
                   : 'Payment received. Your dancers’ competitor numbers are ready.'}

@@ -28,6 +28,7 @@ import { checkoutDeps } from '@/app/_payments/checkout-deps'
 import { cancel, pay, type CancelResult, type PayResult } from '@/app/_payments/checkout-workflow'
 import { notificationDeps } from '@/app/_payments/notification-deps'
 import { processNotifications } from '@/app/_payments/notification-worker'
+import { newOrderGate, type NewOrderGate, type PaymentReview } from '@/lib/payment-review-messages'
 import { REGISTRATION_COLUMNS } from '@/lib/registration-columns'
 import { createOrderStore, type CreateOrderResult } from '@/app/_payments/order-store'
 import { supabaseRpc } from '@/app/_payments/rpc'
@@ -55,12 +56,11 @@ const REFUSAL_MESSAGES: Record<RefusalReason, string> = {
   paid_orders_changed: PAID_ORDERS_CHANGED_MESSAGE
 }
 
-type HouseholdContext =
-  | { error: string }
-  | {
-      supabase: Awaited<ReturnType<typeof createClient>>
-      household: Pick<Household, 'id' | (typeof REQUIRED_HOUSEHOLD_FIELDS)[number]>
-    }
+type SignedInHousehold = {
+  supabase: Awaited<ReturnType<typeof createClient>>
+  household: Pick<Household, 'id' | (typeof REQUIRED_HOUSEHOLD_FIELDS)[number]>
+}
+type HouseholdContext = { error: string } | SignedInHousehold
 
 /**
  * The signed-in parent's household, read with their own client: this is what proves an order
@@ -79,6 +79,54 @@ async function currentHousehold(): Promise<HouseholdContext> {
   if (error) return { error: 'Your family details could not be loaded. Please try again.' }
   if (!household) return { error: 'Please finish setting up your family account first.' }
   return { supabase, household }
+}
+
+/**
+ * Decision 13 on the server (spec §14): while the family has an open message-A case for a feis,
+ * Submit and Pay refuse, even from an entry page opened before the case existed. Both read the
+ * family's orders for the feis and its payment cases with the family's own client, as the register
+ * page does, and ask `newOrderGate`. A read that fails refuses (fails closed): the gate can't be
+ * judged, and a second payment can't be undone. `order` names the feis, or an order of the
+ * family's whose feis is looked up.
+ */
+async function newOrderGateFor(
+  ctx: SignedInHousehold,
+  order: { feisListingId: string } | { registrationId: string }
+): Promise<NewOrderGate> {
+  try {
+    let feisListingId: string
+    if ('feisListingId' in order) {
+      feisListingId = order.feisListingId
+    } else {
+      const { data, error } = await ctx.supabase
+        .from('registrations')
+        .select('feis_listing_id')
+        .eq('id', order.registrationId)
+        .eq('household_id', ctx.household.id)
+        .maybeSingle()
+      if (error) throw error
+      // Not one of this family's orders: Pay answers "not found" for it
+      if (!data) return { allowed: true }
+      feisListingId = data.feis_listing_id
+    }
+    const [orders, reviews] = await Promise.all([
+      ctx.supabase
+        .from('registrations')
+        .select('id')
+        .eq('feis_listing_id', feisListingId)
+        .eq('household_id', ctx.household.id),
+      ctx.supabase.rpc('get_my_payment_reviews', { p_registration_id: null })
+    ])
+    const failed = orders.error ?? reviews.error
+    if (failed) throw failed
+    return newOrderGate({
+      registrationIds: (orders.data ?? []).map((row) => row.id),
+      reviews: (reviews.data ?? []) as PaymentReview[]
+    })
+  } catch (err) {
+    console.error('Could not check for an open payment case:', err)
+    return newOrderGate(null)
+  }
 }
 
 /**
@@ -175,6 +223,10 @@ export async function createDraftRegistration(
     return { error: 'Please add your family details (name, phone and address) before registering.' }
   }
 
+  // No new order while a message-A case is open, even from a page opened before it (Decision 13)
+  const gate = await newOrderGateFor(ctx, { feisListingId: input.feisListingId })
+  if (!gate.allowed) return { error: gate.message }
+
   const service = createServiceClient()
   const loaded = await loadOrderInputs(service, input.feisListingId, ctx.household.id).catch(
     (err: unknown) => {
@@ -257,6 +309,10 @@ export async function createDraftRegistration(
 export async function createCheckoutSession(registrationId: string): Promise<PayResult> {
   const ctx = await currentHousehold()
   if ('error' in ctx) return { kind: 'error', message: ctx.error }
+  // Message A says not to pay again: no Pay, not even for a $0 order or one already held
+  // (Decision 13)
+  const gate = await newOrderGateFor(ctx, { registrationId })
+  if (!gate.allowed) return { kind: 'blocked', message: gate.message }
   try {
     const result = await pay(checkoutDeps(), { registrationId, householdId: ctx.household.id })
     if (result.kind === 'paid') {

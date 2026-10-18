@@ -69,6 +69,31 @@ export function openMessageAFor(
   return newest
 }
 
+/** What a new order, or Pay, is refused with when the open-case check itself couldn't be made */
+export const NEW_ORDER_CHECK_FAILED_MESSAGE =
+  "We couldn't check your registration just now. Please try again."
+
+/** What the server read for the gate below: the family's orders for a feis and its payment cases */
+export interface NewOrderReads {
+  registrationIds: string[]
+  reviews: PaymentReview[]
+}
+
+export type NewOrderGate = { allowed: true } | { allowed: false; message: string }
+
+/**
+ * The server's side of Decision 13: Submit and Pay refuse while the family has an open message-A
+ * case for the feis, even from a page opened before the case existed. `reads` is null when either
+ * read failed: the gate can't be judged, so it refuses (fails closed). A refusal for an open case
+ * carries message A with its reference, the same words the entry page shows.
+ */
+export function newOrderGate(reads: NewOrderReads | null): NewOrderGate {
+  if (!reads) return { allowed: false, message: NEW_ORDER_CHECK_FAILED_MESSAGE }
+  const open = openMessageAFor(reads.reviews, reads.registrationIds)
+  if (!open) return { allowed: true }
+  return { allowed: false, message: reviewMessage('A', open.support_ref) }
+}
+
 /** What the family sees in place of message A once the payments contacts have closed that case */
 export const REVIEWED_MESSAGE =
   'This payment has been reviewed. If you have questions, contact the organiser.'

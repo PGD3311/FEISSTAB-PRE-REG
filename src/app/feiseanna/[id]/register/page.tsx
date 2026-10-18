@@ -134,6 +134,29 @@ export default function RegisterPage() {
         if ('error' in heldResult) throw new Error(heldResult.error)
 
         const dancers = (dancersResult.data ?? []) as DancerWithLevels[]
+        const paidRegistrations = (paidResult.data ?? []) as RegistrationWithEntries[]
+
+        // The competitions the paid entries are for, enabled or not: a dance stays entered after
+        // the organiser turns its competition off. Only the ones the enabled list above lacks are
+        // read, and they are used to show what's entered, never to choose from
+        const known = new Set(competitions.map((c) => c.id))
+        const missingIds = [
+          ...new Set(
+            paidRegistrations
+              .flatMap((order) => order.registration_entries.map((e) => e.feis_competition_id))
+              .filter((id) => !known.has(id))
+          )
+        ]
+        const paidCompetitions: FeisCompetition[] = []
+        if (missingIds.length > 0) {
+          const paidCompetitionsResult = await supabase
+            .from('feis_competitions')
+            .select('*')
+            .eq('feis_listing_id', feisId)
+            .in('id', missingIds)
+          if (paidCompetitionsResult.error) throw paidCompetitionsResult.error
+          paidCompetitions.push(...((paidCompetitionsResult.data ?? []) as FeisCompetition[]))
+        }
 
         const numbersResult = await supabase
           .from('competitor_numbers')
@@ -157,9 +180,10 @@ export default function RegisterPage() {
             listing: listingResult.data as FeisListing,
             feeSchedule: (feesResult.data as FeeSchedule | null) ?? null,
             competitions,
+            paidCompetitions,
             dancers,
             heldRegistration: (heldResult.registration as RegistrationWithEntries | null) ?? null,
-            paidRegistrations: (paidResult.data ?? []) as RegistrationWithEntries[],
+            paidRegistrations,
             numbers,
             expiredHold: heldResult.expired === true,
             openMessageA: openMessageAFor(

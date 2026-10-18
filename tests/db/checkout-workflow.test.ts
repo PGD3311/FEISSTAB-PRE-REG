@@ -6,10 +6,11 @@ import {
   pay,
   payResultFromConfirmation,
   syncConfirmation,
-  type CheckoutDeps
+  type CheckoutDeps,
+  type PayResult
 } from '@/app/_payments/checkout-workflow'
-import { createOrderStore, type OrderStore } from '@/app/_payments/order-store'
-import { CHECKOUT_BLOCK_MESSAGES } from '@/lib/engine/checkout-policy'
+import { createOrderStore, type FreeOrderResult, type OrderStore } from '@/app/_payments/order-store'
+import { CHECKOUT_BLOCK_MESSAGES, PAID_ORDERS_CHANGED_MESSAGE } from '@/lib/engine/checkout-policy'
 import { reviewMessage } from '@/lib/payment-review-messages'
 import { asService, createTestDatabase, type TestDatabase } from './helpers/db'
 import { FakeStripe } from './helpers/fake-stripe'
@@ -304,6 +305,47 @@ describe('pay for a $0 order', () => {
       .toEqual({ kind: 'start_again', message: CHECKOUT_MESSAGES.expired })
     expect(stripe.createCalls).toBe(0)
     for (const order of [stopped, lapsed]) expect((await orderRow(order.registrationId)).status).toBe('draft')
+  })
+
+  // The database's own answers are pinned in the order-function tests; this pins what Pay tells the family
+  // for each one, including the answers a single click can't reach (a repeat click finds the order paid
+  // before it asks, and a cancel or an add-on race needs two requests at once)
+  it('tells the family what each answer from confirm_free_order means', async () => {
+    const stripe = new FakeStripe()
+    const order = await freeOrder()
+    const paidAs = (confirmationNumber: string): PayResult => ({ kind: 'paid', confirmationNumber })
+    const answers: [FreeOrderResult, PayResult][] = [
+      [{ result: 'confirmed', confirmation_number: 'RF-2026-AAAAA' }, paidAs('RF-2026-AAAAA')],
+      [{ result: 'already_confirmed', confirmation_number: 'RF-2026-BBBBB' }, paidAs('RF-2026-BBBBB')],
+      [{ result: 'blocked', reason: 'organiser_stopped' },
+        { kind: 'blocked', message: CHECKOUT_BLOCK_MESSAGES.organiser_stopped }],
+      [{ result: 'blocked', reason: 'competition_unavailable' },
+        { kind: 'blocked', message: CHECKOUT_BLOCK_MESSAGES.competition_unavailable }],
+      [{ result: 'paid_orders_changed', orders: [randomUUID()] },
+        { kind: 'start_again', message: PAID_ORDERS_CHANGED_MESSAGE }],
+      [{ result: 'not_confirmable', status: 'cancelled', hold_expired: false },
+        { kind: 'start_again', message: CHECKOUT_MESSAGES.cancelled }],
+      [{ result: 'not_confirmable', status: 'expired', hold_expired: true },
+        { kind: 'start_again', message: CHECKOUT_MESSAGES.expired }],
+      [{ result: 'not_confirmable', status: 'draft', hold_expired: true },
+        { kind: 'start_again', message: CHECKOUT_MESSAGES.expired }],
+      [{ result: 'not_found' }, { kind: 'error', message: CHECKOUT_MESSAGES.notFound }]
+    ]
+    for (const [answer, expected] of answers) {
+      const asked: string[] = []
+      const stubbed: OrderStore = {
+        ...store,
+        confirmFreeOrder: async (registrationId) => {
+          asked.push(registrationId)
+          return answer
+        }
+      }
+      expect(await pay({ ...deps(stripe), store: stubbed }, ids(order))).toEqual(expected)
+      expect(asked).toEqual([order.registrationId])
+    }
+    // Every answer came from confirm_free_order alone: no claim, no Stripe call, order untouched
+    expect(stripe.createCalls).toBe(0)
+    expect(await orderRow(order.registrationId)).toMatchObject({ status: 'draft', checkout_claim_id: null })
   })
 })
 

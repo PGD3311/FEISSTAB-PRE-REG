@@ -12,7 +12,13 @@ import {
   type RequestedEntry
 } from '@/lib/engine/order-validation'
 import { feeEntriesFor, paidOrdersFrom } from '@/lib/engine/purchase-snapshot'
-import { dancerLevelSummary, entryDeadline, entryFeesPerDancer } from '@/lib/entry-display'
+import {
+  dancerLevelSummary,
+  enteredByDancer,
+  entryDeadline,
+  entryFeesPerDancer,
+  repricedNotice
+} from '@/lib/entry-display'
 import { reviewMessage, type PaymentReview } from '@/lib/payment-review-messages'
 import {
   createDraftRegistration,
@@ -48,7 +54,10 @@ export type EntryPageData = {
   familyName: string
   listing: FeisListing
   feeSchedule: FeeSchedule | null
+  /** The competitions a family can choose from: enabled ones only */
   competitions: FeisCompetition[]
+  /** The competitions the paid entries are for, enabled or not: only to show them as entered */
+  paidCompetitions: FeisCompetition[]
   dancers: DancerWithLevels[]
   heldRegistration: RegistrationWithEntries | null
   /** Orders already paid for this feis, oldest first; anything chosen now is added on top */
@@ -68,8 +77,16 @@ function cartFrom(registration: RegistrationWithEntries | null): Cart {
 }
 
 export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: string }) {
-  const { listing, feeSchedule, competitions, dancers, paidRegistrations, numbers, openMessageA } =
-    data
+  const {
+    listing,
+    feeSchedule,
+    competitions,
+    paidCompetitions,
+    dancers,
+    paidRegistrations,
+    numbers,
+    openMessageA
+  } = data
   const levels = listing.syllabus_snapshot?.levels ?? []
   // The cutoff Submit uses: the organiser's date, otherwise January 1 of the feis year
   const ageCutoffDate = useMemo(() => ageCutoffDateFor(listing, new Date()), [listing])
@@ -133,24 +150,26 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
 
   const competitionById = useMemo(() => new Map(competitions.map((c) => [c.id, c])), [competitions])
 
+  // Every competition the paid entries are for, besides the ones a family can choose from: a dance
+  // stays entered if the organiser has since turned its competition off
+  const paidOrderCompetitions = useMemo(
+    () => [...competitions, ...paidCompetitions],
+    [competitions, paidCompetitions]
+  )
   // Dances already entered and paid for, per dancer, across every paid order
-  const entered: Cart = useMemo(() => {
-    const map: Cart = {}
-    for (const registration of paidRegistrations) {
-      for (const [dancerId, ids] of Object.entries(cartFrom(registration))) {
-        map[dancerId] = [...(map[dancerId] ?? []), ...ids]
-      }
-    }
-    return map
-  }, [paidRegistrations])
+  const entered = useMemo(
+    () =>
+      enteredByDancer(paidRegistrations, new Map(paidOrderCompetitions.map((c) => [c.id, c]))),
+    [paidRegistrations, paidOrderCompetitions]
+  )
   const paidTotalCents = paidRegistrations.reduce((sum, r) => sum + r.total_cents, 0)
   const latestPaid = paidRegistrations[paidRegistrations.length - 1] ?? null
 
   // What the paid orders already covered, counted as Submit counts them, so the estimate doesn't charge the
   // family fee twice and the family max runs across orders. Submit's own price is the one that counts.
   const prior = useMemo(
-    () => summarisePaidOrders(paidOrdersFrom(paidRegistrations, competitions)),
-    [paidRegistrations, competitions]
+    () => summarisePaidOrders(paidOrdersFrom(paidRegistrations, paidOrderCompetitions)),
+    [paidRegistrations, paidOrderCompetitions]
   )
 
   const eligibleByDancer = useMemo(() => {
@@ -276,14 +295,11 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
         setOrderBreakdown(order.breakdown)
         setEditingId(null)
         // Submit priced the order afresh. If that isn't the total the Pay button showed (a late
-        // tier started, or the organiser changed a fee, while the page was open), the held order
-        // and its receipt keep Submit's price, and the family presses Pay again to pay it
+        // tier started, the organiser changed a fee, or the paid orders changed while the page was
+        // open), the held order and its receipt keep Submit's price, and the family presses the
+        // button again to pay or confirm it
         if (order.totalCents !== totalCents) {
-          setError(
-            `Your total is now ${formatCents(order.totalCents)}. ` +
-              'Fees changed since you opened this page (for example, late fees started). ' +
-              'Check the receipt, then press Pay to continue.'
-          )
+          setError(repricedNotice(order.totalCents))
           return
         }
       }
@@ -414,9 +430,7 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
                     selected={(cart[dancer.id] ?? [])
                       .map((id) => competitionById.get(id))
                       .filter((c): c is FeisCompetition => c !== undefined)}
-                    entered={(entered[dancer.id] ?? [])
-                      .map((id) => competitionById.get(id))
-                      .filter((c): c is FeisCompetition => c !== undefined)}
+                    entered={entered[dancer.id] ?? []}
                     feeSchedule={feeSchedule}
                     editing={canEdit && editingId === dancer.id}
                     canEdit={canEdit}

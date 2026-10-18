@@ -108,16 +108,24 @@ export default async function DashboardPage() {
   const allRegistrations = (registrationsRead.data ?? []) as unknown as (Registration & {
     feis_listings: Pick<
       FeisListing,
-      'name' | 'feis_date' | 'venue_name' | 'status' | 'reg_opens_at' | 'reg_closes_at' | 'late_reg_closes_at'
+      | 'name'
+      | 'feis_date'
+      | 'venue_name'
+      | 'status'
+      | 'reg_opens_at'
+      | 'reg_closes_at'
+      | 'late_reg_closes_at'
     >
     registration_entries: { dancer_id: string; feis_competitions: { display_name: string } }[]
   })[]
 
-  // Whether each feis can take a new order now (spec §14): the feis's newest paid order offers Add dances
-  // then. Newest first, so the first paid order found for a feis is its newest
+  // Whether each feis can take a new order now (spec §14): the feis's newest paid order offers Add
+  // dances then. Newest first, so the first paid order found for a feis is its newest. If the
+  // payment cases couldn't be read, whether message A is open can't be judged: no Add dances
   const now = new Date()
   const addDancesOn = new Set<string>()
-  for (const feisId of new Set(allRegistrations.map((reg) => reg.feis_listing_id))) {
+  const feisIds = reviews.error ? [] : new Set(allRegistrations.map((reg) => reg.feis_listing_id))
+  for (const feisId of feisIds) {
     const forFeis = allRegistrations.filter((reg) => reg.feis_listing_id === feisId)
     const newestPaid = forFeis.find((reg) => reg.status === 'paid')
     if (!newestPaid) continue

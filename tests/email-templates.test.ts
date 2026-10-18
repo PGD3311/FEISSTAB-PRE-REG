@@ -37,9 +37,24 @@ describe('email templates', () => {
   })
 
   it("says an add-on's dances were added to the family's entry, and lists only its own dances", () => {
+    // The family's first order was a Beginner Hornpipe (110H). The add-on's price counted it and its
+    // snapshot carries that competition's row, but only the add-on's own entry (210R) belongs in its email
+    const earlier = {
+      ...purchase.competitions[0], id: 'c0', display_code: '110H', display_name: 'Beginner Hornpipe U10',
+      level_key: 'BEG', level_label: 'Beginner', dance_key: 'hornpipe', dance_label: 'Hornpipe'
+    }
     const addOn = {
       ...purchase,
-      pricing: { prior: { orders: [{ id: 'o1' }] } }
+      competitions: [...purchase.competitions, earlier],
+      pricing: {
+        prior: {
+          orders: [{
+            id: 'o1', confirmation_number: 'RF-2026-FIRST', event_fee_cents: 1000,
+            entries: [{ dancer_id: 'd1', competition_id: 'c0', base_fee_cents: 1500, late_fee_cents: 0,
+              counts_toward_family_cap: true }]
+          }]
+        }
+      }
     } as unknown as PurchaseSnapshot
     const email = confirmationEmail({
       order: { confirmation_number: 'RF-2026-ADD22', total_cents: 0 },
@@ -50,8 +65,12 @@ describe('email templates', () => {
     })
     expect(email.subject).toBe('Dances added: Newport Feis')
     expect(email.html).toContain('These dances were added to your entry')
+    expect(email.html).toContain('Dancers who were already entered keep their competitor numbers')
+    expect(email.html).not.toContain('Each dancer keeps')
     expect(email.html).toContain('>214<')
     expect(email.html.match(/>210R</g)).toHaveLength(1)
+    expect(email.html).not.toContain('110H')
+    expect(email.html).not.toContain('Hornpipe')
     // A $0 add-on shows what was paid: nothing
     expect(email.html).toContain('$0.00')
   })
