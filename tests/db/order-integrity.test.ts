@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
+import type { PoolClient } from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { REGISTRATION_COLUMNS } from '@/lib/registration-columns'
 import { REGISTRATION_TRANSITIONS } from '@/lib/registration-states'
@@ -32,6 +33,12 @@ const FULFIL_SQL = `UPDATE registrations SET status = 'paid',
     stripe_payment_intent_id = 'pi_' || replace($1::text, '-', ''), stripe_charge_id = 'ch_' || replace($1::text, '-', ''),
     confirmation_number = 'RF-TEST-' || substr($1::text, 1, 8), paid_at = now(), hold_expires_at = NULL
   WHERE id = $1`
+
+/** _fulfil_order's own order of steps: it names the order in the paid marker, then makes its one paid update */
+async function fulfil(c: PoolClient, id: string, sessionId: string | null): Promise<void> {
+  await c.query(`SELECT set_config('pre_registration.fulfilling_order', $1, true)`, [id])
+  await c.query(FULFIL_SQL, [id, sessionId])
+}
 
 function newSessionId(): string {
   return `cs_${randomUUID().replace(/-/g, '')}`
@@ -675,8 +682,9 @@ describe('what never changes, for any role', () => {
   it('writes a snapshot only while the marker names the order', async () => {
     const { draftId } = await familyWithDraft()
     await claimDraft(draftId)
-    // The order is paid in this transaction, but the marker names a different order
+    // The order is paid in this transaction, but by the snapshot the marker names a different order
     expect(await refused(asService(db.pool, async (c) => {
+      await c.query(`SELECT set_config('pre_registration.fulfilling_order', $1, true)`, [draftId])
       await c.query(
         `UPDATE registrations SET status = 'paid', paid_at = now(), confirmation_number = 'RF-X', stripe_payment_intent_id = 'pi_x',
            stripe_checkout_session_id = 'cs_x'
@@ -693,8 +701,7 @@ describe('what never changes, for any role', () => {
     const { draftId } = await familyWithDraft()
     const sessionId = await awaitingPayment(draftId)
     await asService(db.pool, async (c) => {
-      await c.query(FULFIL_SQL, [draftId, null])
-      await c.query(`SELECT set_config('pre_registration.fulfilling_order', $1, true)`, [draftId])
+      await fulfil(c, draftId, null)
       await c.query(
         `INSERT INTO registration_snapshots (registration_id, snapshot_data) VALUES ($1, '{"confirmed": true}')`,
         [draftId]
@@ -788,14 +795,14 @@ describe('payment evidence', () => {
     const usual = await familyWithDraft()
     const usualSession = await awaitingPayment(usual.draftId)
     expect((await orderRow(usual.draftId)).status).toBe('pending_payment')
-    await asService(db.pool, (c) => c.query(FULFIL_SQL, [usual.draftId, usualSession]))
+    await asService(db.pool, (c) => fulfil(c, usual.draftId, usualSession))
     await expectPaid(usual.draftId, usualSession)
 
     // Paid through the order's own claim before Pay attached the session: draft → paid
     const early = await familyWithDraft()
     await claimDraft(early.draftId)
     const earlySession = newSessionId()
-    await asService(db.pool, (c) => c.query(FULFIL_SQL, [early.draftId, earlySession]))
+    await asService(db.pool, (c) => fulfil(c, early.draftId, earlySession))
     await expectPaid(early.draftId, earlySession)
 
     // A late payment on the order's own claim after expire_checkout: expired → paid
@@ -805,7 +812,7 @@ describe('payment evidence', () => {
     const lateSession = await awaitingPayment(late.draftId)
     await setStatus(late.draftId, 'expired')
     expect((await orderRow(late.draftId)).status).toBe('expired')
-    await asService(db.pool, (c) => c.query(FULFIL_SQL, [late.draftId, lateSession]))
+    await asService(db.pool, (c) => fulfil(c, late.draftId, lateSession))
     await expectPaid(late.draftId, lateSession)
 
     // cancel_order on an order awaiting payment
@@ -838,6 +845,77 @@ describe('payment evidence', () => {
       expect(await refused(asService(db.pool, (c) => c.query(sql, [id]))), sql)
         .toMatch(/a paid order needs its checkout claim, checkout session, payment time and confirmation number/)
       expect(await orderRow(id)).toEqual(before)
+    }
+  })
+
+  it('marks an order paid only while the paid marker names it, after the status table and the evidence', async () => {
+    const pending = await familyWithDraft()
+    const sessionId = await awaitingPayment(pending.draftId)
+    const before = await orderRow(pending.draftId)
+    // Full payment evidence, but no marker, or a marker naming another order
+    for (const marker of [null, randomUUID()]) {
+      expect(await refused(asService(db.pool, async (c) => {
+        if (marker) await c.query(`SELECT set_config('pre_registration.fulfilling_order', $1, true)`, [marker])
+        return c.query(FULFIL_SQL, [pending.draftId, sessionId])
+      }))).toMatch(/an order is marked paid only by its confirmation/)
+      expect(await orderRow(pending.draftId)).toEqual(before)
+    }
+
+    // The marker never lets an illegal move through: cancelled to paid still gets the status table's message
+    const cancelled = await familyWithDraft()
+    await awaitingPayment(cancelled.draftId)
+    await asService(db.pool, (c) => c.query(`UPDATE registrations SET status = 'cancelled' WHERE id = $1`, [cancelled.draftId]))
+    expect(await refused(asService(db.pool, (c) => fulfil(c, cancelled.draftId, null))))
+      .toMatch(/cannot move from cancelled to paid/)
+    expect((await orderRow(cancelled.draftId)).status).toBe('cancelled')
+  })
+
+  it('pays a $0 draft with no claim, session, payment intent or charge, and nothing else at $0', async () => {
+    const listing = await createListing(db.pool)
+    /** A $0 draft, for a family of its own: a family holds one unpaid order per feis */
+    const freeDraft = async () => {
+      const family = await createFamily(db.pool)
+      const dancer = await createDancer(db.pool, family.householdId)
+      return insertOrderDirect(db.pool, family.householdId, listing.listing.id,
+        [{ dancerId: dancer.id, competitionId: listing.competitions[0].id }], { totalCents: 0 })
+    }
+    // What _fulfil_order sends for a $0 order: no Stripe details at all
+    const FREE_SQL = `UPDATE registrations SET status = 'paid', paid_at = now(),
+        confirmation_number = 'RF-FREE-' || substr($1::text, 1, 8), hold_expires_at = NULL
+      WHERE id = $1`
+    const payFree = (id: string, extra = '') => asService(db.pool, async (c) => {
+      await c.query(`SELECT set_config('pre_registration.fulfilling_order', $1, true)`, [id])
+      if (extra) await c.query(extra, [id])
+      return c.query(FREE_SQL, [id])
+    })
+
+    const ok = await freeDraft()
+    await payFree(ok)
+    expect(await orderRow(ok)).toMatchObject({
+      status: 'paid', total_cents: 0, checkout_claim_id: null, stripe_checkout_session_id: null,
+      stripe_payment_intent_id: null, stripe_charge_id: null
+    })
+
+    const refusals: [string, (id: string) => Promise<unknown>][] = [
+      // With a claim (claim_checkout never claims under 50 cents, but the guard holds anyway)
+      ['a claim', (id) => payFree(id, CLAIM_SQL)],
+      // With a payment intent or a charge
+      ['a payment intent', (id) => payFree(id, `UPDATE registrations SET stripe_payment_intent_id = 'pi_x' WHERE id = $1`)],
+      ['a charge', (id) => payFree(id, `UPDATE registrations SET stripe_charge_id = 'ch_x' WHERE id = $1`)],
+      // From expired rather than draft
+      ['expired first', (id) => payFree(id, `UPDATE registrations SET status = 'expired' WHERE id = $1`)],
+      // Without a confirmation number
+      ['no confirmation number', (id) => asService(db.pool, async (c) => {
+        await c.query(`SELECT set_config('pre_registration.fulfilling_order', $1, true)`, [id])
+        return c.query(`UPDATE registrations SET status = 'paid', paid_at = now() WHERE id = $1`, [id])
+      })]
+    ]
+    for (const [label, attempt] of refusals) {
+      const id = await freeDraft()
+      const before = await orderRow(id)
+      expect(await refused(attempt(id)), label)
+        .toMatch(/a free order is paid from a draft, with its payment time and confirmation number and no checkout or payment details/)
+      expect(await orderRow(id), label).toEqual(before)
     }
   })
 

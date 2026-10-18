@@ -29,7 +29,7 @@ function payment(order: DraftOrderFixture, ready: Ready, overrides: Partial<Conf
 }
 
 /** A late payment on an expired order, after the family started a newer one */
-async function lateConflict(newer: 'unclaimed' | 'claimed' | 'paid' = 'unclaimed') {
+async function lateConflict(newer: 'unclaimed' | 'claimed_draft' | 'claimed' | 'paid' = 'unclaimed') {
   const order = await createDraftOrder(db.pool)
   const ready = await readyToPay(db.pool, order)
   await store.expireCheckout({ registrationId: order.registrationId, claimId: ready.claimId, sessionId: ready.sessionId, account: ready.config.account })
@@ -38,14 +38,15 @@ async function lateConflict(newer: 'unclaimed' | 'claimed' | 'paid' = 'unclaimed
   const created = await store.createOrder(order.family.householdId, order.listing.listing.id, payload)
   if (created.status !== 'created') throw new Error('expected a newer order')
   const newerOrder: DraftOrderFixture = { ...order, payload, registrationId: created.registration_id }
+  let newerReady: Ready | null = null
   if (newer !== 'unclaimed') {
-    const newerReady = await readyToPay(db.pool, newerOrder)
+    newerReady = await readyToPay(db.pool, newerOrder, { attach: newer !== 'claimed_draft' })
     if (newer === 'paid') await store.confirmOrderPayment(payment(newerOrder, newerReady))
   }
 
   const result = await store.confirmOrderPayment(payment(order, ready))
   if (result.result !== 'exception') throw new Error('expected a late-payment case')
-  return { order, newerId: created.registration_id, supportRef: result.support_ref }
+  return { order, newerOrder, newerReady, newerId: created.registration_id, supportRef: result.support_ref }
 }
 
 async function statusOf(id: string) {
@@ -87,6 +88,8 @@ describe('payments_admin.confirm_late_payment', () => {
     const { rows: [audit] } = await db.pool.query('SELECT action, note, evidence FROM admin_actions WHERE support_ref = $1', [supportRef])
     expect(audit).toMatchObject({ action: 'confirm_late_payment', note: 'Family paid late; spoke to them by phone' })
     expect(audit.evidence.cancelled_orders).toEqual([newerId])
+    // A first order counted no earlier orders
+    expect(audit.evidence.counted_orders).toEqual([])
 
     // paid_at is when the case was confirmed, after it was recorded, and the numbers were assigned then
     const { rows: [timing] } = await db.pool.query(
@@ -97,23 +100,44 @@ describe('payments_admin.confirm_late_payment', () => {
     expect(timing).toEqual({ paid_at_is_confirmation: true, numbers: 1 })
   })
 
-  it('refuses when another order was taken to checkout, even once that checkout has expired', async () => {
-    const { supportRef, newerId } = await lateConflict('claimed')
-    expect(await refused(confirmLate(supportRef))).toMatch(/was taken to checkout/)
-
-    // The newer order's checkout runs out, but a delayed payment for it could still arrive
-    const { rows: [newer] } = await db.pool.query(
-      'SELECT checkout_claim_id, stripe_checkout_session_id, checkout_config FROM registrations WHERE id = $1', [newerId])
-    await store.expireCheckout({
-      registrationId: newerId, claimId: newer.checkout_claim_id, sessionId: newer.stripe_checkout_session_id,
-      account: newer.checkout_config.account,
-    })
-    expect(await refused(confirmLate(supportRef))).toMatch(/was taken to checkout/)
+  it('refuses while another order is at checkout: a claimed draft, or one awaiting payment', async () => {
+    for (const newer of ['claimed_draft', 'claimed'] as const) {
+      const { order, newerId, supportRef } = await lateConflict(newer)
+      const before = await stateOf([order.registrationId, newerId], supportRef)
+      expect(await refused(confirmLate(supportRef)), newer).toMatch(/is at checkout, so a payment for it may still arrive/)
+      expect(await stateOf([order.registrationId, newerId], supportRef)).toEqual(before)
+    }
   })
 
-  it('refuses when the family paid twice; that case is closed with a refund', async () => {
-    const { supportRef } = await lateConflict('paid')
-    expect(await refused(confirmLate(supportRef))).toMatch(/refund one payment instead/)
+  it('confirms once the newer checkout expired unpaid, and a later payment for it becomes a case (Decision 12)', async () => {
+    const { order, newerOrder, newerReady, newerId, supportRef } = await lateConflict('claimed')
+    if (!newerReady) throw new Error('expected the newer order at checkout')
+    await store.expireCheckout({
+      registrationId: newerId, claimId: newerReady.claimId, sessionId: newerReady.sessionId,
+      account: newerReady.config.account,
+    })
+    const { rows } = await confirmLate(supportRef)
+    expect(rows[0].result).toMatchObject({ result: 'confirmed', cancelled_orders: [] })
+    expect(await statusOf(order.registrationId)).toBe('paid')
+    expect(await statusOf(newerId)).toBe('expired')
+
+    // The newer order was priced without the late one, so its own late payment can't be confirmed by itself
+    const late = await store.confirmOrderPayment(payment(newerOrder, newerReady))
+    expect(late).toMatchObject({ result: 'exception', reason: 'late_payment_conflict' })
+    expect(await statusOf(newerId)).toBe('expired')
+    const { rows: [newerCase] } = await db.pool.query(
+      `SELECT details FROM payment_exceptions WHERE registration_id = $1 AND reason = 'late_payment_conflict'`, [newerId])
+    expect(newerCase.details.why).toEqual([{ rule: 'paid_orders_changed', orders: [order.registrationId] }])
+  })
+
+  it("refuses when another order was paid that this one didn't count; that case is closed with a refund", async () => {
+    const { order, newerId, supportRef } = await lateConflict('paid')
+    expect(await refused(confirmLate(supportRef))).toMatch(/was paid after this order was priced/)
+    expect(await statusOf(order.registrationId)).toBe('expired')
+    expect(await statusOf(newerId)).toBe('paid')
+    await closeCase(supportRef, 'refunded', 're_3QpaidTWICE', 'Daniel: refunded the late payment; the newer order stands')
+    expect((await stateOf([order.registrationId], supportRef)).caseRow)
+      .toMatchObject({ status: 'resolved', resolution: 'refunded' })
   })
 
   it('refuses when the recorded payment does not match the order', async () => {

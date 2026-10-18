@@ -1,6 +1,7 @@
 -- 015_payment_confirmation.sql
 -- Payment hardening, part 4: confirmation is one transaction; anything that doesn't add up becomes
--- a durable case with a reference, an alert and a restricted parent view. Spec §9, §10, §12.
+-- a durable case with a reference, an alert and a restricted parent view. An order that costs nothing
+-- is confirmed through the same steps without Stripe. Spec §6, §9, §10, §12.
 
 SET search_path TO pre_registration, public;
 
@@ -163,9 +164,14 @@ DECLARE
   v_number text := new_confirmation_number();
   v_email text;
 BEGIN
+  -- Every move into paid happens here: 012 lets an order become paid only while this marker names it, and lets
+  -- its snapshot in only in the same transaction. Set before the paid update, cleared after the snapshot.
+  PERFORM set_config('pre_registration.fulfilling_order', p_registration_id::text, true);
+
   -- One UPDATE sets every payment field with the status: 012 needs the claim, session, payment time and
-  -- confirmation number to arrive with 'paid', and freezes them from then on. The snapshot below is
-  -- written in this same transaction, as 012's snapshot guard requires (paid_at = now()).
+  -- confirmation number to arrive with 'paid' (for a $0 order, no claim or session at all), and freezes them
+  -- from then on. The snapshot below is written in this same transaction, as 012's snapshot guard requires
+  -- (paid_at = now()).
   UPDATE registrations
   SET status = 'paid',
       stripe_checkout_session_id = coalesce(stripe_checkout_session_id, p_session_id),
@@ -177,7 +183,6 @@ BEGIN
   WHERE id = p_registration_id
   RETURNING * INTO v_order;
 
-  PERFORM set_config('pre_registration.fulfilling_order', p_registration_id::text, true);
   INSERT INTO registration_snapshots (registration_id, snapshot_data)
   VALUES (p_registration_id, jsonb_build_object(
     'snapshot_version', 1,
@@ -209,6 +214,29 @@ BEGIN
 END;
 $$;
 
+-- Rule (b) of spec §9, "the price still holds": every other paid order of the family for this feis is one this
+-- order's price counted (purchase_snapshot.pricing.prior.orders). Returns the ones it didn't, sorted, so an empty
+-- array means the price holds. An order without a purchase snapshot, or with no prior, counted none.
+CREATE OR REPLACE FUNCTION _uncounted_paid_orders(p_registration_id uuid)
+RETURNS uuid[]
+LANGUAGE sql
+STABLE
+SET search_path = pre_registration, pg_temp
+AS $$
+  SELECT coalesce(array_agg(other.id ORDER BY other.id), '{}')
+  FROM registrations o
+  JOIN registrations other
+    ON other.household_id = o.household_id AND other.feis_listing_id = o.feis_listing_id
+   AND other.id <> o.id AND other.status = 'paid'
+  WHERE o.id = p_registration_id
+    AND other.id::text NOT IN (
+      SELECT counted ->> 'id'
+      FROM jsonb_array_elements(
+        CASE WHEN jsonb_typeof(o.purchase_snapshot -> 'pricing' -> 'prior' -> 'orders') = 'array'
+             THEN o.purchase_snapshot -> 'pricing' -> 'prior' -> 'orders' ELSE '[]'::jsonb END) AS counted
+      WHERE counted ->> 'id' IS NOT NULL)
+$$;
+
 -- ─── Confirmation ───
 CREATE OR REPLACE FUNCTION confirm_order_payment(
   p_registration_id uuid, p_claim_id uuid, p_session_id text, p_account text, p_amount_cents integer,
@@ -225,7 +253,9 @@ DECLARE
   v_reason text;
   v_ref text;
   v_number text;
-  v_constraint text;
+  v_unpaid uuid[];
+  v_uncounted uuid[];
+  v_why jsonb := '[]'::jsonb;
   v_details jsonb := jsonb_build_object('source', p_source, 'claimed_registration_id', p_registration_id);
 BEGIN
   IF p_payment_status IS DISTINCT FROM 'paid' THEN
@@ -254,7 +284,7 @@ BEGIN
     RETURN jsonb_build_object('result', 'exception', 'reason', 'late_payment_conflict', 'support_ref', v_ref);
   END IF;
 
-  -- Every check is against the order's own claim, never the listing's current settings
+  -- Payment checks: every check is against the order's own claim, never the listing's current settings
   v_reason := CASE
     WHEN v_order.checkout_claim_id IS NULL OR v_order.checkout_claim_id IS DISTINCT FROM p_claim_id THEN 'claim_mismatch'
     WHEN v_order.checkout_config ->> 'account' IS DISTINCT FROM p_account THEN 'account_mismatch'
@@ -266,15 +296,43 @@ BEGIN
       SELECT 1 FROM registrations WHERE stripe_payment_intent_id = p_payment_intent_id AND id <> p_registration_id)
       THEN 'payment_reused'
     WHEN v_order.status IN ('cancelled', 'paid') THEN 'order_not_payable'
-    -- Active means what idx_registrations_active_unique (002) means, as in create_order (013): neither
-    -- expired nor cancelled. A live database may still hold 011's confirmed orders, which count too.
-    WHEN v_order.status = 'expired' AND EXISTS (
-      SELECT 1 FROM registrations
-      WHERE household_id = v_household AND feis_listing_id = v_listing AND id <> p_registration_id
-        AND status NOT IN ('expired', 'cancelled'))
-      THEN 'late_payment_conflict'
     ELSE NULL
   END;
+
+  -- State checks (spec §9 step 4)
+  IF v_reason IS NULL THEN
+    -- A family who started again isn't held up by a hold the expiry job hasn't ended yet: their other unpaid
+    -- orders for this feis whose hold has passed expire first, by the same rule as that job and create_order
+    UPDATE registrations
+    SET status = 'expired', updated_at = now()
+    WHERE household_id = v_household AND feis_listing_id = v_listing AND id <> p_registration_id
+      AND status IN ('draft', 'pending_payment') AND hold_expires_at < now();
+
+    -- (a) No other unpaid order. It was priced without this payment, may repeat its dances, and can be paid at any
+    -- moment. Only a late payment is judged by it: an unpaid order is itself the family's one unpaid order.
+    -- Unpaid means neither paid, expired nor cancelled, so a live database's leftover 011 confirmed order counts.
+    IF v_order.status = 'expired' THEN
+      SELECT coalesce(array_agg(id ORDER BY id), '{}') INTO v_unpaid FROM registrations
+      WHERE household_id = v_household AND feis_listing_id = v_listing AND id <> p_registration_id
+        AND status NOT IN ('paid', 'expired', 'cancelled');
+      IF cardinality(v_unpaid) > 0 THEN
+        v_why := v_why || jsonb_build_array(jsonb_build_object('rule', 'unpaid_order_exists', 'orders', to_jsonb(v_unpaid)));
+      END IF;
+    END IF;
+
+    -- (b) The price still holds: every other paid order is one this order counted. Paid orders never change, and
+    -- create_order checked the counted orders under this same lock, so this means none was paid since this order
+    -- was priced. It can't fail while the order is unpaid, but it is checked whatever the status.
+    v_uncounted := _uncounted_paid_orders(p_registration_id);
+    IF cardinality(v_uncounted) > 0 THEN
+      v_why := v_why || jsonb_build_array(jsonb_build_object('rule', 'paid_orders_changed', 'orders', to_jsonb(v_uncounted)));
+    END IF;
+
+    IF jsonb_array_length(v_why) > 0 THEN
+      v_reason := 'late_payment_conflict';
+      v_details := v_details || jsonb_build_object('why', v_why);
+    END IF;
+  END IF;
 
   IF v_reason IS NOT NULL THEN
     v_ref := _record_payment_exception('blocking', v_reason, p_registration_id, p_claim_id, p_event_id, p_account,
@@ -282,21 +340,11 @@ BEGIN
     RETURN jsonb_build_object('result', 'exception', 'reason', v_reason, 'support_ref', v_ref);
   END IF;
 
-  BEGIN
-    v_number := _fulfil_order(p_registration_id, p_session_id, p_payment_intent_id, p_charge_id,
-      p_amount_cents, lower(p_currency));
-  EXCEPTION WHEN unique_violation THEN
-    GET STACKED DIAGNOSTICS v_constraint = CONSTRAINT_NAME;
-    -- Only the one-active-order rule means "a newer order got there first". Any other uniqueness
-    -- failure (numbers, payment reuse) rolls the whole transaction back so Stripe retries it.
-    IF v_constraint IS DISTINCT FROM 'idx_registrations_active_unique' THEN
-      RAISE;
-    END IF;
-    v_ref := _record_payment_exception('blocking', 'late_payment_conflict', p_registration_id, p_claim_id,
-      p_event_id, p_account, p_session_id, p_payment_intent_id, p_amount_cents, p_currency,
-      v_details || jsonb_build_object('caught', v_constraint));
-    RETURN jsonb_build_object('result', 'exception', 'reason', 'late_payment_conflict', 'support_ref', v_ref);
-  END;
+  -- Conflicts are decided only by the checks above, under the lock: since 019 the unpaid-order index covers only
+  -- draft and pending_payment, so moving an order into paid can't hit it. Any uniqueness failure here (numbers,
+  -- payment reuse) rolls the whole transaction back so Stripe retries it.
+  v_number := _fulfil_order(p_registration_id, p_session_id, p_payment_intent_id, p_charge_id,
+    p_amount_cents, lower(p_currency));
 
   -- The money went to the account bound at checkout; flag it if the feis has since switched accounts
   IF (SELECT stripe_account_id FROM feis_listings WHERE id = v_listing) IS DISTINCT FROM p_account THEN
@@ -304,6 +352,69 @@ BEGIN
       p_event_id, p_account, p_session_id, p_payment_intent_id, p_amount_cents, p_currency, v_details);
   END IF;
 
+  RETURN jsonb_build_object('result', 'confirmed', 'confirmation_number', v_number);
+END;
+$$;
+
+-- A $0 order (typically an add-on once the family max is reached) is confirmed by the database through the same
+-- all-or-nothing steps as a payment, with no Stripe (spec §6 step 3a). It never claims a checkout: claim_checkout
+-- refuses any total under 50 cents.
+CREATE OR REPLACE FUNCTION confirm_free_order(p_registration_id uuid, p_household_id uuid)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pre_registration, pg_temp
+AS $$
+DECLARE
+  v_listing uuid;
+  v_order registrations%ROWTYPE;
+  v_listing_row feis_listings%ROWTYPE;
+  v_uncounted uuid[];
+  v_number text;
+BEGIN
+  SELECT feis_listing_id INTO v_listing FROM registrations
+  WHERE id = p_registration_id AND household_id = p_household_id;
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object('result', 'not_found');
+  END IF;
+
+  PERFORM lock_household_feis(p_household_id, v_listing);
+  SELECT * INTO v_order FROM registrations WHERE id = p_registration_id FOR UPDATE;
+
+  IF v_order.status = 'paid' THEN
+    RETURN jsonb_build_object('result', 'already_confirmed', 'confirmation_number', v_order.confirmation_number);
+  END IF;
+  IF v_order.status <> 'draft' OR v_order.total_cents <> 0 OR v_order.checkout_claim_id IS NOT NULL
+     OR v_order.hold_expires_at IS NULL OR v_order.hold_expires_at <= now() THEN
+    RETURN jsonb_build_object('result', 'not_confirmable', 'status', v_order.status,
+      'hold_expired', v_order.hold_expires_at IS NOT NULL AND v_order.hold_expires_at <= now());
+  END IF;
+
+  -- The organiser can stop new entries right up to this moment, which is a free order's boundary in place of a
+  -- claim (spec §5). No Stripe account and no card minimum: nothing is charged. FOR UPDATE, not FOR SHARE as in
+  -- claim_checkout: _fulfil_order then locks the listing FOR UPDATE for numbering, and upgrading from a share
+  -- lock would deadlock two $0 confirmations at one feis.
+  SELECT * INTO v_listing_row FROM feis_listings WHERE id = v_listing FOR UPDATE;
+  IF v_listing_row.status <> 'open' THEN
+    RETURN jsonb_build_object('result', 'blocked', 'reason', 'organiser_stopped');
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM registration_entries e
+    JOIN feis_competitions c ON c.id = e.feis_competition_id
+    WHERE e.registration_id = p_registration_id AND NOT c.enabled
+  ) THEN
+    RETURN jsonb_build_object('result', 'blocked', 'reason', 'competition_unavailable');
+  END IF;
+
+  -- Rule (b) of §9. It can't fail while the order is the family's one unpaid order, but it is checked anyway. No
+  -- money moved, so there is no case: the draft is cancelled and the family starts again
+  v_uncounted := _uncounted_paid_orders(p_registration_id);
+  IF cardinality(v_uncounted) > 0 THEN
+    UPDATE registrations SET status = 'cancelled' WHERE id = p_registration_id;
+    RETURN jsonb_build_object('result', 'paid_orders_changed', 'orders', to_jsonb(v_uncounted));
+  END IF;
+
+  v_number := _fulfil_order(p_registration_id, NULL, NULL, NULL, 0, 'usd');
   RETURN jsonb_build_object('result', 'confirmed', 'confirmation_number', v_number);
 END;
 $$;
@@ -367,10 +478,13 @@ REVOKE ALL ON FUNCTION new_support_ref() FROM PUBLIC, anon, authenticated, servi
 REVOKE ALL ON FUNCTION _record_payment_exception(text, text, uuid, uuid, text, text, text, text, integer, text, jsonb)
   FROM PUBLIC, anon, authenticated, service_role;
 REVOKE ALL ON FUNCTION _fulfil_order(uuid, text, text, text, integer, text) FROM PUBLIC, anon, authenticated, service_role;
+REVOKE ALL ON FUNCTION _uncounted_paid_orders(uuid) FROM PUBLIC, anon, authenticated, service_role;
+REVOKE ALL ON FUNCTION confirm_free_order(uuid, uuid) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION confirm_order_payment(uuid, uuid, text, text, integer, text, text, text, text, text, text)
   FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION record_payment_failure(uuid, uuid, text, text, text) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION get_my_payment_reviews(uuid) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION confirm_order_payment(uuid, uuid, text, text, integer, text, text, text, text, text, text) TO service_role;
 GRANT EXECUTE ON FUNCTION record_payment_failure(uuid, uuid, text, text, text) TO service_role;
+GRANT EXECUTE ON FUNCTION confirm_free_order(uuid, uuid) TO service_role;
 GRANT EXECUTE ON FUNCTION get_my_payment_reviews(uuid) TO authenticated;

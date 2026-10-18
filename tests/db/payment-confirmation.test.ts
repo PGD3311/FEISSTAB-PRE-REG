@@ -80,7 +80,7 @@ async function paymentTables() {
   return rows[0]
 }
 
-/** The late payment conflict case on an order, found by the explicit check or by the relabel */
+/** The details of the one late payment conflict case on an order: why it is a conflict, rule by rule */
 async function conflictDetails(registrationId: string) {
   const { rows } = await db.pool.query(
     `SELECT details FROM payment_exceptions
@@ -200,9 +200,11 @@ describe('confirm_order_payment', () => {
     const result = await store.confirmOrderPayment(payment(order, ready))
     expect(result).toMatchObject({ result: 'exception', reason: 'late_payment_conflict' })
     expect((await orderRow(order.registrationId)).status).toBe('expired')
-    if (newer.status === 'created') expect((await orderRow(newer.registration_id)).status).toBe('draft')
-    // The explicit check found it: only the unique index's relabel adds `caught`
-    expect(await conflictDetails(order.registrationId)).not.toHaveProperty('caught')
+    if (newer.status !== 'created') return
+    expect((await orderRow(newer.registration_id)).status).toBe('draft')
+    expect((await conflictDetails(order.registrationId)).why).toEqual([
+      { rule: 'unpaid_order_exists', orders: [newer.registration_id] }
+    ])
   })
 
   it('records a case, and keeps the new draft, when Submit replaced an order whose hold had passed', async () => {
@@ -225,8 +227,9 @@ describe('confirm_order_payment', () => {
     const result = await store.confirmOrderPayment(payment(order, ready))
     if (result.result !== 'exception') throw new Error(`expected a case, got ${result.result}`)
     expect(result.reason).toBe('late_payment_conflict')
-    // The explicit check found it: only the unique index's relabel adds `caught`
-    expect(await conflictDetails(order.registrationId)).not.toHaveProperty('caught')
+    expect((await conflictDetails(order.registrationId)).why).toEqual([
+      { rule: 'unpaid_order_exists', orders: [newer.registration_id] }
+    ])
 
     expect(await orderRow(order.registrationId)).toMatchObject({ status: 'expired', paid_at: null, confirmation_number: null })
     expect(await orderRow(newer.registration_id)).toMatchObject({ status: 'draft' })
@@ -313,12 +316,16 @@ describe('confirm_order_payment', () => {
           buildPayload({ listing: order.listing, dancers: order.dancers, entries: order.entries })),
         store.confirmOrderPayment(payment(order, ready)),
       ])
-      const confirmedWins = confirmed.result === 'confirmed' && created.status === 'refused'
+      // Submit read no paid order, so once the late payment is confirmed its price no longer holds
+      const confirmedWins = confirmed.result === 'confirmed' && created.status === 'refused' &&
+        created.reason === 'paid_orders_changed'
       const submitWins = created.status === 'created' && confirmed.result === 'exception' && confirmed.reason === 'late_payment_conflict'
       expect(confirmedWins || submitWins).toBe(true)
-      // Both take the household-and-feis lock, so the explicit check sees a Submit that won
-      if (submitWins) {
-        expect(await conflictDetails(order.registrationId)).not.toHaveProperty('caught')
+      // Both take the household-and-feis lock, so the late payment sees a Submit that won
+      if (submitWins && created.status === 'created') {
+        expect((await conflictDetails(order.registrationId)).why).toEqual([
+          { rule: 'unpaid_order_exists', orders: [created.registration_id] }
+        ])
       }
     }
   })
@@ -548,11 +555,11 @@ describe('the unique keys confirmation relies on (migration 012)', () => {
     await readyToPay(db.pool, order)
     // _fulfil_order's steps with the snapshot written twice: the guard lets both through, so the index decides
     const message = await refused(asService(db.pool, async (c) => {
+      await c.query(`SELECT set_config('pre_registration.fulfilling_order', $1, true)`, [order.registrationId])
       await c.query(
         `UPDATE registrations SET status = 'paid', paid_at = now(), confirmation_number = 'RF-TEST-TWICE',
            stripe_payment_intent_id = 'pi_twice'
          WHERE id = $1`, [order.registrationId])
-      await c.query(`SELECT set_config('pre_registration.fulfilling_order', $1, true)`, [order.registrationId])
       await c.query(`INSERT INTO registration_snapshots (registration_id, snapshot_data) VALUES ($1, '{}')`, [order.registrationId])
       return c.query(`INSERT INTO registration_snapshots (registration_id, snapshot_data) VALUES ($1, '{}')`, [order.registrationId])
     }))

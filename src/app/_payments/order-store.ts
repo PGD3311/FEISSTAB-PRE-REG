@@ -8,9 +8,23 @@ export type CreateOrderResult =
   | { status: 'created'; registration_id: string; hold_expires_at: string }
   | {
       status: 'refused'
-      reason: 'listing_closed' | 'outside_window' | 'active_order_exists'
+      reason:
+        | 'listing_closed'
+        | 'outside_window'
+        | 'amount_too_small'
+        | 'unpaid_order_exists'
+        | 'paid_orders_changed'
+        | 'already_entered'
       registration_id?: string
     }
+
+/** confirm_free_order: a $0 draft confirmed without Stripe (spec §6 step 3a) */
+export type FreeOrderResult =
+  | { result: 'confirmed' | 'already_confirmed'; confirmation_number: string }
+  | { result: 'blocked'; reason: 'organiser_stopped' | 'competition_unavailable' }
+  | { result: 'paid_orders_changed'; orders: string[] }
+  | { result: 'not_confirmable'; status: RegistrationStatus; hold_expired: boolean }
+  | { result: 'not_found' }
 
 /** An order as Pay, Cancel and the sync see it (get_order_for_checkout). */
 export interface CheckoutOrder {
@@ -131,6 +145,13 @@ export function createOrderStore(rpc: RpcCaller) {
         p_claim_id: input.claimId,
         p_config: input.config
       })) as ClaimResult
+    },
+
+    async confirmFreeOrder(registrationId: string, householdId: string): Promise<FreeOrderResult> {
+      return (await rpc('confirm_free_order', {
+        p_registration_id: registrationId,
+        p_household_id: householdId
+      })) as FreeOrderResult
     },
 
     async attachCheckoutSession(

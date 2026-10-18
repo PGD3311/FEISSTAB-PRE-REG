@@ -34,6 +34,9 @@ ALTER TABLE registrations ADD CONSTRAINT registrations_unpaid_needs_hold
   CHECK (status NOT IN ('draft', 'pending_payment') OR hold_expires_at IS NOT NULL);
 
 -- ─── Uniqueness that confirmation relies on ───
+-- One unpaid order per family per feis is 019's idx_registrations_active_unique (draft and pending_payment
+-- only). 012–017 never create or drop it, so they apply the same before 019 (live) or after it (the tests);
+-- 020 checks it is 019's.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_registrations_checkout_session_unique
   ON registrations (stripe_checkout_session_id) WHERE stripe_checkout_session_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_registrations_payment_intent_unique
@@ -197,12 +200,28 @@ BEGIN
     RAISE EXCEPTION 'an order cannot move from % to %', OLD.status, NEW.status USING ERRCODE = '42501';
   END IF;
 
-  -- Payment evidence, checked after the status table so an illegal move still says so
-  IF NEW.status = 'paid' AND OLD.status IS DISTINCT FROM 'paid'
-     AND (NEW.checkout_claim_id IS NULL OR NEW.stripe_checkout_session_id IS NULL
-          OR NEW.paid_at IS NULL OR NEW.confirmation_number IS NULL) THEN
-    RAISE EXCEPTION 'a paid order needs its checkout claim, checkout session, payment time and confirmation number'
-      USING ERRCODE = '42501';
+  -- Payment evidence, checked after the status table so an illegal move still says so. An order above 0 is
+  -- paid through its own checkout claim and session. An order that costs nothing is confirmed without Stripe
+  -- (confirm_free_order, migration 015): straight from draft, with no claim, session, payment intent or charge.
+  IF NEW.status = 'paid' AND OLD.status IS DISTINCT FROM 'paid' THEN
+    IF NEW.total_cents > 0
+       AND (NEW.checkout_claim_id IS NULL OR NEW.stripe_checkout_session_id IS NULL
+            OR NEW.paid_at IS NULL OR NEW.confirmation_number IS NULL) THEN
+      RAISE EXCEPTION 'a paid order needs its checkout claim, checkout session, payment time and confirmation number'
+        USING ERRCODE = '42501';
+    END IF;
+    IF NEW.total_cents = 0
+       AND (OLD.status <> 'draft' OR NEW.paid_at IS NULL OR NEW.confirmation_number IS NULL
+            OR NEW.checkout_claim_id IS NOT NULL OR NEW.stripe_checkout_session_id IS NOT NULL
+            OR NEW.stripe_payment_intent_id IS NOT NULL OR NEW.stripe_charge_id IS NOT NULL) THEN
+      RAISE EXCEPTION 'a free order is paid from a draft, with its payment time and confirmation number and no checkout or payment details'
+        USING ERRCODE = '42501';
+    END IF;
+    -- Every move into paid happens inside _fulfil_order (015), which names the order in this marker before its
+    -- paid update. Checked last, so a move the status table or the evidence refuses still says why.
+    IF current_setting('pre_registration.fulfilling_order', true) IS DISTINCT FROM NEW.id::text THEN
+      RAISE EXCEPTION 'an order is marked paid only by its confirmation' USING ERRCODE = '42501';
+    END IF;
   END IF;
 
   IF NEW.status = 'pending_payment' AND OLD.status IS DISTINCT FROM 'pending_payment'

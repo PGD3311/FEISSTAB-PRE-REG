@@ -20,6 +20,13 @@ export function tooSmallToCharge(totalCents: number): boolean {
   return totalCents > 0 && belowCardMinimum(totalCents)
 }
 
+/**
+ * create_order's paid_orders_changed: a paid order appeared, or changed what this one should count,
+ * after Submit read them. Pay says the same when a $0 order's counted orders no longer hold.
+ */
+export const PAID_ORDERS_CHANGED_MESSAGE =
+  'Your entries for this feis changed while you were choosing. Reload this page and check the total.'
+
 export type CheckoutBlock =
   'organiser_stopped' | 'competition_unavailable' | 'stripe_not_connected' | 'amount_too_small'
 

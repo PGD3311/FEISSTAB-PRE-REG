@@ -64,23 +64,23 @@ async function runExpiryJob() {
   await db.pool.query(rows[0].command)
 }
 
-/** An order of one 20-cent dance: create_order takes it, but no card payment can be that small */
-async function createTinyOrder(): Promise<DraftOrderFixture> {
+/** An order of one free dance: create_order takes it, and Pay confirms it without a card checkout */
+async function createFreeOrder(): Promise<DraftOrderFixture> {
   const created = await createListing(db.pool)
   await db.pool.query(
-    'UPDATE fee_schedules SET event_fee_cents = 0, solo_fee_cents = 20 WHERE feis_listing_id = $1',
+    'UPDATE fee_schedules SET event_fee_cents = 0, solo_fee_cents = 0 WHERE feis_listing_id = $1',
     [created.listing.id]
   )
   const listing = {
     ...created,
-    feeSchedule: { ...created.feeSchedule, event_fee_cents: 0, solo_fee_cents: 20 }
+    feeSchedule: { ...created.feeSchedule, event_fee_cents: 0, solo_fee_cents: 0 }
   }
   const family = await createFamily(db.pool)
   const dancer = await createDancer(db.pool, family.householdId)
   const entries = [{ dancerId: dancer.id, competitionId: listing.competitions[0].id }]
   const payload = buildPayload({ listing, dancers: [dancer], entries })
   const result = await store.createOrder(family.householdId, listing.listing.id, payload)
-  if (result.status !== 'created') throw new Error(`Tiny order was refused: ${result.reason}`)
+  if (result.status !== 'created') throw new Error(`Free order was refused: ${result.reason}`)
   const registrationId = result.registration_id
   return { family, listing, dancers: [dancer], entries, payload, registrationId }
 }
@@ -282,9 +282,9 @@ describe('claim_checkout', () => {
     expect((await orderRow(order.registrationId)).checkout_claim_id).toBeNull()
   })
 
-  it('starts no checkout for an order below the 50-cent card minimum', async () => {
-    const order = await createTinyOrder()
-    expect(order.payload.total_cents).toBeLessThan(50)
+  it('starts no checkout for a $0 order, which is confirmed without a card', async () => {
+    const order = await createFreeOrder()
+    expect(order.payload.total_cents).toBe(0)
     expect(await claim(order)).toEqual({ result: 'blocked', reason: 'amount_too_small' })
     expect((await orderRow(order.registrationId)).checkout_claim_id).toBeNull()
   })

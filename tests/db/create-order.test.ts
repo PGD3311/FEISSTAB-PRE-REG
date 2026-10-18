@@ -104,7 +104,7 @@ describe('create_order', () => {
     expect(entries[0]).toEqual({ n: 2, fees: 3000 })
   })
 
-  it('refuses a second active order for the same family and feis', async () => {
+  it('refuses a second unpaid order for the same family and feis', async () => {
     const first = await createDraftOrder(db.pool)
     const again = await store.createOrder(
       first.family.householdId,
@@ -113,9 +113,43 @@ describe('create_order', () => {
     )
     expect(again).toEqual({
       status: 'refused',
-      reason: 'active_order_exists',
+      reason: 'unpaid_order_exists',
       registration_id: first.registrationId
     })
+  })
+
+  it('refuses a total of 1 to 49 cents, and creates totals of 0 and 50 cents', async () => {
+    /** A one-dance order whose total is exactly `cents`: no family fee, and a dance at that price */
+    async function orderCosting(cents: number) {
+      const family = await createFamily(db.pool)
+      const created = await createListing(db.pool)
+      const listing = {
+        ...created,
+        feeSchedule: { ...created.feeSchedule, event_fee_cents: 0, solo_fee_cents: cents }
+      }
+      const dancer = await createDancer(db.pool, family.householdId)
+      const payload = buildPayload({
+        listing,
+        dancers: [dancer],
+        entries: [{ dancerId: dancer.id, competitionId: listing.competitions[0].id }]
+      })
+      expect(payload.total_cents).toBe(cents)
+      return {
+        family,
+        result: await store.createOrder(family.householdId, listing.listing.id, payload)
+      }
+    }
+
+    for (const cents of [1, 20, 49]) {
+      const { family, result } = await orderCosting(cents)
+      expect(result, `${cents} cents`).toEqual({ status: 'refused', reason: 'amount_too_small' })
+      expect(await createdFor(family.householdId)).toEqual({ orders: 0, entries: 0 })
+    }
+    for (const cents of [0, 50]) {
+      const { family, result } = await orderCosting(cents)
+      expect(result.status, `${cents} cents`).toBe('created')
+      expect(await createdFor(family.householdId)).toEqual({ orders: 1, entries: 1 })
+    }
   })
 
   it('expires a draft whose hold has passed instead of being blocked by it', async () => {
@@ -162,7 +196,7 @@ describe('create_order', () => {
     ])
   })
 
-  it('refuses while a 011 confirmed order is active, as the unique index does', async () => {
+  it('refuses while a 011 confirmed order is held, rather than pricing around it', async () => {
     const order = await createDraftOrder(db.pool)
     const statusCheck = (statuses: string) =>
       `ALTER TABLE registrations DROP CONSTRAINT registrations_status_check;
@@ -179,7 +213,7 @@ describe('create_order', () => {
         await store.createOrder(order.family.householdId, order.listing.listing.id, order.payload)
       ).toEqual({
         status: 'refused',
-        reason: 'active_order_exists',
+        reason: 'unpaid_order_exists',
         registration_id: order.registrationId
       })
       expect(await ordersFor(order.family.householdId)).toBe(1)

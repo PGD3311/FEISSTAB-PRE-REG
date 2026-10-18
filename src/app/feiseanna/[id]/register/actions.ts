@@ -3,7 +3,11 @@
 import { headers } from 'next/headers'
 import { createClient, getSignedInUser } from '@/lib/supabase/server'
 import { createServiceClient, type ServiceClient } from '@/lib/supabase/service'
-import { belowCardMinimum, CHECKOUT_BLOCK_MESSAGES } from '@/lib/engine/checkout-policy'
+import {
+  belowCardMinimum,
+  CHECKOUT_BLOCK_MESSAGES,
+  PAID_ORDERS_CHANGED_MESSAGE
+} from '@/lib/engine/checkout-policy'
 import { clientIpFrom } from '@/lib/engine/consent'
 import {
   validateOrderRequest,
@@ -38,7 +42,12 @@ type RefusalReason = Extract<CreateOrderResult, { status: 'refused' }>['reason']
 const REFUSAL_MESSAGES: Record<RefusalReason, string> = {
   listing_closed: 'Registration for this feis is not open.',
   outside_window: 'Registration for this feis has closed.',
-  active_order_exists: 'You already have entries for this feis. Reload this page to see them.'
+  amount_too_small: CHECKOUT_BLOCK_MESSAGES.amount_too_small,
+  unpaid_order_exists:
+    'You already have entries waiting for payment at this feis. Reload this page to see them.',
+  already_entered:
+    'One of these dances is already entered and paid for. Reload this page to see your entries.',
+  paid_orders_changed: PAID_ORDERS_CHANGED_MESSAGE
 }
 
 type HouseholdContext =

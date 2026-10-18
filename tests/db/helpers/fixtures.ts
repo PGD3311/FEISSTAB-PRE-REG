@@ -1,13 +1,22 @@
 import { randomUUID } from 'node:crypto'
 import type { Pool } from 'pg'
-import type { Dancer, FeeSchedule, FeisCompetition, FeisListing, Level } from '@/lib/types/feis-listing'
+import type {
+  Dancer,
+  FeeSchedule,
+  FeisCompetition,
+  FeisListing,
+  Level,
+  PaidOrder
+} from '@/lib/types/feis-listing'
 import { createOrderStore } from '@/app/_payments/order-store'
 import { buildCheckoutConfig, type CheckoutConfig } from '@/lib/engine/checkout-config'
 import { ageCutoffDateFor, type RequestedEntry } from '@/lib/engine/order-validation'
 import {
   buildCreateOrderPayload,
+  paidOrdersFrom,
   priceOrder,
-  type CreateOrderPayload
+  type CreateOrderPayload,
+  type PaidOrderRow
 } from '@/lib/engine/purchase-snapshot'
 import { pgRpc } from './pg-rpc'
 
@@ -121,14 +130,16 @@ export async function createDancer(
  * Test-only: writes an order the way create_order will (Task 6), using the same trigger markers.
  * A paid order is then claimed, given a session and paid the way claim_checkout,
  * attach_checkout_session and _fulfil_order will (Tasks 8 and 9). The real app never does this.
+ * `totalCents: 0` makes a $0 draft, with no event or application fee.
  */
 export async function insertOrderDirect(
   pool: Pool,
   householdId: string,
   listingId: string,
   entries: { dancerId: string; competitionId: string }[],
-  opts: { status?: 'draft' | 'paid' } = {}
+  opts: { status?: 'draft' | 'paid'; totalCents?: number } = {}
 ): Promise<string> {
+  const total = opts.totalCents ?? 4000
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
@@ -137,8 +148,8 @@ export async function insertOrderDirect(
     await client.query(
       `INSERT INTO registrations (id, feis_listing_id, household_id, status, total_cents, application_fee_cents,
          event_fee_cents, hold_expires_at, purchase_snapshot)
-       VALUES ($1, $2, $3, 'draft', 4000, 200, 1000, now() + interval '30 minutes', '{"version": 1}')`,
-      [id, listingId, householdId]
+       VALUES ($1, $2, $3, 'draft', $4, $5, $6, now() + interval '30 minutes', '{"version": 1}')`,
+      [id, listingId, householdId, total, total === 0 ? 0 : 200, total === 0 ? 0 : 1000]
     )
     for (const entry of entries) {
       await client.query(
@@ -162,13 +173,14 @@ export async function insertOrderDirect(
          WHERE id = $1`,
         [id]
       )
+      // _fulfil_order's order of steps: the paid marker first (012 refuses a move into paid without it)
+      await client.query(`SELECT set_config('pre_registration.fulfilling_order', $1, true)`, [id])
       await client.query(
         `UPDATE registrations SET status = 'paid', paid_at = now(), confirmation_number = 'RF-TEST-' || substr($1::text, 1, 5),
            stripe_payment_intent_id = 'pi_' || replace($1::text, '-', ''), hold_expires_at = NULL
          WHERE id = $1`,
         [id]
       )
-      await client.query(`SELECT set_config('pre_registration.fulfilling_order', $1, true)`, [id])
       await client.query(
         `INSERT INTO registration_snapshots (registration_id, snapshot_data) VALUES ($1, '{"test": true}')`,
         [id]
@@ -184,11 +196,79 @@ export async function insertOrderDirect(
   }
 }
 
+/**
+ * Test-only: a paid order as main's live code made them before payment hardening: no purchase snapshot, no
+ * snapshot row, and for a $0 one no claim or session. Written as the superuser with the order triggers off for
+ * this one transaction (session_replication_role = replica), since no function makes such an order any more.
+ */
+export async function insertLegacyPaidOrder(
+  pool: Pool,
+  householdId: string,
+  listingId: string,
+  entries: { dancerId: string; competitionId: string; baseFeeCents?: number; lateFeeCents?: number }[],
+  opts: { eventFeeCents?: number } = {}
+): Promise<string> {
+  const id = randomUUID()
+  const eventFee = opts.eventFeeCents ?? 1000
+  const total = eventFee + entries.reduce((sum, e) => sum + (e.baseFeeCents ?? 1500) + (e.lateFeeCents ?? 0), 0)
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    await client.query('SET LOCAL session_replication_role = replica')
+    await client.query(
+      `INSERT INTO registrations (id, feis_listing_id, household_id, status, total_cents, application_fee_cents,
+         event_fee_cents, confirmation_number, paid_at)
+       VALUES ($1, $2, $3, 'paid', $4, 0, $5, $6, now())`,
+      [id, listingId, householdId, total, eventFee, `FT-2026-${id.slice(0, 4).toUpperCase()}`]
+    )
+    for (const entry of entries) {
+      await client.query(
+        `INSERT INTO registration_entries (registration_id, dancer_id, feis_competition_id, fee_category,
+           base_fee_cents, late_fee_cents)
+         VALUES ($1, $2, $3, 'solo', $4, $5)`,
+        [id, entry.dancerId, entry.competitionId, entry.baseFeeCents ?? 1500, entry.lateFeeCents ?? 0]
+      )
+    }
+    await client.query('COMMIT')
+    return id
+  } catch (err) {
+    await client.query('ROLLBACK')
+    throw err
+  } finally {
+    client.release()
+  }
+}
+
+/** The family's paid orders for a feis as Submit reads them, counted by the engine's paidOrdersFrom */
+export async function paidOrdersOf(
+  pool: Pool,
+  householdId: string,
+  listing: ListingFixture
+): Promise<PaidOrder[]> {
+  const { rows } = await pool.query(
+    `SELECT r.id, r.confirmation_number, r.event_fee_cents, r.purchase_snapshot,
+       coalesce((SELECT jsonb_agg(jsonb_build_object('dancer_id', e.dancer_id,
+           'feis_competition_id', e.feis_competition_id, 'base_fee_cents', e.base_fee_cents,
+           'late_fee_cents', e.late_fee_cents))
+         FROM registration_entries e WHERE e.registration_id = r.id), '[]') AS registration_entries
+     FROM registrations r
+     WHERE r.household_id = $1 AND r.feis_listing_id = $2 AND r.status = 'paid'`,
+    [householdId, listing.listing.id]
+  )
+  const { rows: competitions } = await pool.query(
+    'SELECT id, exclude_from_family_cap FROM feis_competitions WHERE feis_listing_id = $1',
+    [listing.listing.id]
+  )
+  return paidOrdersFrom(rows as PaidOrderRow[], competitions)
+}
+
 export function buildPayload(input: {
   listing: ListingFixture
   dancers: FixtureDancer[]
   entries: RequestedEntry[]
   now?: Date
+  /** The family's paid orders for the feis, for an add-on */
+  paidOrders?: PaidOrder[]
 }): CreateOrderPayload {
   const now = input.now ?? new Date()
   const priced = priceOrder({
@@ -199,7 +279,8 @@ export function buildPayload(input: {
     dancers: input.dancers,
     competitions: input.listing.competitions,
     entries: input.entries,
-    feeSchedule: input.listing.feeSchedule
+    feeSchedule: input.listing.feeSchedule,
+    paidOrders: input.paidOrders
   })
   // 5% in whole basis points: $40.00 gives an application fee of 200 cents
   return buildCreateOrderPayload(priced, { applicationFeePercent: 5, consentIp: '203.0.113.7' })
@@ -212,6 +293,26 @@ export interface DraftOrderFixture {
   entries: RequestedEntry[]
   payload: CreateOrderPayload
   registrationId: string
+}
+
+/**
+ * A family's next order for a feis, priced on top of its paid orders as Submit prices it, and made through
+ * create_order. The family and its dancers come from an earlier fixture.
+ */
+export async function createAddOnOrder(
+  pool: Pool,
+  base: { family: Family; listing: ListingFixture; dancers: FixtureDancer[] },
+  entries: RequestedEntry[]
+): Promise<DraftOrderFixture> {
+  const paidOrders = await paidOrdersOf(pool, base.family.householdId, base.listing)
+  const payload = buildPayload({ listing: base.listing, dancers: base.dancers, entries, paidOrders })
+  const result = await createOrderStore(pgRpc(pool)).createOrder(
+    base.family.householdId,
+    base.listing.listing.id,
+    payload
+  )
+  if (result.status !== 'created') throw new Error(`Add-on order was refused: ${result.reason}`)
+  return { ...base, entries, payload, registrationId: result.registration_id }
 }
 
 /** A real draft order made through create_order: Novice Reel and Slip Jig, one dancer, $40.00. */
@@ -274,4 +375,24 @@ export async function readyToPay(
   const sessionId = `cs_${claimId.replace(/-/g, '').slice(0, 12)}`
   if (opts.attach !== false) await store.attachCheckoutSession(order.registrationId, claimId, sessionId)
   return { claimId, config, sessionId }
+}
+
+/** Pays an order the way Pay and the webhook do: claim, attach, then confirm_order_payment */
+export async function payOrder(pool: Pool, order: DraftOrderFixture): Promise<string> {
+  const ready = await readyToPay(pool, order)
+  const result = await createOrderStore(pgRpc(pool)).confirmOrderPayment({
+    registrationId: order.registrationId,
+    claimId: ready.claimId,
+    sessionId: ready.sessionId,
+    account: ready.config.account,
+    amountCents: order.payload.total_cents,
+    currency: 'usd',
+    paymentStatus: 'paid',
+    paymentIntentId: `pi_${ready.sessionId}`,
+    chargeId: null,
+    eventId: `evt_${randomUUID()}`,
+    source: 'webhook'
+  })
+  if (result.result !== 'confirmed') throw new Error(`expected a confirmation, got ${result.result}`)
+  return result.confirmation_number!
 }
