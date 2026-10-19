@@ -286,7 +286,7 @@ export async function createCheckoutSession(registrationId: string): Promise<Pay
     const result = await pay(checkoutDeps(), { registrationId, householdId: ctx.household.id })
     if (result.kind === 'paid') {
       // A confirmation queues its email. Send it now as a best effort, as the webhook does: a $0 order
-      // has no webhook, and the 5-minute job retries anything that fails
+      // has no webhook. Anything that fails waits for the next payment: the email job is off for now
       after(() =>
         processNotifications(notificationDeps(), { limit: 5 }).catch((err) =>
           console.error('[NOTIFICATIONS] immediate send failed:', err)

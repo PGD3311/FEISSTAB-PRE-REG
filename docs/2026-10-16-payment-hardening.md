@@ -15554,9 +15554,9 @@ git commit -q -m "docs: runbook and project rules for add-on orders, \$0 orders 
 
 **Runs after Tasks 17–21.** Spec revision 5 brought add-on orders and $0 orders into this work before go-live. Tasks 17–21 build them, starting from a merge of `main`, so this branch has 019 as live does. This task then rolls out 012–017 and 020 together; live already has 019.
 
-This task touches the live project. Steps 3, 4, 7 and 8 need Daniel's go-ahead at the time: Step 3 copies the live data to this machine, Step 4 sets Vercel settings, Step 7 applies the migrations, pushes to `main` (which deploys) and adds the new Stripe webhook events, and Step 8 schedules a job. Ask before each one. Don't treat approval of this plan as approval for them.
+This task touches the live project. Steps 3, 4, 7 and 8 need Daniel's go-ahead at the time: Step 3 copies the live data to this machine, Step 4 sets Vercel settings, Step 7 applies the migrations, pushes to `main` (which deploys) and adds the new Stripe webhook events, and Step 8 is now a read-only dry-read (the email job is deferred). Ask before each one. Don't treat approval of this plan as approval for them.
 
-**Email is on at go-live (Daniel, 2026-10-17: "emails are live now").** RunFeis's sending domain is verified in Resend, and Vercel already has `EMAIL_FROM` = `RunFeis <entries@runfeis.com>`, `RESEND_API_KEY` and `NEXT_PUBLIC_BASE_URL` = `https://www.runfeis.com`. Step 4 sets `PAYMENTS_ALERT_EMAIL` to Daniel's address only for now, with Steve added later (Daniel, 2026-10-18), so confirmations and payment-case alerts go out from the first order. Step 8 checks the email job isn't paused, and Step 12 confirms the first real email arrives.
+**Email is on at go-live (Daniel, 2026-10-17: "emails are live now").** RunFeis's sending domain is verified in Resend, and Vercel already has `EMAIL_FROM` = `RunFeis <entries@runfeis.com>`, `RESEND_API_KEY` and `NEXT_PUBLIC_BASE_URL` = `https://www.runfeis.com`. Step 4 sets `PAYMENTS_ALERT_EMAIL` to Daniel's address only for now, with Steve added later (Daniel, 2026-10-18), so confirmations and payment-case alerts go out from the first order. The email job (`process-notifications`) stays off until several families are signing up (Daniel, 2026-10-19): emails send straight away after Pay and after Stripe's notice, and leftovers wait for the next payment (runbook §4 and §5). Step 12 confirms the first real email arrives.
 
 **Files:**
 - Create: `supabase/checks/payment-hardening-live-check.sql`
@@ -16477,7 +16477,7 @@ For project "project-f06v2" (team cgds-projects), in Production and Preview (Set
 - No fee setting is needed: RunFeis's fee is a flat $6 code constant (`RUNFEIS_FEE_CENTS`), once per family per feis, taken from the organiser's payout as Stripe's application fee. The family's total doesn't change. Nothing reads `STRIPE_APPLICATION_FEE_PERCENT` any more, so don't set it, and Step 7 doesn't wait on it.
 - `NEXT_PUBLIC_BASE_URL`: the site's real URL, with `https://` and no trailing slash. For Preview, the URL previews are tested on, never `localhost`. It's inlined at build time, and it's frozen into every order's Stripe return URLs (at Pay's claim) and into every email, so check it here, before Step 7. Without it they all point to `http://localhost:3000`. After changing it, redeploy, since a built site keeps the old value.
 - `SUPABASE_SERVICE_ROLE_KEY`: Submit, Pay, Cancel, the webhook and the email job use it.
-- `NOTIFICATIONS_CRON_SECRET`: from `openssl rand -hex 32`. Step 8 stores the same value in Vault.
+- `NOTIFICATIONS_CRON_SECRET`: not needed now. The email job is deferred (Daniel, 2026-10-19), so no secret exists yet. The runbook's "Turning the email job on" says what to do when it is wanted.
 - `PAYMENTS_ALERT_EMAIL`: set it to Daniel's address only for now; Steve is added later by adding his address, comma-separated (Daniel, 2026-10-18). Check that `EMAIL_FROM` is `RunFeis <entries@runfeis.com>` (a verified domain) and `RESEND_API_KEY` is set. With all three set, `emailIsConfigured()` is true: confirmations and alerts send, and the success page promises the email.
 
 `STRIPE_SECRET_KEY` and `STRIPE_CONNECT_WEBHOOK_SECRET` come with the real-Stripe work. Until the Stripe ones are set, Pay reports that payment couldn't start.
@@ -16497,6 +16497,8 @@ Have a fresh reviewer check `git diff main...payment-hardening` against the spec
 
 First, re-run sections 4, 9 and 10 of the live check (Step 2), right before item 1. `main`'s add-on code keeps running until the deploy, so real families may have started or paid orders since Step 2. Stop on any unpaid order (`draft` or `pending_payment`) that belongs to a real family, not a test account: 012 expires unpaid orders, so wait for it to be paid or lapse, or close registration first. Stop if section 9 no longer shows 019's index exactly: 020 would raise only after 012–017 are already live, and by then the old app can't write orders. Keep this output: Step 9 compares against it.
 
+Also run `SELECT current_user;` through the same tool that will apply the files (`apply_migration` or the SQL editor). Expected: `postgres`. If it is anything else, stop and ask: `payments_admin` and its functions would be owned by that role, and the SQL editor couldn't run the runbook's 3a and 3b. Section 3 of the live check now shows each cron job's `username`: pg_cron replaces a job by name only for the same user, so if the old hold-expiry job's owner differs, a second job would be created and the old one would keep failing.
+
 1. Apply `012_order_integrity.sql` through `017_payments_admin.sql`, in order, then `020_assert_unpaid_index.sql`: with `apply_migration` (one call per file) or in the SQL editor. 019 is already live; don't apply it again. If Step 2 found 002's hold-expiry job under another name, unschedule it straight after 012, with `SELECT cron.unschedule(<that job's jobid>);`. If 020 raises, the unpaid-order index isn't 019's: stop and ask before deploying.
 2. Make the API load the new functions, so Submit, Pay and the webhook don't fail with "not in the schema cache". In the SQL editor:
    ```sql
@@ -16508,32 +16510,24 @@ First, re-run sections 4, 9 and 10 of the live check (Step 2), right before item
      -H "apikey: $NEXT_PUBLIC_SUPABASE_ANON_KEY" -H "Authorization: Bearer $NEXT_PUBLIC_SUPABASE_ANON_KEY" \
      -H 'Content-Profile: pre_registration' -H 'Content-Type: application/json' -d '{}'
    ```
+   After the files are applied, also check the owner of every function in `payments_admin`: `SELECT proname, proowner::regrole FROM pg_proc WHERE pronamespace = 'payments_admin'::regnamespace;`. Expected: `postgres` on every row.
+
    Expected: code `42501`, "permission denied for function get_my_payment_reviews". That's right: the API has the new function, and `anon` may not run it. Code `PGRST202` ("Could not find the function … in the schema cache") means the reload hasn't happened yet: send the `NOTIFY` again, wait a few seconds, and repeat. Any other answer (for example an API-key or JWT error, which can happen if the project uses the newer publishable keys): stop and ask before going on.
 3. Straight after, merge `payment-hardening` into `main` and push. Vercel deploys `main`. Task 17 merged `main` into this branch; if `main` has moved since, merge it in again first the same way (keeping this branch's order flow), re-run Step 5, and only then merge back. The old code can't write under the new permissions, including `main`'s add-on code, which writes the order tables directly, so do these back to back, at a quiet time.
 4. Once the deploy is live, and not before (`main`'s old handler doesn't expect them), add three events to the Connect webhook endpoint for `/api/webhooks/stripe` (Stripe dashboard → Developers → Webhooks; the endpoint that listens to connected accounts): `checkout.session.expired`, `checkout.session.async_payment_succeeded` and `checkout.session.async_payment_failed`. It then sends four, with `checkout.session.completed` (runbook §5).
 5. Sign in to the deployed site as a test parent and open My entries. It should show no "We couldn't check for messages about your payments" banner, which appears when `get_my_payment_reviews` fails.
+6. On the demo feis (Stripe sandbox), as that test parent, press Submit on one entry and stop at the receipt. It must create an order and show the receipt: a pricing failure ("Your entries could not be priced") shows up here, straight away, before any family meets it. Cancel the order afterwards. (The fee is a code constant, so no Vercel setting can make Submit fail to price.)
 
 **Rollback.** There is no down-migration, and before real registrations none is needed:
 - `apply_migration` runs each file as one transaction, so a file that fails changes nothing. Fix it and apply it again: 012–017 can all be re-run.
 - Once 012 is live, the old app can't write orders, so rolling Vercel back to an older deployment doesn't reopen registration. Roll forward with a fixed deploy instead, and close registration on any open feis until it's out.
 - 012's only change to existing data is expiring the unpaid test orders that Step 2 listed. They stay expired.
 
-- [ ] **Step 8: Dry-read the runbook, then schedule the email job (ask first)**
+- [ ] **Step 8: Dry-read the runbook; email job deferred (Daniel, 2026-10-19)**
 
-First, read `docs/runbooks/payment-exceptions.md` once with the live Supabase dashboard open, before anyone relies on it. Check that what it points at is where it says: whether pg_cron is already on, and where the dashboard turns it on (the `CREATE EXTENSION IF NOT EXISTS pg_cron` line in §5); the Vault page for adding a secret (Integrations → Vault, or Database on older dashboards); and the Postgres logs. Run only the read-only queries (the open-cases query and the stuck-emails query). Fix the runbook where the dashboard differs, and commit that.
+Read `docs/runbooks/payment-exceptions.md` once with the live Supabase dashboard open, before anyone relies on it. Check that what it points at is where it says: the Vault page (Integrations → Vault, or Database on older dashboards) and the Postgres logs. Run only the read-only queries (the open-cases query and the stuck-emails query). Fix the runbook where the dashboard differs, and commit that.
 
-Then run the SQL in `docs/runbooks/payment-exceptions.md` §5 with the production URL and `NOTIFICATIONS_CRON_SECRET`. Then check it runs:
-```sql
-SELECT status, return_message, start_time FROM cron.job_run_details d JOIN cron.job j USING (jobid)
-WHERE j.jobname = 'process-notifications' ORDER BY start_time DESC LIMIT 3;
-```
-Expected: `succeeded`. That only means the request was sent, so check the site's answer too:
-```sql
-SELECT status_code, content::text FROM net._http_response ORDER BY created DESC LIMIT 3;
-```
-Expected: `200` with `"paused":false`. If it says `"paused":true`, stop: `RESEND_API_KEY`, `EMAIL_FROM` or `PAYMENTS_ALERT_EMAIL` is missing on Production, or the site wasn't redeployed after Step 4. Fix it, redeploy, and check again. A `401` means the secret in Vault doesn't match `NOTIFICATIONS_CRON_SECRET`.
-
-Then run the runbook's stuck-emails query (§4). Expected: no rows. Step 12 confirms the first real email arrives.
+Do not schedule the email job. It stays off until several families are signing up. There is no `NOTIFICATIONS_CRON_SECRET` yet and `pg_net` isn't installed on live; the runbook's "Turning the email job on" (§5) holds the steps for when it is wanted (hourly, `0 * * * *`). Until then emails send straight away after Pay and after Stripe's notice, anything left waiting sends on the next payment, and the daily stuck-emails query shows it.
 
 - [ ] **Step 9: Verify live**
 
@@ -16567,7 +16561,7 @@ Append to the "Rollout" section of `docs/2026-10-16-payment-hardening-design.md`
 - Migrations 012–017 and 020 applied: <time>; deployed commit <sha>
 - Live tests: <N>/<N> passed
 - Organiser entries view: <checked on the site, or covered by the live test script>
-- Email job: scheduled, last run <status>
+- Email job: deferred (Daniel, 2026-10-19)
 - Still to do: the Stripe test-mode end-to-end run, together with the real Stripe setup
 ```
 ```bash
@@ -16577,7 +16571,7 @@ git commit -m "test: live verification for payment hardening, and the results"
 
 - [ ] **Step 11: End to end in Stripe test mode (with the real Stripe setup)**
 
-Once Stripe test keys and a connected test account exist, run each of these on a preview deployment and check that the order ends in the state shown:
+Run each of these on the production site (https://www.runfeis.com) with the demo feis, which is connected to the Stripe sandbox, and check that the order ends in the state shown. (Not on a preview deployment: `NEXT_PUBLIC_BASE_URL` is set for Production only, so a preview would freeze `localhost` return URLs into the checkout.) Pay once with a non-US test card too, to see whether Adaptive Pricing changes `currency` or `amount_total`:
 
 | Case | Expected |
 |---|---|
@@ -16599,7 +16593,7 @@ Record the results under "Live verification".
 
 - [ ] **Step 12: Confirm email is flowing**
 
-Email is on from go-live, and Step 8 checked the job isn't paused. Don't wait for Step 11: check the first confirmation after the deploy, whether it comes from a real family's order or from Step 11's test orders.
+Email is on from go-live, and sends straight away after Pay and after Stripe's notice (the email job is deferred). Don't wait for Step 11: check the first confirmation after the deploy, whether it comes from a real family's order or from Step 11's test orders.
 1. Its `registration_confirmation` row in `pre_registration.notifications` is `sent`, and Resend's dashboard (Emails) shows it delivered from `entries@runfeis.com`.
 2. Run the runbook's stuck-emails query (§4): no rows expected.
 3. Record it under "Live verification": `Email confirmed flowing: <date>, from entries@runfeis.com`.

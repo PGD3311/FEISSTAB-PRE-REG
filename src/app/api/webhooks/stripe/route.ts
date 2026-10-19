@@ -38,7 +38,7 @@ export async function POST(request: Request) {
     event
   )
   if (outcome.status === 200 && outcome.registrationId) {
-    // Send the confirmation or alert straight away; the 5-minute job retries anything that fails
+    // Send the confirmation or alert straight away. Anything that fails waits for the next payment: the email job is off for now
     after(() =>
       processNotifications(notificationDeps(), { limit: 5 }).catch((err) =>
         console.error('[NOTIFICATIONS] immediate send failed:', err)

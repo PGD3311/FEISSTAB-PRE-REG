@@ -19,6 +19,16 @@ payment-case alert that fails to send is found only by the second query, and Ver
 time, so the queries are the record. Also watch the Vercel logs for `[NOTIFICATION_FAILED]` lines: they mean an email
 failed or needs checking.
 
+Also check Stripe for notices that failed to reach RunFeis: Stripe Dashboard → Developers → Webhooks → the endpoint →
+failed deliveries, or search the Vercel logs for `[WEBHOOK] database step failed`. A confirmation that fails every time
+leaves no case and no row (the database step rolls back), so these are the only places it shows. Stripe retries a
+failed notice for about 3 days.
+
+**The email job is off** (Daniel, 2026-10-19) until several families are signing up. Emails send straight away after Pay
+and after Stripe's notice. Anything left waiting (a failed first attempt, or the confirmation queued by 3a) sends the
+next time any payment arrives, which at low volume can be days. That is why the stuck-emails query below also lists
+waiting rows. To turn the job on, see "Turning the email job on" in section 5.
+
 **Email.** RunFeis sends from `entries@runfeis.com`: confirmations to families, and payment-case alerts to
 `PAYMENTS_ALERT_EMAIL`. If email stops, see "If email stops" in section 5.
 
@@ -96,7 +106,7 @@ never the person, so the note is the only record of who decided.
 
 **3a. Confirm a late payment** (only `late_payment_conflict`). This cancels the family's unpaid drafts for the feis
 that never reached checkout (they were priced without the late payment), then confirms the paid order: confirmation
-number, snapshot, competitor numbers and confirmation email. The order's `paid_at` becomes the time of this
+number, snapshot, competitor numbers and a queued confirmation email (which may not send for a while: see 3e). The order's `paid_at` becomes the time of this
 confirmation, so a dancer in it with no number at this feis yet gets one after every family confirmed before now
 (dancers already entered keep theirs).
 
@@ -178,17 +188,19 @@ at the `email` the case lookup in section 1 shows. Message A told them "Please d
 once the case is closed it disappears from their dashboard (the success page says only that the payment has been
 reviewed and to contact the organiser), so this email is the only word they get. Say what you
 did: confirmed, with the confirmation number, or refunded, and whether they need to register again. RunFeis never
-emails about a closed case. After 3a the family also gets the usual confirmation email, but it doesn't explain the
-case, so write to them anyway.
+emails about a closed case. After 3a the confirmation email is queued, but with the email job off it may not send until
+another payment arrives. So after 3a, always email the family yourself: say it is confirmed, with their confirmation
+number (`confirmation_number` on the order). The queued email may also reach them later, which does no harm.
 
 ## 4. Emails
 
 `pre_registration.notifications` holds every confirmation and alert. A notification is retried after waits of 5
-minutes, 15 minutes, 1 hour, 3 hours and 6 hours, so there are 6 attempts in total.
+minutes, 15 minutes, 1 hour, 3 hours and 6 hours, so there are 6 attempts in total. A retry only happens when something
+runs the sender: with the email job off, that is the next payment, so waits can be much longer than these.
 
 | Status | Meaning |
 |---|---|
-| `pending` | Waiting for its next attempt (or for email to be set up). |
+| `pending` | Waiting for its next attempt (or for email to be set up). With the email job off, it waits for the next payment. |
 | `sending` | A worker is sending it. If it's been more than 10 minutes, the worker stopped and it will be picked up again. |
 | `sent` | Accepted by Resend (`provider_message_id`). |
 | `failed` | Nothing went out: all 6 attempts were refused by Resend, or couldn't be built or addressed (see `last_error`). |
@@ -202,8 +214,12 @@ day during registration, along with the open-cases query in section 1:
 ```sql
 SELECT id, kind, dedupe_key, status, recipient, first_attempt_at, last_error
 FROM pre_registration.notifications
-WHERE status IN ('needs_check','failed') ORDER BY created_at;
+WHERE status IN ('needs_check','failed')
+   OR (status IN ('pending','sending') AND (attempts > 0 OR created_at < now() - interval '15 minutes'))
+ORDER BY created_at;
 ```
+A `pending` or `sending` row that shows here is waiting for a sender. Another payment will send it, or turn the email job
+on (section 5). If the family is waiting on it, email them yourself.
 
 A notification becomes `needs_check` in any of three ways. Resend remembers a provider key for 24 hours and won't
 send the same key twice, so retrying is only safe inside that window:
@@ -245,9 +261,10 @@ Environment variables on Vercel:
 Emails stay `pending` until Resend, the sender address and the payments contacts are all set.
 
 **If email stops.** The email job's answer (below) says `"paused":true` when `RESEND_API_KEY`, `EMAIL_FROM` or
-`PAYMENTS_ALERT_EMAIL` is missing: set them on Vercel and redeploy. Queued emails then send, up to 20 each time the
-job runs (every 5 minutes). If the job isn't paused but emails stay `pending` with attempts used, check the domain is
-still verified in Resend (Resend dashboard → Domains) and look for `[NOTIFICATION_FAILED]` in the Vercel logs.
+`PAYMENTS_ALERT_EMAIL` is missing: set them on Vercel and redeploy. Queued emails then send, up to 5 each time a
+payment triggers the sender (and up to 20 each time the email job runs, once it is on). If emails stay `pending` with
+attempts used, check the domain is still verified in Resend (Resend dashboard → Domains) and look for
+`[NOTIFICATION_FAILED]` in the Vercel logs.
 
 **The Stripe webhook.** One endpoint on the platform account, listening to events on connected accounts (a Connect
 endpoint): `https://<site>/api/webhooks/stripe`, with its signing secret in `STRIPE_CONNECT_WEBHOOK_SECRET`. It must
@@ -259,7 +276,14 @@ send these four events:
 
 The handler ignores any other event.
 
-Schedule the email job, once per environment. First add the secret in the Supabase dashboard rather than in a SQL
+### Turning the email job on
+
+The job is off for now (Daniel, 2026-10-19). Turn it on when several families are signing up. Nothing is set up yet:
+- `pg_net` is not installed on live (the SQL below installs it).
+- There is no `NOTIFICATIONS_CRON_SECRET` anywhere. Generate one (`openssl rand -hex 32`), add it to Vercel as
+  `NOTIFICATIONS_CRON_SECRET`, add the same value to Vault (below), and redeploy so the site has it.
+
+Then schedule it, hourly (`0 * * * *`, Daniel's preference), once per environment. First add the secret in the Supabase dashboard rather than in a SQL
 snippet, because the editor saves snippets and a saved snippet would hold the secret: open Vault (under
 Integrations; older dashboards list it under Database), choose Add new secret, name it `notifications_cron_secret`,
 and paste the same value as `NOTIFICATIONS_CRON_SECRET`. (If you create it with `SELECT vault.create_secret(...)` in
@@ -269,7 +293,7 @@ real URL:
 -- only needed if pg_cron isn't enabled yet (or turn it on in the dashboard: Integrations or Extensions page)
 CREATE EXTENSION IF NOT EXISTS pg_cron;
 CREATE EXTENSION IF NOT EXISTS pg_net WITH SCHEMA extensions;
-SELECT cron.schedule('process-notifications', '*/5 * * * *', $$
+SELECT cron.schedule('process-notifications', '0 * * * *', $$
   SELECT net.http_post(
     url := 'https://<site>/api/notifications/process',
     headers := jsonb_build_object(
