@@ -1,3 +1,5 @@
+import type { PurchaseSnapshot } from '@/lib/engine/purchase-snapshot'
+
 // Listing status
 export type ListingStatus = 'draft' | 'open' | 'closed' | 'launched'
 
@@ -140,6 +142,45 @@ export interface PriorPaidFees {
   late_fees_paid_cents: number
 }
 
+/** An entry of one of the family's paid orders, as a later order counts it */
+export interface PaidOrderEntry {
+  dancer_id: string
+  competition_id: string
+  base_fee_cents: number
+  late_fee_cents: number
+  /** Whether it counted toward the family max when it was bought */
+  counts_toward_family_cap: boolean
+}
+
+/**
+ * One of the family's paid orders for a feis, as a later order's price counts it (spec §4). This
+ * is the record frozen as purchase_snapshot.pricing.prior, which create_order rebuilds in SQL and
+ * compares exactly, so it holds only what pricing counts and never the fee RunFeis took.
+ */
+export interface CountedOrder {
+  id: string
+  confirmation_number: string | null
+  event_fee_cents: number
+  entries: PaidOrderEntry[]
+}
+
+/**
+ * One of the family's paid orders for a feis, as Submit reads it: what pricing counts, plus the
+ * application fee the order carried, which decides whether a later order carries RunFeis's flat fee
+ */
+export interface PaidOrder extends CountedOrder {
+  application_fee_cents: number
+}
+
+/**
+ * What an order's price counted: the family's paid orders for the feis and what they covered.
+ * Frozen as purchase_snapshot.pricing.prior, which create_order rebuilds and compares exactly
+ * (spec §4).
+ */
+export interface CountedOrders extends PriorPaidFees {
+  orders: CountedOrder[]
+}
+
 export interface FeeLineItem {
   dancer_id: string
   base_fee_cents: number
@@ -264,6 +305,7 @@ export interface DancerDanceLevel {
 }
 
 // ─── Registration types ───
+// The columns of REGISTRATION_COLUMNS the app may read. consent_ip and checkout_config are private to the database.
 export interface Registration {
   id: string
   feis_listing_id: string
@@ -280,8 +322,12 @@ export interface Registration {
   consent_accepted_at: string | null
   consent_version: string | null
   platform_terms_version: string | null
-  consent_ip: string | null
   hold_expires_at: string | null
+  /** What the order was checked and priced on, frozen at Submit; null on orders from before that */
+  purchase_snapshot: PurchaseSnapshot | null
+  checkout_claim_id: string | null
+  checkout_expires_at: string | null
+  paid_at: string | null
   created_at: string
   updated_at: string
 }

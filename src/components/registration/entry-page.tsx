@@ -5,7 +5,25 @@ import Link from 'next/link'
 import { formatCents, parseLocalDate } from '@/lib/format'
 import { calculateFees, getActiveLateTier, summarisePaidOrders } from '@/lib/engine/fee-calculator'
 import { calculateAgeOnDate, getEligibleCompetitions } from '@/lib/engine/eligibility'
-import { dancerLevelSummary, entryDeadline, entryFeesPerDancer } from '@/lib/entry-display'
+import {
+  ageCutoffDateFor,
+  canStartOrder,
+  toDancerProfile,
+  type RequestedEntry
+} from '@/lib/engine/order-validation'
+import { feeEntriesFor, paidOrdersFrom } from '@/lib/engine/purchase-snapshot'
+import {
+  dancerLevelSummary,
+  enteredByDancer,
+  entryDeadline,
+  entryFeesPerDancer,
+  repricedNotice
+} from '@/lib/entry-display'
+import {
+  NEW_ORDER_CHECK_FAILED_MESSAGE,
+  reviewMessage,
+  type PaymentReview
+} from '@/lib/payment-review-messages'
 import {
   createDraftRegistration,
   createCheckoutSession,
@@ -21,9 +39,8 @@ import {
 import type {
   Dancer,
   DancerDanceLevel,
-  DancerProfile,
   EligibleCompetition,
-  FeeEntry,
+  FeeBreakdown,
   FeeSchedule,
   FeisCompetition,
   FeisListing,
@@ -41,13 +58,20 @@ export type EntryPageData = {
   familyName: string
   listing: FeisListing
   feeSchedule: FeeSchedule | null
+  /** The competitions a family can choose from: enabled ones only */
   competitions: FeisCompetition[]
+  /** The competitions the paid entries are for, enabled or not: only to show them as entered */
+  paidCompetitions: FeisCompetition[]
   dancers: DancerWithLevels[]
   heldRegistration: RegistrationWithEntries | null
-  /** Orders already paid for this feis; anything chosen now is added on top */
+  /** Orders already paid for this feis, oldest first; anything chosen now is added on top */
   paidRegistrations: RegistrationWithEntries[]
   numbers: Record<string, number>
   expiredHold: boolean
+  /** An open message-A case on one of the family's orders for this feis: no new order can start */
+  openMessageA: PaymentReview | null
+  /** The payment cases couldn't be read, so none can be ruled out: no new order can start */
+  reviewsUnavailable: boolean
 }
 
 function cartFrom(registration: RegistrationWithEntries | null): Cart {
@@ -58,43 +82,24 @@ function cartFrom(registration: RegistrationWithEntries | null): Cart {
   return cart
 }
 
-/** The checkout's error, said the way a parent needs to hear it. */
-function parentPaymentMessage(error: string | undefined): string {
-  if (error?.toLowerCase().includes('not connected stripe')) {
-    return 'This feis isn’t taking card payments yet. Your places are held for 30 minutes, so try again later, or contact the organiser.'
-  }
-  if (error?.toLowerCase().includes('expired')) {
-    return 'The hold on these places ran out. Choose Change entries to start again.'
-  }
-  return 'The payment page could not be opened. Try again in a moment.'
-}
-
-function profileOf(dancer: DancerWithLevels): DancerProfile {
-  const danceLevels: Record<string, string> = {}
-  for (const dl of dancer.dance_levels) danceLevels[dl.dance_key] = dl.level_key
-  return {
-    dob: parseLocalDate(dancer.date_of_birth),
-    gender: dancer.gender,
-    championshipStatus: dancer.championship_status,
-    danceLevels
-  }
-}
-
-/** Feis age is the dancer's age on January 1 of the feis year. */
-function ageCutoffOf(listing: FeisListing): Date {
-  if (listing.age_cutoff_date) return parseLocalDate(listing.age_cutoff_date)
-  const year = listing.feis_date
-    ? parseLocalDate(listing.feis_date).getFullYear()
-    : new Date().getFullYear()
-  return new Date(year, 0, 1)
-}
-
 export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: string }) {
-  const { listing, feeSchedule, competitions, dancers, paidRegistrations, numbers } = data
+  const {
+    listing,
+    feeSchedule,
+    competitions,
+    paidCompetitions,
+    dancers,
+    paidRegistrations,
+    numbers,
+    openMessageA,
+    reviewsUnavailable
+  } = data
   const levels = listing.syllabus_snapshot?.levels ?? []
-  const ageCutoffDate = ageCutoffOf(listing)
+  // The cutoff Submit uses: the organiser's date, otherwise January 1 of the feis year
+  const ageCutoffDate = useMemo(() => ageCutoffDateFor(listing, new Date()), [listing])
   const deadline = entryDeadline(listing)
 
+  // Only what's being bought now: dances already paid for show as entered, not in the cart
   const [cart, setCart] = useState<Cart>(() => cartFrom(data.heldRegistration))
   const [editingId, setEditingId] = useState<string | null>(null)
   const [registrationId, setRegistrationId] = useState<string | null>(
@@ -105,6 +110,10 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
   )
   const [paymentStarted, setPaymentStarted] = useState(
     data.heldRegistration?.status === 'pending_payment'
+  )
+  // The price the server froze for the order in progress; the cart's own sum is an estimate
+  const [orderBreakdown, setOrderBreakdown] = useState<FeeBreakdown | null>(
+    data.heldRegistration?.purchase_snapshot?.pricing.breakdown ?? null
   )
   const [loading, setLoading] = useState(false)
   // The pinned total bar hides while the full receipt is on screen
@@ -122,78 +131,94 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
     observer.observe(receipt)
     return () => observer.disconnect()
   }, [])
+
+  // Back from Stripe: the browser can restore this page exactly as it was left, still busy from
+  // the Pay click, which would leave Pay and Change entries disabled. Make them work again
+  useEffect(() => {
+    function onPageShow(event: PageTransitionEvent) {
+      if (event.persisted) setLoading(false)
+    }
+    window.addEventListener('pageshow', onPageShow)
+    return () => window.removeEventListener('pageshow', onPageShow)
+  }, [])
   const [error, setError] = useState<string | null>(null)
 
   const paid = paidRegistrations.length > 0
   const held = registrationId !== null
-  const canEdit = !held && !deadline.closed && feeSchedule !== null
+  // The one gate for a new order, a first order or an add-on (spec §14): registration is open, the
+  // family holds no unpaid order, and no message-A case is open for this feis. If the payment cases
+  // couldn't be read, one can't be ruled out, so it counts as open: the server refuses the same way
+  const canStart = canStartOrder({
+    listing,
+    now: new Date(),
+    hasUnpaidOrder: held,
+    hasOpenMessageA: openMessageA !== null || reviewsUnavailable
+  })
+  const canEdit = canStart && feeSchedule !== null
 
   const competitionById = useMemo(() => new Map(competitions.map((c) => [c.id, c])), [competitions])
 
-  // Dances already entered and paid for, per dancer
-  const entered: Cart = useMemo(() => {
-    const map: Cart = {}
-    for (const reg of paidRegistrations) {
-      for (const [dancerId, ids] of Object.entries(cartFrom(reg))) {
-        map[dancerId] = [...(map[dancerId] ?? []), ...ids]
-      }
-    }
-    return map
-  }, [paidRegistrations])
+  // Every competition the paid entries are for, besides the ones a family can choose from: a dance
+  // stays entered if the organiser has since turned its competition off
+  const paidOrderCompetitions = useMemo(
+    () => [...competitions, ...paidCompetitions],
+    [competitions, paidCompetitions]
+  )
+  // Dances already entered and paid for, per dancer, across every paid order
+  const entered = useMemo(
+    () =>
+      enteredByDancer(paidRegistrations, new Map(paidOrderCompetitions.map((c) => [c.id, c]))),
+    [paidRegistrations, paidOrderCompetitions]
+  )
   const paidTotalCents = paidRegistrations.reduce((sum, r) => sum + r.total_cents, 0)
   const latestPaid = paidRegistrations[paidRegistrations.length - 1] ?? null
 
-  // What earlier orders already covered, so the family fee and family max aren't charged twice
+  // What the paid orders already covered, counted as Submit counts them, so the estimate doesn't charge the
+  // family fee twice and the family max runs across orders. Submit's own price is the one that counts.
   const prior = useMemo(
-    () =>
-      summarisePaidOrders(
-        paidRegistrations,
-        paidRegistrations.flatMap((r) => r.registration_entries),
-        new Set(competitions.filter((c) => c.exclude_from_family_cap).map((c) => c.id))
-      ),
-    [paidRegistrations, competitions]
+    () => summarisePaidOrders(paidOrdersFrom(paidRegistrations, paidOrderCompetitions)),
+    [paidRegistrations, paidOrderCompetitions]
   )
 
   const eligibleByDancer = useMemo(() => {
     const map: Record<string, EligibleCompetition[]> = {}
-    const cutoff = ageCutoffOf(listing)
     const syllabusLevels = listing.syllabus_snapshot?.levels ?? []
     for (const dancer of dancers) {
       map[dancer.id] = getEligibleCompetitions(
-        profileOf(dancer),
+        toDancerProfile(dancer),
         competitions,
-        cutoff,
+        ageCutoffDate,
         syllabusLevels
       )
     }
     return map
-  }, [dancers, competitions, listing])
+  }, [dancers, competitions, listing, ageCutoffDate])
 
-  const feeEntries: FeeEntry[] = useMemo(() => {
-    const entries: FeeEntry[] = []
-    for (const dancer of dancers) {
-      for (const compId of cart[dancer.id] ?? []) {
-        const comp = competitionById.get(compId)
-        if (!comp) continue
-        entries.push({
-          dancer_id: dancer.id,
-          fee_category: comp.fee_category,
-          fee_cents_override: comp.fee_cents,
-          exclude_from_family_cap: comp.exclude_from_family_cap,
-          is_day_of: false
-        })
-      }
-    }
-    return entries
-  }, [cart, dancers, competitionById])
-
-  const breakdown = useMemo(
+  // What Pay submits: each dancer's chosen dances that this feis still offers
+  const requestedEntries: RequestedEntry[] = useMemo(
     () =>
-      feeSchedule && feeEntries.length > 0
-        ? calculateFees(feeSchedule, feeEntries, new Date(), prior)
-        : null,
-    [feeSchedule, feeEntries, prior]
+      dancers.flatMap((dancer) =>
+        (cart[dancer.id] ?? [])
+          .filter((competitionId) => competitionById.has(competitionId))
+          .map((competitionId) => ({ dancerId: dancer.id, competitionId }))
+      ),
+    [cart, dancers, competitionById]
   )
+
+  // Priced the way Submit prices it; once Submit has run, its frozen price is shown instead
+  const cartBreakdown = useMemo(
+    () =>
+      feeSchedule && requestedEntries.length > 0
+        ? calculateFees(
+            feeSchedule,
+            feeEntriesFor(requestedEntries, competitionById),
+            new Date(),
+            prior
+          )
+        : null,
+    [feeSchedule, requestedEntries, competitionById, prior]
+  )
+  const breakdown = orderBreakdown ?? cartBreakdown
 
   const receiptLines: ReceiptLine[] = useMemo(() => {
     if (!breakdown || !feeSchedule) return []
@@ -229,7 +254,7 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
   }, [breakdown, feeSchedule, dancers, cart])
 
   const totalCents = breakdown?.grand_total_cents ?? 0
-  const dancesChosen = feeEntries.length
+  const dancesChosen = requestedEntries.length
 
   function toggle(dancerId: string, competitionId: string) {
     setCart((prev) => {
@@ -241,42 +266,79 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
     })
   }
 
-  async function handlePay() {
+  // Where a family goes once an order is paid or confirmed, or Stripe may have taken the payment: the
+  // success page for that order confirms it, or says what happens next
+  const successHref = (orderId: string) =>
+    `/feiseanna/${feisId}/register/success?order=${encodeURIComponent(orderId)}`
+
+  // The order can't be paid any more: forget it, keep the cart, and Pay submits a fresh one
+  function startAgain(message: string) {
+    setRegistrationId(null)
+    setHoldExpiresAt(null)
+    setOrderBreakdown(null)
+    setPaymentStarted(false)
+    setError(message)
+  }
+
+  async function handlePay(consentAccepted: boolean) {
     setError(null)
     setLoading(true)
+    let leaving = false
     try {
       let regId: string | null = registrationId
       if (regId === null) {
-        const result = await createDraftRegistration({
+        // The browser says only that the family agreed; the server records when and from where
+        const order = await createDraftRegistration({
           feisListingId: feisId,
-          entries: Object.entries(cart).flatMap(([dancerId, compIds]) =>
-            compIds.map((competitionId) => ({ dancerId, competitionId }))
-          ),
-          consentAcceptedAt: new Date().toISOString(),
-          consentIp: '0.0.0.0'
+          entries: requestedEntries,
+          consentAccepted
         })
-        if ('error' in result) {
-          setError(result.error ?? 'Your entries could not be saved. Try again.')
+        if ('error' in order) {
+          setError(order.error)
           return
         }
-        regId = result.registrationId
+        regId = order.registrationId
         setRegistrationId(regId)
-        setHoldExpiresAt(result.holdExpiresAt)
+        setHoldExpiresAt(order.holdExpiresAt)
+        setOrderBreakdown(order.breakdown)
         setEditingId(null)
+        // Submit priced the order afresh. If that isn't the total the Pay button showed (a late
+        // tier started, the organiser changed a fee, or the paid orders changed while the page was
+        // open), the held order and its receipt keep Submit's price, and the family presses the
+        // button again to pay or confirm it
+        if (order.totalCents !== totalCents) {
+          setError(repricedNotice(order.totalCents))
+          return
+        }
       }
-      if (regId === null) return
 
-      const checkout = await createCheckoutSession(regId)
-      if ('error' in checkout) {
-        setError(parentPaymentMessage(checkout.error))
-        return
+      const payment = await createCheckoutSession(regId)
+      switch (payment.kind) {
+        case 'redirect':
+          leaving = true
+          window.location.href = payment.url
+          return
+        case 'paid':
+        case 'review':
+        case 'checking':
+          // Confirmed (a $0 order is confirmed without Stripe), or Stripe has or may have the money: the
+          // success page says what happens next
+          leaving = true
+          window.location.href = successHref(regId)
+          return
+        case 'start_again':
+          startAgain(payment.message)
+          return
+        default:
+          // blocked, try_again or error: the order stays as it is
+          setError(payment.message)
       }
-      if (checkout.url) window.location.href = checkout.url
     } catch (err) {
       console.error('Payment failed to start:', err)
       setError('The payment page could not be opened. Check your connection and try again.')
     } finally {
-      setLoading(false)
+      // Stay busy while the browser leaves, so a second click can't start anything
+      if (!leaving) setLoading(false)
     }
   }
 
@@ -284,21 +346,33 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
     if (!registrationId) return
     setError(null)
     setLoading(true)
+    let leaving = false
     try {
-      const holdOver = holdExpiresAt !== null && new Date(holdExpiresAt) <= new Date()
+      // A submitted order never changes: cancel it, keep the cart, and Pay submits a new one
       const result = await cancelRegistration(registrationId)
-      if ('error' in result && !holdOver) {
-        setError(result.error ?? 'Your entries could not be reopened. Try again.')
-        return
+      switch (result.kind) {
+        case 'cancelled':
+          setRegistrationId(null)
+          setHoldExpiresAt(null)
+          setOrderBreakdown(null)
+          setPaymentStarted(false)
+          return
+        case 'paid':
+        case 'review':
+        case 'checking':
+          // The checkout was paid after all, or may have been
+          leaving = true
+          window.location.href = successHref(registrationId)
+          return
+        default:
+          // try_again or error: the order stays as it is
+          setError(result.message)
       }
-      setRegistrationId(null)
-      setHoldExpiresAt(null)
-      setPaymentStarted(false)
     } catch (err) {
       console.error('Failed to reopen entries:', err)
       setError('Your entries could not be reopened. Check your connection and try again.')
     } finally {
-      setLoading(false)
+      if (!leaving) setLoading(false)
     }
   }
 
@@ -364,16 +438,18 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
                     selected={(cart[dancer.id] ?? [])
                       .map((id) => competitionById.get(id))
                       .filter((c): c is FeisCompetition => c !== undefined)}
-                    entered={(entered[dancer.id] ?? [])
-                      .map((id) => competitionById.get(id))
-                      .filter((c): c is FeisCompetition => c !== undefined)}
+                    entered={entered[dancer.id] ?? []}
                     feeSchedule={feeSchedule}
                     editing={canEdit && editingId === dancer.id}
                     canEdit={canEdit}
                     lockedNote={
-                      held
-                        ? 'To add dances, choose Change entries under the family total.'
-                        : undefined
+                      openMessageA
+                        ? 'No new entries while we check your payment.'
+                        : reviewsUnavailable
+                          ? NEW_ORDER_CHECK_FAILED_MESSAGE
+                          : held
+                            ? 'To add dances, choose Change entries under the family total.'
+                            : undefined
                     }
                     onEdit={() => setEditingId(dancer.id)}
                     onDone={() => setEditingId(null)}
@@ -394,15 +470,40 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
           )}
         </section>
 
-        {paid && dancesChosen === 0 && !held ? (
-          <PaidReceipt
-            familyName={data.familyName}
-            totalCents={paidTotalCents}
-            confirmationNumber={latestPaid?.confirmation_number ?? null}
-            contactEmail={listing.contact_email}
-            cardsHref={`/dashboard/numbers/${feisId}`}
-            canAdd={canEdit}
-          />
+        {openMessageA ? (
+          // Message A says not to pay again: nothing here offers a new order, or Pay for a held one
+          <aside className="feis-receipt px-[18px] py-5">
+            <h2 className="text-[22px] font-extrabold [font-stretch:75%]">
+              We&apos;re checking your registration
+            </h2>
+            <p role="status" className="mt-2 text-sm">
+              {reviewMessage('A', openMessageA.support_ref)}
+            </p>
+            <Link href="/dashboard" className="feis-btn feis-btn-outline mt-4">
+              All my entries
+            </Link>
+          </aside>
+        ) : paid && dancesChosen === 0 && !held ? (
+          // A paid family keeps their receipt and number cards even if the payment cases can't be
+          // read; the notice says why they can't add anything for now
+          <div className="grid gap-4">
+            {reviewsUnavailable && (
+              <p
+                role="status"
+                className="border-l-4 border-[var(--color-feis-orange)] bg-[var(--color-feis-orange-light)] px-4 py-2.5 text-sm text-[var(--color-feis-orange-ink)]"
+              >
+                {NEW_ORDER_CHECK_FAILED_MESSAGE}
+              </p>
+            )}
+            <PaidReceipt
+              familyName={data.familyName}
+              totalCents={paidTotalCents}
+              confirmationNumber={latestPaid?.confirmation_number ?? null}
+              contactEmail={listing.contact_email}
+              cardsHref={`/dashboard/numbers/${feisId}`}
+              canAdd={canEdit}
+            />
+          </div>
         ) : deadline.closed && !held ? (
           <aside className="feis-receipt px-[18px] py-5">
             <h2 className="text-[22px] font-extrabold [font-stretch:75%]">Entries are closed</h2>
@@ -412,6 +513,16 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
                 ? ` To ask about a late entry, email ${listing.contact_email}.`
                 : ''}
             </p>
+          </aside>
+        ) : reviewsUnavailable ? (
+          // Where message A would show: the check can't be made, so no choosing and no Pay
+          <aside className="feis-receipt px-[18px] py-5">
+            <p role="status" className="text-sm">
+              {NEW_ORDER_CHECK_FAILED_MESSAGE}
+            </p>
+            <Link href="/dashboard" className="feis-btn feis-btn-outline mt-4">
+              All my entries
+            </Link>
           </aside>
         ) : !feeSchedule ? (
           <aside className="feis-receipt px-[18px] py-5">
@@ -445,7 +556,7 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
         )}
       </main>
 
-      {dancesChosen > 0 && !receiptVisible && (
+      {dancesChosen > 0 && !receiptVisible && !openMessageA && !reviewsUnavailable && (
         <div className="fixed inset-x-0 bottom-0 flex items-center justify-between gap-3 bg-[var(--color-feis-charcoal)] px-4 pt-3 pb-[max(12px,env(safe-area-inset-bottom))] text-white lg:hidden">
           <div>
             <span className="block text-xs opacity-70">
@@ -460,7 +571,7 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
             href="#family-total"
             className="rounded-[3px] bg-[#E9C77F] px-3.5 py-2.5 font-extrabold text-[var(--color-feis-charcoal)]"
           >
-            Review and pay
+            {totalCents === 0 ? 'Review and confirm' : 'Review and pay'}
           </a>
         </div>
       )}

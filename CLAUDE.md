@@ -28,7 +28,7 @@ Nobody does the complete chain from registration to results. FeisWeb (dominant i
 
 ## Tech Stack
 - **Frontend:** Next.js 15 (App Router) + TypeScript + Tailwind CSS + shadcn/ui v4
-- **Backend:** Supabase (Postgres + Auth) — project `vwfrmhbczwpvqonlpfzs`
+- **Backend:** Supabase (Postgres + Auth) — project `acxyvouzwgvobtbmvoej`, `pre_registration` schema
 - **Payments:** Stripe Connect (organisers connect their own accounts, FeisTab never holds funds)
 - **Testing:** Vitest (unit)
 - **Hosting:** Vercel
@@ -38,6 +38,7 @@ Nobody does the complete chain from registration to results. FeisWeb (dominant i
 npm run dev              # localhost:3000
 npm run build            # production build
 npm test                 # vitest unit tests
+npm run test:db          # database tests on a temporary Postgres (needs: brew install postgresql@17)
 npm run lint             # eslint
 npx vitest run tests/engine/  # engine tests only
 ```
@@ -106,7 +107,14 @@ npx vitest run tests/engine/  # engine tests only
 - Don't commit `any` types in new code or dead code
 - Don't modify FeisTab Phase 1 tables or schema
 - Don't let template edits mutate existing listings — frozen snapshots are immutable
-- Webhook handler is authoritative for payment status — success page is cosmetic
+- Only three functions mark an order paid, all through `_fulfil_order` (migration 012 refuses any other move into `paid`): `confirm_order_payment` for a Stripe payment, `confirm_free_order` for a $0 order (Pay calls it; no Stripe), and, for a late-payment case, a person running `payments_admin.confirm_late_payment`. The webhook and the success-page sync both call `confirm_order_payment` with data they fetched from Stripe themselves; never trust payment data from a URL
+- Order state changes go through the Postgres functions in migrations 012–017 (via `src/app/_payments/`); 020 checks 019's unpaid-order index. Never write `registrations`, `registration_entries` or `registration_snapshots` directly
+- A submitted order never changes. To change entries, cancel it and create a new one. A paid order never changes either: adding dances or dancers after paying is a new add-on order for just what's added
+- A family holds at most one unpaid order per feis and any number of paid ones. Every new order is priced on top of the family's paid orders for the feis (`paidOrdersFrom()` and `priceOrder({ paidOrders })` in `src/lib/engine/purchase-snapshot.ts`), and `create_order` refuses a price whose counted orders aren't exactly the paid orders now. Whether a new order may start is `canStartOrder()` (`src/lib/engine/order-validation.ts`), everywhere
+- Submit and Pay also enforce the message-A part of that gate on the server: `newOrderGate()` (`src/lib/payment-review-messages.ts`, called by `newOrderGateFor` in the register `actions.ts` through `checkNewOrderGate()` in `src/app/_payments/new-order-gate.ts`) refuses with message A while the family has an open message-A case for the feis, even from a page opened before the case existed, and refuses if that can't be checked
+- Reads of `registrations` with a user's client select `REGISTRATION_COLUMNS` (`src/lib/registration-columns.ts`) or a subset of it, never `*`. `consent_ip` and `checkout_config` are private: the database refuses them to a user's client, so a new `registrations` column stays private until a migration grants it and it is added to that list
+- Submit refuses an order of 1 to 49 cents (`tooSmallToCharge()` in `src/lib/engine/checkout-policy.ts`), below Stripe's card minimum, and `create_order` refuses it too, so no order is made that could never be paid. A $0 order is allowed: Pay confirms it without Stripe
+- RunFeis's own fee is a flat $6 (`RUNFEIS_FEE_CENTS` in `src/lib/engine/purchase-snapshot.ts`), once per family per feis, never a percentage or a Vercel setting. `runfeisFeeCents()` puts it on the family's first paid order and gives later orders 0 (any earlier paid order that carried a fee counts, legacy 5% ones too), and Submit decides it from the same paid orders it priced on. The Stripe request leaves `application_fee_amount` out when an order's fee is 0. `countedOrdersRecord()` never includes the fee, because `create_order` compares that record exactly
 - Eligibility engine is pure — no Supabase, no side effects
 
 ---
@@ -154,6 +162,7 @@ All project imports use the `@/` alias.
 - **Engine code** (`src/lib/engine/`) — every public function
 - **State machine** (`src/lib/feis-listing-states.ts`) — valid transitions, invalid transitions, publish prerequisites
 - **Freezing/isolation** — template edits don't mutate listings, clones are independent
+- **Order and payment functions** (migrations 012–017): `tests/db/`, including concurrency and crash cases
 
 ### Doesn't need tests yet
 - React components, page-level integration (manual testing during prototype)
@@ -266,7 +275,7 @@ Organiser creates feis    →  Parents register   →  BRIDGE  →  Check-in →
 | Account Type | **Express** | Bridget needs "connect bank, get paid" — not a full Stripe dashboard. Stripe-hosted onboarding. Organizer cannot bypass platform. |
 | Charge Type | **Direct Charges** | Organizer is merchant of record. Parent's bank statement shows the feis name, not "FeisTab." Refunds from organizer's balance. |
 | Payment UI | **Stripe Checkout (Hosted)** | Zero PCI surface area. Apple Pay, Google Pay, Link out of the box. Mobile-optimized. |
-| Platform Revenue | **Application fee** (flat % per charge) | `application_fee_amount` on each payment. |
+| Platform Revenue | **Application fee** (flat $6 per family per feis) | `application_fee_amount` out of the host's share (Daniel, 2026-10-19). On the family's first paid order with a total above $0; none on later orders or a $0 order. Never refunded (Daniel, 2026-10-19). The family's total never changes. |
 | Currency | **Organizer's local currency** | Feis in Ireland = charge EUR. Parent's bank handles conversion. |
 | Webhooks | **Two separate endpoints** | Platform events + Connect events require separate Stripe webhook configurations. |
 
@@ -420,6 +429,7 @@ Copy-paste with convention for now (globals.css, font setup, shadcn components f
 | `src/lib/engine/syllabus-expander.ts` | Template → competitions expansion |
 | `src/lib/engine/eligibility.ts` | Eligibility filtering (pure, per-dance levels) |
 | `src/app/feiseanna/[id]/register/actions.ts` | Registration server actions (draft, checkout, cancel) |
-| `src/app/api/webhooks/stripe/route.ts` | Stripe webhook — authoritative payment confirmation |
-| `src/lib/email/send-confirmation.ts` | Resend confirmation email |
+| `src/app/api/webhooks/stripe/route.ts` | Stripe webhook — confirms payments through `confirm_order_payment` |
+| `src/lib/email/templates.ts` | Confirmation and payment-alert emails (sent by the notification queue, `src/app/_payments/notification-worker.ts`) |
+| `docs/runbooks/payment-exceptions.md` | Payment cases, email queue and test-data reset: what to run in the SQL editor |
 | `src/lib/stripe.ts` | Stripe client singleton |

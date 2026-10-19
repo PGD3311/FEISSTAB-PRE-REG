@@ -1,0 +1,565 @@
+import { describe, expect, it } from 'vitest'
+import { calculateFees } from '@/lib/engine/fee-calculator'
+import {
+  buildCreateOrderPayload,
+  CONSENT_VERSION,
+  countedOrdersRecord,
+  feeEntriesFor,
+  pairLineItems,
+  paidOrdersFrom,
+  PRICING_VERSION,
+  priceOrder,
+  RUNFEIS_FEE_CENTS,
+  runfeisFeeCents,
+  type PaidOrderRow,
+  type PriceOrderInput
+} from '@/lib/engine/purchase-snapshot'
+import type { OrderDancer } from '@/lib/engine/order-validation'
+import { parseLocalDate } from '@/lib/format'
+import type { FeeSchedule, FeisCompetition, PaidOrder } from '@/lib/types/feis-listing'
+
+const schedule: FeeSchedule = {
+  id: 's1', feis_listing_id: 'f1', event_fee_cents: 1000, solo_fee_cents: 1500, prelim_champ_fee_cents: 5000,
+  open_champ_fee_cents: 6000, family_cap_cents: null, late_fee_tiers: [], day_of_surcharge_cents: 0,
+}
+
+function comp(id: string, code: string, dance: string): FeisCompetition {
+  return {
+    id, feis_listing_id: 'f1', age_group_key: 'U10', age_group_label: 'Under 10', age_max_jan1: 9, age_min_jan1: null,
+    level_key: 'NOV', level_label: 'Novice', dance_key: dance, dance_label: dance, competition_type: 'solo',
+    championship_key: null, fee_category: 'solo', fee_cents: null, exclude_from_family_cap: false, grades_only: false,
+    display_name: `Novice ${dance} U10`, display_code: code, capacity_cap: null, enabled: true,
+  }
+}
+
+const aoife: OrderDancer = {
+  id: 'd1', household_id: 'h1', first_name: 'Aoife', last_name: 'Walsh', date_of_birth: '2018-05-01',
+  gender: 'female', school_name: 'Scoil Rince', tcrg_name: 'Mary Murphy', championship_status: 'none', is_active: true,
+  dance_levels: [{ dance_key: 'reel', level_key: 'NOV' }, { dance_key: 'slip_jig', level_key: 'NOV' }],
+}
+
+function input(overrides: Partial<PriceOrderInput> = {}): PriceOrderInput {
+  return {
+    now: new Date('2026-11-01T12:00:00Z'),
+    ageCutoffDate: parseLocalDate('2027-01-01'),
+    levels: [{ key: 'NOV', label: 'Novice', rank: 3 }],
+    feisTermsUrl: null,
+    dancers: [aoife],
+    competitions: [comp('c1', '210R', 'reel'), comp('c2', '210SJ', 'slip_jig')],
+    entries: [{ dancerId: 'd1', competitionId: 'c1' }, { dancerId: 'd1', competitionId: 'c2' }],
+    feeSchedule: schedule,
+    ...overrides,
+  }
+}
+
+describe('priceOrder', () => {
+  it('prices with the fee calculator and freezes what the price was based on', () => {
+    const { breakdown, snapshot } = priceOrder(input())
+    expect(breakdown.grand_total_cents).toBe(4000)
+    expect(breakdown).toEqual(calculateFees(schedule, [
+      { dancer_id: 'd1', fee_category: 'solo', fee_cents_override: null, exclude_from_family_cap: false, is_day_of: false },
+      { dancer_id: 'd1', fee_category: 'solo', fee_cents_override: null, exclude_from_family_cap: false, is_day_of: false },
+    ], new Date('2026-11-01T12:00:00Z')))
+    expect(snapshot.dancers).toEqual([{
+      id: 'd1', first_name: 'Aoife', last_name: 'Walsh', school_name: 'Scoil Rince', tcrg_name: 'Mary Murphy',
+      date_of_birth: '2018-05-01', gender: 'female', championship_status: 'none',
+      dance_levels: { reel: 'NOV', slip_jig: 'NOV' }, competition_age: 8, school_id: null,
+      relationship: 'household',
+    }])
+    expect(snapshot.competitions.map((c) => c.display_code)).toEqual(['210R', '210SJ'])
+    // Everything eligibility and pricing read, so the order keeps what its age group and level meant
+    expect(snapshot.competitions).toEqual([
+      {
+        id: 'c1', display_code: '210R', display_name: 'Novice reel U10', age_group_key: 'U10',
+        age_group_label: 'Under 10', age_min_jan1: null, age_max_jan1: 9, level_key: 'NOV', level_label: 'Novice',
+        dance_key: 'reel', dance_label: 'reel', competition_type: 'solo', championship_key: null, grades_only: false,
+        fee_category: 'solo', fee_cents: null, exclude_from_family_cap: false,
+      },
+      {
+        id: 'c2', display_code: '210SJ', display_name: 'Novice slip_jig U10', age_group_key: 'U10',
+        age_group_label: 'Under 10', age_min_jan1: null, age_max_jan1: 9, level_key: 'NOV', level_label: 'Novice',
+        dance_key: 'slip_jig', dance_label: 'slip_jig', competition_type: 'solo', championship_key: null,
+        grades_only: false, fee_category: 'solo', fee_cents: null, exclude_from_family_cap: false,
+      },
+    ])
+    expect(snapshot.entries).toEqual([
+      { dancer_id: 'd1', competition_id: 'c1', fee_category: 'solo', base_fee_cents: 1500, late_fee_cents: 0, day_of_surcharge_cents: 0 },
+      { dancer_id: 'd1', competition_id: 'c2', fee_category: 'solo', base_fee_cents: 1500, late_fee_cents: 0, day_of_surcharge_cents: 0 },
+    ])
+    expect(snapshot.pricing.priced_at).toBe('2026-11-01T12:00:00.000Z')
+    expect(snapshot.rules).toMatchObject({ age_cutoff_date: '2027-01-01', pricing_version: PRICING_VERSION, consent_version: CONSENT_VERSION })
+    expect(PRICING_VERSION).toBe('pricing-2026-10-17')
+  })
+
+  it("freezes each competition's age bounds, labels and pricing flags as they were at purchase", () => {
+    const asSold = {
+      age_group_label: 'Over 7', age_min_jan1: 7, age_max_jan1: null, level_label: 'Novice (grades)',
+      dance_label: 'Reel', grades_only: true, exclude_from_family_cap: true, fee_cents: 2000,
+    }
+    const special = { ...comp('c1', '210R', 'reel'), ...asSold }
+    const { snapshot } = priceOrder(input({ competitions: [special, comp('c2', '210SJ', 'slip_jig')] }))
+    expect(snapshot.competitions[0]).toMatchObject(asSold)
+  })
+
+  it('records the RunFeis terms each order was placed under', () => {
+    const { snapshot } = priceOrder(input())
+    expect(snapshot.rules).toMatchObject({
+      consent_version: 'consent-2026-10-16b',
+      platform_terms_version: 'runfeis-terms-2026-10-16/privacy-2026-10-16',
+    })
+  })
+
+  it("records the feis's own terms link, or null when it has none", () => {
+    const withTerms = priceOrder(input({ feisTermsUrl: 'https://newportfeis.example/terms' }))
+    expect(withTerms.snapshot.rules.feis_terms_url).toBe('https://newportfeis.example/terms')
+    expect(priceOrder(input()).snapshot.rules.feis_terms_url).toBeNull()
+  })
+
+  it('counts a birthday on the cutoff date as the older age, the same as the cart', () => {
+    const born = { ...aoife, date_of_birth: '2017-01-01' }
+    const { snapshot } = priceOrder(input({ dancers: [born] }))
+    expect(snapshot.dancers[0].competition_age).toBe(10)
+  })
+
+  it('keeps each entry with its own fees when a late tier applies', () => {
+    const late = { ...schedule, late_fee_tiers: [{ starts_at: '2026-10-15T00:00:00Z', fee_cents: 2500, family_max_cents: null }] }
+    const { snapshot, breakdown } = priceOrder(input({ feeSchedule: late }))
+    expect(snapshot.entries.map((e) => e.late_fee_cents)).toEqual([2500, 0])
+    expect(breakdown.grand_total_cents).toBe(6500)
+  })
+})
+
+/** A paid order of the family's, as Submit reads it; the fee rule only looks at the fee it took */
+const paidWithFee = (application_fee_cents: number): PaidOrder => ({
+  id: `7d1a0000-0000-4000-8000-${String(application_fee_cents).padStart(12, '0')}`,
+  confirmation_number: 'RF-2026-AAAAA',
+  event_fee_cents: 1000,
+  application_fee_cents,
+  entries: [
+    {
+      dancer_id: 'd1',
+      competition_id: 'c1',
+      base_fee_cents: 1500,
+      late_fee_cents: 0,
+      counts_toward_family_cap: true
+    }
+  ]
+})
+
+// Daniel, 2026-10-19: RunFeis takes a flat $6 once per family per feis, from the host's share
+describe('runfeisFeeCents', () => {
+  it('is a flat $6 as a code constant', () => {
+    expect(RUNFEIS_FEE_CENTS).toBe(600)
+  })
+
+  it('takes the $6 on a first order', () => {
+    expect(runfeisFeeCents(4000, [])).toBe(600)
+  })
+
+  it('takes nothing when an earlier paid order already carried the fee', () => {
+    expect(runfeisFeeCents(1500, [paidWithFee(600)])).toBe(0)
+  })
+
+  it('takes nothing after a legacy paid order that carried the old 5% fee', () => {
+    expect(runfeisFeeCents(1500, [paidWithFee(425)])).toBe(0)
+  })
+
+  it("takes the $6 on the next paid order when the family's earlier paid order was $0", () => {
+    expect(runfeisFeeCents(1500, [paidWithFee(0)])).toBe(600)
+  })
+
+  it('takes nothing when any one of several earlier paid orders carried the fee', () => {
+    expect(runfeisFeeCents(1500, [paidWithFee(0), paidWithFee(600), paidWithFee(0)])).toBe(0)
+  })
+
+  it('takes nothing on a $0 order, which never reaches Stripe', () => {
+    expect(runfeisFeeCents(0, [])).toBe(0)
+    expect(runfeisFeeCents(0, [paidWithFee(0)])).toBe(0)
+  })
+
+  it('takes the whole order when it is under $6, so the fee never exceeds the payment', () => {
+    expect(runfeisFeeCents(300, [])).toBe(300)
+    expect(runfeisFeeCents(599, [])).toBe(599)
+    expect(runfeisFeeCents(600, [])).toBe(600)
+    expect(runfeisFeeCents(601, [])).toBe(600)
+  })
+})
+
+describe('buildCreateOrderPayload', () => {
+  it('carries whole-cent totals, the entries and the snapshot', () => {
+    const payload = buildCreateOrderPayload(priceOrder(input()), {
+      paidOrders: [],
+      consentIp: '203.0.113.7'
+    })
+    expect(payload.total_cents).toBe(4000)
+    expect(payload.application_fee_cents).toBe(600)
+    expect(payload.event_fee_cents).toBe(1000)
+    expect(payload.is_late).toBe(false)
+    expect(payload.consent_ip).toBe('203.0.113.7')
+    expect(payload.entries.map((e) => e.feis_competition_id)).toEqual(['c1', 'c2'])
+    expect(payload.purchase_snapshot.entries).toHaveLength(2)
+  })
+
+  it('carries the current RunFeis consent and terms versions', () => {
+    const payload = buildCreateOrderPayload(priceOrder(input()), {
+      paidOrders: [],
+      consentIp: null
+    })
+    expect(payload.consent_version).toBe('consent-2026-10-16b')
+    expect(payload.platform_terms_version).toBe('runfeis-terms-2026-10-16/privacy-2026-10-16')
+  })
+
+  it('puts the $6 on the first order, and nothing on an add-on after a fee-paying order', () => {
+    const first = buildCreateOrderPayload(priceOrder(input()), { paidOrders: [], consentIp: null })
+    expect(first.application_fee_cents).toBe(600)
+
+    const paid = [paidWithFee(first.application_fee_cents)]
+    const addOn = priceOrder(
+      input({ entries: [{ dancerId: 'd1', competitionId: 'c2' }], paidOrders: paid })
+    )
+    const payload = buildCreateOrderPayload(addOn, { paidOrders: paid, consentIp: null })
+    expect(payload.total_cents).toBe(1500)
+    expect(payload.application_fee_cents).toBe(0)
+  })
+
+  it("changes only the fee, never the family's total or anything else", () => {
+    const priced = priceOrder(input())
+    const withFee = buildCreateOrderPayload(priced, { paidOrders: [], consentIp: null })
+    const without = buildCreateOrderPayload(priced, {
+      paidOrders: [paidWithFee(600)],
+      consentIp: null
+    })
+    expect(without).toEqual({ ...withFee, application_fee_cents: 0 })
+    expect(withFee.total_cents).toBe(priced.breakdown.grand_total_cents)
+  })
+
+  it('takes the fee from an order under $6, and none from a $0 order', () => {
+    const orderOf = (cents: number) =>
+      priceOrder(
+        input({
+          feeSchedule: { ...schedule, event_fee_cents: 0, solo_fee_cents: cents },
+          entries: [{ dancerId: 'd1', competitionId: 'c1' }]
+        })
+      )
+    const fee = (cents: number) =>
+      buildCreateOrderPayload(orderOf(cents), { paidOrders: [], consentIp: null })
+    expect(fee(300)).toMatchObject({ total_cents: 300, application_fee_cents: 300 })
+    expect(fee(1000)).toMatchObject({ total_cents: 1000, application_fee_cents: 600 })
+    expect(fee(0)).toMatchObject({ total_cents: 0, application_fee_cents: 0 })
+  })
+})
+
+describe('pairLineItems', () => {
+  const entries = [{ dancerId: 'd1', competitionId: 'c1' }, { dancerId: 'd2', competitionId: 'c2' }]
+
+  it('pairs each entry with its own pricing line', () => {
+    const lines = [{ dancer_id: 'd1', fee: 1500 }, { dancer_id: 'd2', fee: 6000 }]
+    expect(pairLineItems(entries, lines)).toEqual([
+      { entry: entries[0], line: lines[0] },
+      { entry: entries[1], line: lines[1] },
+    ])
+  })
+
+  it('refuses a different number of lines and entries', () => {
+    expect(() => pairLineItems(entries, [{ dancer_id: 'd1' }])).toThrow(/1 lines for 2 entries/)
+  })
+
+  it("refuses lines that are another dancer's, even though swapping them keeps the total", () => {
+    const swapped = [{ dancer_id: 'd2' }, { dancer_id: 'd1' }]
+    expect(() => pairLineItems(entries, swapped)).toThrow(/line 1 doesn't match entry 1/)
+  })
+
+  it('refuses a line for another competition when the line names one', () => {
+    const lines = [{ dancer_id: 'd1', competition_id: 'c1' }, { dancer_id: 'd2', competition_id: 'c9' }]
+    expect(() => pairLineItems(entries, lines)).toThrow(/line 2 doesn't match entry 2/)
+  })
+})
+
+// Migration 018: the order keeps whether each dancer was a guest (someone else's child the
+// account holder entered) and their school's id, as they were when it was placed
+describe('guests and school links', () => {
+  it('freezes whether each dancer is a guest, and their school id', () => {
+    const niamh: OrderDancer = {
+      ...aoife,
+      id: 'd2',
+      first_name: 'Niamh',
+      relationship: 'guest',
+      school_id: 'b7a1c2d3-0000-4000-8000-000000000018'
+    }
+    const { snapshot } = priceOrder(
+      input({
+        dancers: [aoife, niamh],
+        entries: [
+          { dancerId: 'd1', competitionId: 'c1' },
+          { dancerId: 'd2', competitionId: 'c2' }
+        ]
+      })
+    )
+    // Aoife has neither field set, so she freezes as a household dancer with no school link
+    expect(snapshot.dancers.map((d) => [d.id, d.relationship, d.school_id])).toEqual([
+      ['d1', 'household', null],
+      ['d2', 'guest', 'b7a1c2d3-0000-4000-8000-000000000018']
+    ])
+  })
+})
+
+// The entry page prices its cart with this too, so the total it shows is the one Submit charges
+describe('feeEntriesFor', () => {
+  it("copies each competition's category, own fee and family-max flag, in entry order", () => {
+    const champ: FeisCompetition = {
+      ...comp('c3', 'PC1', 'reel'),
+      competition_type: 'championship',
+      fee_category: 'prelim_champ'
+    }
+    const special: FeisCompetition = {
+      ...comp('c4', 'SP1', 'reel'),
+      competition_type: 'special',
+      fee_cents: 2000,
+      exclude_from_family_cap: true
+    }
+    const competitions = new Map([champ, special].map((c) => [c.id, c]))
+    const entries = [
+      { dancerId: 'd2', competitionId: 'c4' },
+      { dancerId: 'd1', competitionId: 'c3' }
+    ]
+    expect(feeEntriesFor(entries, competitions)).toEqual([
+      {
+        dancer_id: 'd2',
+        fee_category: 'solo',
+        fee_cents_override: 2000,
+        exclude_from_family_cap: true,
+        is_day_of: false
+      },
+      {
+        dancer_id: 'd1',
+        fee_category: 'prelim_champ',
+        fee_cents_override: null,
+        exclude_from_family_cap: false,
+        is_day_of: false
+      }
+    ])
+  })
+})
+
+// Spec §4: an add-on is priced on top of the family's paid orders, and freezes what it counted
+describe('pricing with earlier paid orders', () => {
+  const paid = (id: string, overrides: Partial<PaidOrder> = {}): PaidOrder => ({
+    id,
+    confirmation_number: `RF-2026-${id.slice(0, 5).toUpperCase()}`,
+    event_fee_cents: 1000,
+    application_fee_cents: 600,
+    entries: [
+      {
+        dancer_id: 'd1',
+        competition_id: 'c1',
+        base_fee_cents: 1500,
+        late_fee_cents: 0,
+        counts_toward_family_cap: true
+      }
+    ],
+    ...overrides
+  })
+
+  /**
+   * An order as the frozen record holds it: the fee RunFeis took is not in it, because create_order
+   * rebuilds the record in SQL without it and compares the two exactly
+   */
+  const counted = (order: PaidOrder) => ({
+    id: order.id,
+    confirmation_number: order.confirmation_number,
+    event_fee_cents: order.event_fee_cents,
+    entries: order.entries
+  })
+
+  it('freezes prior as null on a first order', () => {
+    expect(priceOrder(input()).snapshot.pricing.prior).toBeNull()
+    expect(priceOrder(input({ paidOrders: [] })).snapshot.pricing.prior).toBeNull()
+  })
+
+  it("doesn't charge the family fee again, and freezes the counted orders", () => {
+    const first = paid('7d1a0000-0000-4000-8000-000000000001')
+    const { breakdown, snapshot } = priceOrder(
+      input({ entries: [{ dancerId: 'd1', competitionId: 'c2' }], paidOrders: [first] })
+    )
+    expect(breakdown.event_fee_cents).toBe(0)
+    expect(breakdown.grand_total_cents).toBe(1500)
+    expect(snapshot.pricing.prior).toEqual({
+      orders: [counted(first)],
+      event_fee_paid: true,
+      cappable_paid_cents: 1500,
+      late_fee_dancer_ids: [],
+      late_fees_paid_cents: 0
+    })
+  })
+
+  it('charges only what the family max leaves after the earlier orders', () => {
+    const capped = { ...schedule, family_cap_cents: 2000 }
+    const { breakdown } = priceOrder(
+      input({
+        feeSchedule: capped,
+        entries: [{ dancerId: 'd1', competitionId: 'c2' }],
+        paidOrders: [paid('7d1a0000-0000-4000-8000-000000000001')]
+      })
+    )
+    // 1500 of the 2000 max already paid leaves 500 for a 1500 dance
+    expect(breakdown.family_cap_savings_cents).toBe(1000)
+    expect(breakdown.grand_total_cents).toBe(500)
+  })
+
+  it('charges nothing once the family max is already reached', () => {
+    const capped = { ...schedule, family_cap_cents: 1500 }
+    const { breakdown } = priceOrder(
+      input({
+        feeSchedule: capped,
+        entries: [{ dancerId: 'd1', competitionId: 'c2' }],
+        paidOrders: [paid('7d1a0000-0000-4000-8000-000000000001')]
+      })
+    )
+    expect(breakdown.grand_total_cents).toBe(0)
+  })
+
+  it("doesn't charge a dancer a second late fee", () => {
+    const late = {
+      ...schedule,
+      late_fee_tiers: [{ starts_at: '2026-10-15T00:00:00Z', fee_cents: 2500, family_max_cents: null }]
+    }
+    const first = paid('7d1a0000-0000-4000-8000-000000000001', {
+      entries: [
+        {
+          dancer_id: 'd1',
+          competition_id: 'c1',
+          base_fee_cents: 1500,
+          late_fee_cents: 2500,
+          counts_toward_family_cap: true
+        }
+      ]
+    })
+    const { snapshot } = priceOrder(
+      input({ feeSchedule: late, entries: [{ dancerId: 'd1', competitionId: 'c2' }], paidOrders: [first] })
+    )
+    expect(snapshot.entries[0].late_fee_cents).toBe(0)
+    expect(snapshot.pricing.prior?.late_fee_dancer_ids).toEqual(['d1'])
+  })
+
+  it('sorts orders by id, and entries by dancer then competition, with plain comparison', () => {
+    const entry = (dancer_id: string, competition_id: string) => ({
+      dancer_id,
+      competition_id,
+      base_fee_cents: 1500,
+      late_fee_cents: 0,
+      counts_toward_family_cap: true
+    })
+    const record = countedOrdersRecord([
+      paid('b0000000-0000-4000-8000-000000000000', { entries: [entry('d2', 'c1'), entry('d1', 'c2'), entry('d1', 'c1')] }),
+      paid('A0000000-0000-4000-8000-000000000000', { confirmation_number: null })
+    ])
+    expect(record?.orders.map((o) => o.id)).toEqual([
+      'a0000000-0000-4000-8000-000000000000',
+      'b0000000-0000-4000-8000-000000000000'
+    ])
+    expect(record?.orders[0].confirmation_number).toBeNull()
+    expect(record?.orders[1].entries.map((e) => `${e.dancer_id}:${e.competition_id}`)).toEqual([
+      'd1:c1',
+      'd1:c2',
+      'd2:c1'
+    ])
+    expect(countedOrdersRecord([])).toBeNull()
+  })
+
+  it('leaves the fee RunFeis took out of the record create_order compares exactly', () => {
+    const record = countedOrdersRecord([
+      paid('7d1a0000-0000-4000-8000-000000000001', { application_fee_cents: 600 }),
+      paid('7d1a0000-0000-4000-8000-000000000002', { application_fee_cents: 0 })
+    ])
+    for (const order of record?.orders ?? []) {
+      expect(Object.keys(order).sort()).toEqual([
+        'confirmation_number',
+        'entries',
+        'event_fee_cents',
+        'id'
+      ])
+    }
+    expect(JSON.stringify(record)).not.toContain('application_fee')
+  })
+})
+
+describe('paidOrdersFrom', () => {
+  const row = (purchase_snapshot: PaidOrderRow['purchase_snapshot']): PaidOrderRow => ({
+    id: 'o1',
+    confirmation_number: 'RF-2026-AAAAA',
+    event_fee_cents: 1000,
+    application_fee_cents: 600,
+    purchase_snapshot,
+    registration_entries: [
+      { dancer_id: 'd1', feis_competition_id: 'c1', base_fee_cents: 1500, late_fee_cents: 0 }
+    ]
+  })
+
+  it("takes each entry's family-max flag from its own order's snapshot", () => {
+    // Excluded when it was bought; the organiser has since counted it toward the max
+    const frozen = { competitions: [{ ...comp('c1', '210R', 'reel'), exclude_from_family_cap: true }] }
+    const [order] = paidOrdersFrom([row(frozen)], [comp('c1', '210R', 'reel')])
+    expect(order.entries[0].counts_toward_family_cap).toBe(false)
+  })
+
+  it("uses the competition's current flag for an order made before snapshots", () => {
+    const now = [{ ...comp('c1', '210R', 'reel'), exclude_from_family_cap: true }]
+    const [order] = paidOrdersFrom([row(null)], now)
+    expect(order).toEqual({
+      id: 'o1',
+      confirmation_number: 'RF-2026-AAAAA',
+      event_fee_cents: 1000,
+      application_fee_cents: 600,
+      entries: [
+        {
+          dancer_id: 'd1',
+          competition_id: 'c1',
+          base_fee_cents: 1500,
+          late_fee_cents: 0,
+          counts_toward_family_cap: false
+        }
+      ]
+    })
+  })
+
+  it('copies the fee RunFeis took on each order, whatever it was', () => {
+    const rows = [
+      { ...row(null), id: 'o1', application_fee_cents: 600 },
+      { ...row(null), id: 'o2', application_fee_cents: 425 },
+      { ...row(null), id: 'o3', application_fee_cents: 0 }
+    ]
+    const orders = paidOrdersFrom(rows, [])
+    expect(orders.map((o) => [o.id, o.application_fee_cents])).toEqual([
+      ['o1', 600],
+      ['o2', 425],
+      ['o3', 0]
+    ])
+  })
+
+  it('refuses a paid order whose fee is missing or not a whole number of cents', () => {
+    const bad = [undefined, null, -1, 4.5, Number.NaN, '600']
+    for (const fee of bad) {
+      const rows = [{ ...row(null), application_fee_cents: fee as unknown as number }]
+      expect(() => paidOrdersFrom(rows, []), String(fee)).toThrow(/no valid application fee/)
+    }
+  })
+
+  it("counts an entry toward the family max when its competition can't be found at all", () => {
+    const [order] = paidOrdersFrom([row({ competitions: [] })], [])
+    expect(order.entries[0].counts_toward_family_cap).toBe(true)
+    const [older] = paidOrdersFrom([row(null)], [])
+    expect(older.entries[0].counts_toward_family_cap).toBe(true)
+  })
+
+  it("uses the current flag when the snapshot doesn't list the entry's competition", () => {
+    const other = { ...comp('c9', '999R', 'reel'), exclude_from_family_cap: true }
+    const otherOnly = { competitions: [other] }
+    // The current flag is false (counts), the opposite of the c9 entry in the snapshot
+    const [order] = paidOrdersFrom([row(otherOnly)], [comp('c1', '210R', 'reel')])
+    expect(order.entries[0].counts_toward_family_cap).toBe(true)
+    // And with the current flag true (excluded), the fallback excludes it
+    const excluded = [{ ...comp('c1', '210R', 'reel'), exclude_from_family_cap: true }]
+    const [again] = paidOrdersFrom([row(otherOnly)], excluded)
+    expect(again.entries[0].counts_toward_family_cap).toBe(false)
+  })
+})

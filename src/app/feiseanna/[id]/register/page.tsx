@@ -4,7 +4,10 @@ import { useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useSupabase } from '@/hooks/use-supabase'
+import { REGISTRATION_COLUMNS } from '@/lib/registration-columns'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { isHouseholdComplete } from '@/lib/household'
+import { openMessageAFor, type PaymentReview } from '@/lib/payment-review-messages'
 import { getExistingRegistration } from './actions'
 import {
   EntryPage,
@@ -69,36 +72,54 @@ export default function RegisterPage() {
           return
         }
 
-        const [listingResult, feesResult, compsResult, dancersResult, heldResult, paidResult] =
-          await Promise.all([
-            supabase
-              .from('feis_listings')
-              .select('*')
-              .eq('id', feisId)
-              .eq('status', 'open')
-              .single(),
-            supabase.from('fee_schedules').select('*').eq('feis_listing_id', feisId).single(),
+        const [
+          listingResult,
+          feesResult,
+          competitions,
+          dancersResult,
+          heldResult,
+          paidResult,
+          ordersResult,
+          reviewsResult
+        ] = await Promise.all([
+          supabase.from('feis_listings').select('*').eq('id', feisId).eq('status', 'open').single(),
+          supabase.from('fee_schedules').select('*').eq('feis_listing_id', feisId).single(),
+          // Every enabled competition, read in pages: PostgREST returns at most 1000 rows per
+          // request, and Submit judges eligibility against the feis's whole list
+          fetchAllRows<FeisCompetition>((from, to) =>
             supabase
               .from('feis_competitions')
-              .select('*')
+              .select('*', { count: 'exact' })
               .eq('feis_listing_id', feisId)
               .eq('enabled', true)
-              .order('sort_order', { ascending: true }),
-            supabase
-              .from('dancers')
-              .select('*, dance_levels:dancer_dance_levels(*)')
-              .eq('household_id', household.id)
-              .eq('is_active', true)
-              .order('date_of_birth', { ascending: true }),
-            getExistingRegistration(feisId),
-            supabase
-              .from('registrations')
-              .select('*, registration_entries(*)')
-              .eq('feis_listing_id', feisId)
-              .eq('household_id', household.id)
-              .eq('status', 'paid')
-              .order('paid_at', { ascending: true })
-          ])
+              .order('sort_order', { ascending: true })
+              .order('id', { ascending: true })
+              .range(from, to)
+          ),
+          supabase
+            .from('dancers')
+            .select('*, dance_levels:dancer_dance_levels(*)')
+            .eq('household_id', household.id)
+            .eq('is_active', true)
+            .order('date_of_birth', { ascending: true }),
+          getExistingRegistration(feisId),
+          // Every paid order for this feis, oldest first: anything chosen now is added on top
+          supabase
+            .from('registrations')
+            .select(`${REGISTRATION_COLUMNS}, registration_entries(*)`)
+            .eq('feis_listing_id', feisId)
+            .eq('household_id', household.id)
+            .eq('status', 'paid')
+            .order('paid_at', { ascending: true }),
+          // The family's orders for this feis, and its payment cases: while a message-A case is
+          // open on one of them, no new order starts (Decision 13)
+          supabase
+            .from('registrations')
+            .select('id')
+            .eq('feis_listing_id', feisId)
+            .eq('household_id', household.id),
+          supabase.rpc('get_my_payment_reviews', { p_registration_id: null })
+        ])
 
         if (listingResult.error || !listingResult.data) {
           setLoadState({
@@ -107,12 +128,42 @@ export default function RegisterPage() {
           })
           return
         }
-        for (const result of [compsResult, dancersResult, paidResult]) {
+        for (const result of [dancersResult, paidResult, ordersResult]) {
           if (result.error) throw result.error
         }
+        // The payment cases only decide whether a new order may start. If they can't be read, the
+        // page still loads, so a paid family keeps their entries and number-card link, and new
+        // orders stay blocked, as they are on the server (My entries degrades the same way)
+        if (reviewsResult.error) {
+          console.error('Payment reviews failed to load:', reviewsResult.error)
+        }
+        const reviewsUnavailable = reviewsResult.error !== null
         if ('error' in heldResult) throw new Error(heldResult.error)
 
         const dancers = (dancersResult.data ?? []) as DancerWithLevels[]
+        const paidRegistrations = (paidResult.data ?? []) as RegistrationWithEntries[]
+
+        // The competitions the paid entries are for, enabled or not: a dance stays entered after
+        // the organiser turns its competition off. Only the ones the enabled list above lacks are
+        // read, and they are used to show what's entered, never to choose from
+        const known = new Set(competitions.map((c) => c.id))
+        const missingIds = [
+          ...new Set(
+            paidRegistrations
+              .flatMap((order) => order.registration_entries.map((e) => e.feis_competition_id))
+              .filter((id) => !known.has(id))
+          )
+        ]
+        const paidCompetitions: FeisCompetition[] = []
+        if (missingIds.length > 0) {
+          const paidCompetitionsResult = await supabase
+            .from('feis_competitions')
+            .select('*')
+            .eq('feis_listing_id', feisId)
+            .in('id', missingIds)
+          if (paidCompetitionsResult.error) throw paidCompetitionsResult.error
+          paidCompetitions.push(...((paidCompetitionsResult.data ?? []) as FeisCompetition[]))
+        }
 
         const numbersResult = await supabase
           .from('competitor_numbers')
@@ -135,12 +186,18 @@ export default function RegisterPage() {
               : (household.first_name ?? 'Your family'),
             listing: listingResult.data as FeisListing,
             feeSchedule: (feesResult.data as FeeSchedule | null) ?? null,
-            competitions: (compsResult.data ?? []) as FeisCompetition[],
+            competitions,
+            paidCompetitions,
             dancers,
             heldRegistration: (heldResult.registration as RegistrationWithEntries | null) ?? null,
-            paidRegistrations: (paidResult.data ?? []) as RegistrationWithEntries[],
+            paidRegistrations,
             numbers,
-            expiredHold: heldResult.expired === true
+            expiredHold: heldResult.expired === true,
+            openMessageA: openMessageAFor(
+              (reviewsResult.data ?? []) as PaymentReview[],
+              (ordersResult.data ?? []).map((order) => order.id)
+            ),
+            reviewsUnavailable
           }
         })
       } catch (err) {

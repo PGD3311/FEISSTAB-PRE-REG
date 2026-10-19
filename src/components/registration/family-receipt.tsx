@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import { CONSENT_VERSION } from '@/lib/engine/purchase-snapshot'
 import { formatCents } from '@/lib/format'
 
 export interface ReceiptLine {
@@ -23,7 +24,8 @@ interface FamilyReceiptProps {
   paymentStarted: boolean
   loading: boolean
   error: string | null
-  onPay: () => void
+  /** Pay, with whether the agreement is ticked; Submit records that agreement on a new order */
+  onPay: (consentAccepted: boolean) => void
   onChangeEntries: () => void
 }
 
@@ -93,6 +95,8 @@ export function FamilyReceipt({
   const [agreed, setAgreed] = useState(false)
   const held = holdExpiresAt !== null
   const nothingChosen = lines.length === 0
+  // An order that costs nothing (typically an add-on once the family max is reached) is confirmed, not paid
+  const free = !nothingChosen && totalCents === 0
 
   return (
     <aside id="family-total" className="feis-receipt scroll-mt-6 px-[18px] pt-5 pb-[18px]">
@@ -115,13 +119,12 @@ export function FamilyReceipt({
         </strong>
       </div>
 
-      {paymentStarted ? (
-        <p className="mt-3.5 text-[13px] text-muted-foreground">
-          A payment was started for these entries. If you closed the payment page without paying,
-          choose Change entries to start again.
-        </p>
-      ) : (
-        <label className="mt-3.5 mb-3 flex items-start gap-2 text-[12.5px] text-muted-foreground">
+      {!held && (
+        <label
+          // This wording is CONSENT_VERSION: change the two in the same commit
+          data-consent-version={CONSENT_VERSION}
+          className="mt-3.5 mb-3 flex items-start gap-2 text-[12.5px] text-muted-foreground"
+        >
           <input
             type="checkbox"
             checked={agreed}
@@ -129,7 +132,8 @@ export function FamilyReceipt({
             className="mt-0.5 h-4 w-4 shrink-0 accent-primary"
           />
           <span>
-            I&apos;m the parent or guardian of these dancers. I accept the RunFeis{' '}
+            I&apos;m the parent or guardian of these dancers, or I&apos;m entering them with their
+            parent or guardian&apos;s permission. I accept the RunFeis{' '}
             <Link href="/terms" target="_blank" className="font-semibold text-primary underline">
               terms
             </Link>{' '}
@@ -156,18 +160,38 @@ export function FamilyReceipt({
         </label>
       )}
 
+      {held && paymentStarted && (
+        <p className="mt-3.5 text-[13px] text-muted-foreground">
+          You started paying for these entries. Return to the payment page to finish, or choose
+          Change entries to start again.
+        </p>
+      )}
+
+      {free && (
+        <p className="mt-3.5 text-[13px]">
+          There&apos;s nothing to pay for these dances. Confirm them to enter.
+        </p>
+      )}
+
       {held && <HoldCountdown holdExpiresAt={holdExpiresAt} />}
 
-      {!paymentStarted && (
-        <button
-          type="button"
-          onClick={onPay}
-          disabled={!agreed || loading || nothingChosen}
-          className="mt-3 w-full rounded-[3px] bg-primary py-3 text-[17px] font-extrabold text-primary-foreground [font-stretch:85%] hover:bg-[var(--color-feis-green-600)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-feis-gold)] disabled:opacity-50"
-        >
-          {loading ? 'Opening payment…' : `Pay ${formatCents(totalCents)}`}
-        </button>
-      )}
+      <button
+        type="button"
+        onClick={() => onPay(agreed)}
+        // An order in progress already records the agreement, from when it was submitted
+        disabled={loading || nothingChosen || (!held && !agreed)}
+        className="mt-3 w-full rounded-[3px] bg-primary py-3 text-[17px] font-extrabold text-primary-foreground [font-stretch:85%] hover:bg-[var(--color-feis-green-600)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-feis-gold)] disabled:opacity-50"
+      >
+        {loading
+          ? free
+            ? 'Confirming…'
+            : 'Opening payment…'
+          : paymentStarted
+            ? 'Return to payment'
+            : free
+              ? 'Confirm entries'
+              : `Pay ${formatCents(totalCents)}`}
+      </button>
 
       {error && (
         <p className="mt-2.5 text-[13px] text-destructive" role="alert">
@@ -186,7 +210,7 @@ export function FamilyReceipt({
         </button>
       )}
 
-      {!held && !nothingChosen && (
+      {!held && !nothingChosen && !free && (
         <p className="mt-2.5 text-[12.5px] text-muted-foreground">
           Payment is by card on a secure Stripe page. Competitor numbers are given out as soon as it
           goes through.
@@ -206,7 +230,10 @@ interface PaidReceiptProps {
   canAdd: boolean
 }
 
-/** Shown once the family has paid: what they paid and how to change anything. */
+/**
+ * Shown once the family has paid: what they paid and how to change anything. A family whose orders
+ * all cost nothing (`totalCents` is 0) was confirmed, not paid.
+ */
 export function PaidReceipt({
   familyName,
   totalCents,
@@ -217,10 +244,12 @@ export function PaidReceipt({
 }: PaidReceiptProps) {
   return (
     <aside id="family-total" className="feis-receipt px-[18px] pt-5 pb-[18px]">
-      <h2 className="text-[22px] leading-tight font-extrabold [font-stretch:75%]">Paid</h2>
+      <h2 className="text-[22px] leading-tight font-extrabold [font-stretch:75%]">
+        {totalCents === 0 ? 'Confirmed' : 'Paid'}
+      </h2>
       <p className="mb-3 text-[13px] text-muted-foreground">{familyName}</p>
       <div className="flex items-baseline justify-between border-t-[3px] border-[var(--color-feis-gold)] pt-2.5">
-        <span className="font-bold">Paid in full</span>
+        <span className="font-bold">{totalCents === 0 ? 'Total' : 'Paid in full'}</span>
         <strong className="text-[40px] leading-none font-black tabular-nums [font-stretch:65%]">
           {formatCents(totalCents)}
         </strong>
