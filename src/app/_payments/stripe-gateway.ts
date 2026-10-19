@@ -60,7 +60,12 @@ export function checkoutSessionParams(config: CheckoutConfig): Stripe.Checkout.S
       quantity: 1
     })),
     payment_method_types: [...config.payment_method_types],
-    payment_intent_data: { application_fee_amount: config.application_fee_cents },
+    // RunFeis's flat fee rides on the first paid order only. An add-on carries 0, and the request
+    // leaves the fee out then (the config and the database still say 0); we haven't verified that
+    // Stripe accepts an application_fee_amount of 0
+    ...(config.application_fee_cents > 0
+      ? { payment_intent_data: { application_fee_amount: config.application_fee_cents } }
+      : {}),
     success_url: config.success_url,
     cancel_url: config.cancel_url,
     expires_at: config.expires_at,

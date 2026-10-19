@@ -152,12 +152,24 @@ export interface PaidOrderEntry {
   counts_toward_family_cap: boolean
 }
 
-/** One of the family's paid orders for a feis, as a later order counts it (spec §4) */
-export interface PaidOrder {
+/**
+ * One of the family's paid orders for a feis, as a later order's price counts it (spec §4). This
+ * is the record frozen as purchase_snapshot.pricing.prior, which create_order rebuilds in SQL and
+ * compares exactly, so it holds only what pricing counts and never the fee RunFeis took.
+ */
+export interface CountedOrder {
   id: string
   confirmation_number: string | null
   event_fee_cents: number
   entries: PaidOrderEntry[]
+}
+
+/**
+ * One of the family's paid orders for a feis, as Submit reads it: what pricing counts, plus the
+ * application fee the order carried, which decides whether a later order carries RunFeis's flat fee
+ */
+export interface PaidOrder extends CountedOrder {
+  application_fee_cents: number
 }
 
 /**
@@ -166,7 +178,7 @@ export interface PaidOrder {
  * (spec §4).
  */
 export interface CountedOrders extends PriorPaidFees {
-  orders: PaidOrder[]
+  orders: CountedOrder[]
 }
 
 export interface FeeLineItem {

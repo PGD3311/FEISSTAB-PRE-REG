@@ -17,6 +17,7 @@ import { FakeStripe } from './helpers/fake-stripe'
 import {
   buildPayload,
   checkoutConfigFor,
+  createAddOnOrder,
   createDraftOrder,
   createListing,
   type DraftOrderFixture
@@ -535,6 +536,34 @@ describe('syncConfirmation', () => {
     } finally {
       logged.mockRestore()
     }
+  })
+})
+
+// Daniel, 2026-10-19: RunFeis takes a flat $6 once per family per feis, from the host's share
+describe("RunFeis's flat fee on the request to Stripe", () => {
+  it("sends the $6 on a family's first order, and leaves the fee out for an add-on", async () => {
+    const stripe = new FakeStripe()
+    const first = await createDraftOrder(db.pool)
+    expect(await pay(deps(stripe), ids(first))).toEqual(checkoutPage(stripe))
+    expect(stripe.requests[0].payment_intent_data).toEqual({ application_fee_amount: 600 })
+    expect((await orderRow(first.registrationId)).checkout_config.application_fee_cents).toBe(600)
+
+    // The family pays on Stripe's page, then adds a dance
+    stripe.pay(stripe.sessionId())
+    expect((await pay(deps(stripe), ids(first))).kind).toBe('paid')
+    expect((await orderRow(first.registrationId)).application_fee_cents).toBe(600)
+    const addOn = await createAddOnOrder(db.pool, first, [
+      { dancerId: first.dancers[0].id, competitionId: first.listing.competitions[2].id }
+    ])
+    expect(addOn.payload.application_fee_cents).toBe(0)
+    expect(await pay(deps(stripe), ids(addOn))).toEqual(checkoutPage(stripe, 2))
+
+    // Stripe is sent no application_fee_amount, though the claim still says 0 and 014 accepted it
+    const request = stripe.requests[1]
+    expect(request.payment_intent_data?.application_fee_amount).toBeUndefined()
+    expect(JSON.stringify(request)).not.toContain('application_fee')
+    expect((await orderRow(addOn.registrationId)).checkout_config.application_fee_cents).toBe(0)
+    expect(stripe.sessions.get(stripe.sessionId(2))?.amountTotal).toBe(1500)
   })
 })
 

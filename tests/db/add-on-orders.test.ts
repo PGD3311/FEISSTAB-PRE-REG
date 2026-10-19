@@ -1068,3 +1068,121 @@ describe('late payments with several orders', () => {
     }
   })
 })
+
+// Daniel, 2026-10-19: RunFeis takes a flat $6 once per family per feis, from the host's share
+describe("RunFeis's flat fee across a family's orders", () => {
+  const feeOf = async (registrationId: string) =>
+    (await orderRow(registrationId)).application_fee_cents
+
+  it('is on the first paid order only, and never changes what the family pays', async () => {
+    const { first, base, aoife, niamh, reel, trebleJig } = await familyWithPaidOrder()
+    expect(first.payload.application_fee_cents).toBe(600)
+    expect(first.payload.total_cents).toBe(4000)
+    expect(await feeOf(first.registrationId)).toBe(600)
+
+    // An add-on carries none; its total is the dance fee alone, as it was before the fee changed
+    const addOn = await createAddOnOrder(db.pool, base, [
+      { dancerId: aoife.id, competitionId: trebleJig.id }
+    ])
+    expect(addOn.payload.total_cents).toBe(1500)
+    expect(addOn.payload.application_fee_cents).toBe(0)
+    expect(await feeOf(addOn.registrationId)).toBe(0)
+
+    // And a second add-on, after the first add-on is paid too
+    await payOrder(db.pool, addOn)
+    const second = await createAddOnOrder(db.pool, base, [
+      { dancerId: niamh.id, competitionId: reel.id }
+    ])
+    expect(second.payload.total_cents).toBe(1500)
+    expect(second.payload.application_fee_cents).toBe(0)
+    expect(await feeOf(second.registrationId)).toBe(0)
+  })
+
+  it('goes on the next paid order when the first was $0, and not again after that', async () => {
+    const free = await freeListing()
+    const first = await createDraftOrder(db.pool, { listing: free })
+    expect(first.payload.total_cents).toBe(0)
+    expect(first.payload.application_fee_cents).toBe(0)
+    const confirmed = await store.confirmFreeOrder(first.registrationId, first.family.householdId)
+    expect(confirmed).toMatchObject({ result: 'confirmed' })
+
+    // The organiser sets fees, so the family's next order costs something
+    await db.pool.query(
+      `UPDATE fee_schedules SET event_fee_cents = 1000, solo_fee_cents = 1500
+       WHERE feis_listing_id = $1`,
+      [free.listing.id]
+    )
+    const priced: ListingFixture = {
+      ...free,
+      feeSchedule: { ...free.feeSchedule, event_fee_cents: 1000, solo_fee_cents: 1500 }
+    }
+    const niamh = await createDancer(db.pool, first.family.householdId, { firstName: 'Niamh' })
+    const base = { family: first.family, listing: priced, dancers: [...first.dancers, niamh] }
+    const [aoife] = first.dancers
+    const [reel, , trebleJig] = priced.competitions
+
+    const next = await createAddOnOrder(db.pool, base, [
+      { dancerId: aoife.id, competitionId: trebleJig.id }
+    ])
+    expect(next.payload.total_cents).toBeGreaterThan(0)
+    expect(next.payload.application_fee_cents).toBe(600)
+    expect(await feeOf(next.registrationId)).toBe(600)
+
+    await payOrder(db.pool, next)
+    const after = await createAddOnOrder(db.pool, base, [
+      { dancerId: niamh.id, competitionId: reel.id }
+    ])
+    expect(after.payload.total_cents).toBeGreaterThan(0)
+    expect(after.payload.application_fee_cents).toBe(0)
+  })
+
+  it('is not taken again after a legacy paid order that carried the old 5% fee', async () => {
+    const listing = await createListing(db.pool)
+    const family = await createFamily(db.pool)
+    const aoife = await createDancer(db.pool, family.householdId)
+    const [reel, slipJig, trebleJig] = listing.competitions
+    await insertLegacyPaidOrder(
+      db.pool,
+      family.householdId,
+      listing.listing.id,
+      [
+        { dancerId: aoife.id, competitionId: reel.id },
+        { dancerId: aoife.id, competitionId: slipJig.id }
+      ],
+      { applicationFeeCents: 200 }
+    )
+    const addOn = await createAddOnOrder(db.pool, { family, listing, dancers: [aoife] }, [
+      { dancerId: aoife.id, competitionId: trebleJig.id }
+    ])
+    expect(addOn.payload.total_cents).toBe(1500)
+    expect(addOn.payload.application_fee_cents).toBe(0)
+  })
+
+  it('is taken on the first paid order after a legacy order that carried no fee', async () => {
+    const listing = await createListing(db.pool)
+    const family = await createFamily(db.pool)
+    const aoife = await createDancer(db.pool, family.householdId)
+    const [reel, slipJig, trebleJig] = listing.competitions
+    await insertLegacyPaidOrder(
+      db.pool,
+      family.householdId,
+      listing.listing.id,
+      [
+        { dancerId: aoife.id, competitionId: reel.id },
+        { dancerId: aoife.id, competitionId: slipJig.id }
+      ],
+      { applicationFeeCents: 0 }
+    )
+    const addOn = await createAddOnOrder(db.pool, { family, listing, dancers: [aoife] }, [
+      { dancerId: aoife.id, competitionId: trebleJig.id }
+    ])
+    expect(addOn.payload.application_fee_cents).toBe(600)
+  })
+
+  it('keeps the fee out of the record create_order compares exactly', async () => {
+    const { base } = await familyWithPaidOrder()
+    const paid = await paidOrdersOf(db.pool, base.family.householdId, base.listing)
+    expect(paid[0].application_fee_cents).toBe(600)
+    expect(JSON.stringify(countedOrdersRecord(paid))).not.toContain('application_fee')
+  })
+})

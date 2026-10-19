@@ -84,7 +84,8 @@ describe('create_order', () => {
     expect(row).toMatchObject({
       status: 'draft',
       total_cents: 4000,
-      application_fee_cents: 200,
+      // A first order carries RunFeis's flat $6
+      application_fee_cents: 600,
       event_fee_cents: 1000,
       consent_ip: '203.0.113.7',
       consent_version: CONSENT_VERSION,

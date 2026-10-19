@@ -1,11 +1,11 @@
 import type {
+  CountedOrder,
   FeeSchedule,
   FeeEntry,
   FeeLineItem,
   FeeBreakdown,
   FeeCategoryType,
   LateFeeTier,
-  PaidOrder,
   PriorPaidFees
 } from '@/lib/types/feis-listing'
 
@@ -137,7 +137,7 @@ export function compareIds(a: string, b: string): number {
  * it counted toward the family max when it was bought (spec §4), so a competition's flag changing
  * later doesn't change what an earlier order covered.
  */
-export function summarisePaidOrders(orders: PaidOrder[]): PriorPaidFees | null {
+export function summarisePaidOrders(orders: CountedOrder[]): PriorPaidFees | null {
   if (orders.length === 0) return null
   const entries = orders.flatMap((order) => order.entries)
   return {

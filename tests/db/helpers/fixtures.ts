@@ -200,17 +200,20 @@ export async function insertOrderDirect(
  * Test-only: a paid order as main's live code made them before payment hardening: no purchase snapshot, no
  * snapshot row, and for a $0 one no claim or session. Written as the superuser with the order triggers off for
  * this one transaction (session_replication_role = replica), since no function makes such an order any more.
+ * Its application fee is the old default, 5% of the total as live took it, unless the test says
+ * otherwise.
  */
 export async function insertLegacyPaidOrder(
   pool: Pool,
   householdId: string,
   listingId: string,
   entries: { dancerId: string; competitionId: string; baseFeeCents?: number; lateFeeCents?: number }[],
-  opts: { eventFeeCents?: number } = {}
+  opts: { eventFeeCents?: number; applicationFeeCents?: number } = {}
 ): Promise<string> {
   const id = randomUUID()
   const eventFee = opts.eventFeeCents ?? 1000
   const total = eventFee + entries.reduce((sum, e) => sum + (e.baseFeeCents ?? 1500) + (e.lateFeeCents ?? 0), 0)
+  const applicationFee = opts.applicationFeeCents ?? Math.round(total * 0.05)
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
@@ -218,8 +221,8 @@ export async function insertLegacyPaidOrder(
     await client.query(
       `INSERT INTO registrations (id, feis_listing_id, household_id, status, total_cents, application_fee_cents,
          event_fee_cents, confirmation_number, paid_at)
-       VALUES ($1, $2, $3, 'paid', $4, 0, $5, $6, now())`,
-      [id, listingId, householdId, total, eventFee, `FT-2026-${id.slice(0, 4).toUpperCase()}`]
+       VALUES ($1, $2, $3, 'paid', $4, $7, $5, $6, now())`,
+      [id, listingId, householdId, total, eventFee, `FT-2026-${id.slice(0, 4).toUpperCase()}`, applicationFee]
     )
     for (const entry of entries) {
       await client.query(
@@ -246,7 +249,7 @@ export async function paidOrdersOf(
   listing: ListingFixture
 ): Promise<PaidOrder[]> {
   const { rows } = await pool.query(
-    `SELECT r.id, r.confirmation_number, r.event_fee_cents, r.purchase_snapshot,
+    `SELECT r.id, r.confirmation_number, r.event_fee_cents, r.application_fee_cents, r.purchase_snapshot,
        coalesce((SELECT jsonb_agg(jsonb_build_object('dancer_id', e.dancer_id,
            'feis_competition_id', e.feis_competition_id, 'base_fee_cents', e.base_fee_cents,
            'late_fee_cents', e.late_fee_cents))
@@ -282,8 +285,12 @@ export function buildPayload(input: {
     feeSchedule: input.listing.feeSchedule,
     paidOrders: input.paidOrders
   })
-  // 5% in whole basis points: $40.00 gives an application fee of 200 cents
-  return buildCreateOrderPayload(priced, { applicationFeePercent: 5, consentIp: '203.0.113.7' })
+  // RunFeis's flat $6 goes on the family's first paid order only; the paid orders the price counted
+  // decide it
+  return buildCreateOrderPayload(priced, {
+    paidOrders: input.paidOrders ?? [],
+    consentIp: '203.0.113.7'
+  })
 }
 
 export interface DraftOrderFixture {

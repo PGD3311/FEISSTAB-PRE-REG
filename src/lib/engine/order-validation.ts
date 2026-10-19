@@ -1,13 +1,13 @@
 import { getEligibleCompetitions } from '@/lib/engine/eligibility'
 import { parseLocalDate } from '@/lib/format'
 import type {
+  CountedOrder,
   Dancer,
   DancerDanceLevel,
   DancerProfile,
   FeisCompetition,
   FeisListing,
-  Level,
-  PaidOrder
+  Level
 } from '@/lib/types/feis-listing'
 
 export type OrderListing = Pick<
@@ -36,7 +36,7 @@ export interface OrderRequest {
   competitions: FeisCompetition[]
   entries: RequestedEntry[]
   /** The family's paid orders for this feis: their dances can't be entered again */
-  paidOrders?: PaidOrder[]
+  paidOrders?: CountedOrder[]
 }
 
 export type OrderValidation = { ok: true; ageCutoffDate: Date } | { ok: false; error: string }

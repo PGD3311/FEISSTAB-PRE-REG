@@ -8,6 +8,7 @@ import {
 } from '@/lib/engine/order-validation'
 import type {
   ChampionshipStatus,
+  CountedOrder,
   CountedOrders,
   FeeBreakdown,
   FeeCategoryType,
@@ -29,6 +30,27 @@ export const ELIGIBILITY_VERSION = 'eligibility-2026-10-16'
 export const CONSENT_VERSION = 'consent-2026-10-16b'
 /** The RunFeis /terms and /privacy pages; must change in the same commit as either page */
 export const PLATFORM_TERMS_VERSION = 'runfeis-terms-2026-10-16/privacy-2026-10-16'
+
+/**
+ * RunFeis's own fee, taken out of the hosting school's share as Stripe's application_fee_amount:
+ * a flat $6, once per family per feis (Daniel, 2026-10-19). A code constant, not a setting.
+ */
+export const RUNFEIS_FEE_CENTS = 600
+
+/**
+ * The application fee an order carries. The $6 goes on the family's first paid order for the feis:
+ * nothing on a $0 order (it never reaches Stripe), nothing once any earlier paid order carried a
+ * fee (this includes an order made under the old 5% percentage), and never more than the order's
+ * own total. So an add-on carries none, and the family's total is never touched.
+ */
+export function runfeisFeeCents(
+  totalCents: number,
+  paidOrders: Pick<PaidOrder, 'application_fee_cents'>[]
+): number {
+  if (totalCents <= 0) return 0
+  if (paidOrders.some((order) => order.application_fee_cents > 0)) return 0
+  return Math.min(RUNFEIS_FEE_CENTS, totalCents)
+}
 
 export interface SnapshotDancer {
   id: string
@@ -146,6 +168,7 @@ export interface PaidOrderRow {
   id: string
   confirmation_number: string | null
   event_fee_cents: number
+  application_fee_cents: number
   purchase_snapshot: Pick<PurchaseSnapshot, 'competitions'> | null
   registration_entries: {
     dancer_id: string
@@ -173,6 +196,7 @@ export function paidOrdersFrom(
       id: row.id,
       confirmation_number: row.confirmation_number,
       event_fee_cents: row.event_fee_cents,
+      application_fee_cents: row.application_fee_cents,
       entries: row.registration_entries.map((entry) => ({
         dancer_id: entry.dancer_id,
         competition_id: entry.feis_competition_id,
@@ -192,10 +216,12 @@ export function paidOrdersFrom(
  * The counted-orders record exactly as create_order rebuilds it in SQL (spec §4): orders sorted by
  * id, each order's entries by dancer then competition, ids in lower case, every key present, and
  * null for a family with no paid orders. The two are compared as jsonb, so any difference refuses.
+ * An order's application_fee_cents is not in it: pricing doesn't count it, and the SQL record has
+ * none.
  */
 export function countedOrdersRecord(orders: PaidOrder[]): CountedOrders | null {
   if (orders.length === 0) return null
-  const sorted: PaidOrder[] = orders
+  const sorted: CountedOrder[] = orders
     .map((order) => ({
       id: order.id.toLowerCase(),
       confirmation_number: order.confirmation_number ?? null,
@@ -349,20 +375,19 @@ export function priceOrder(input: PriceOrderInput): PricedOrder {
   return { breakdown, snapshot }
 }
 
-/** What create_order (migration 013) receives. The database checks it against the snapshot. */
+/**
+ * What create_order (migration 013) receives. The database checks it against the snapshot.
+ * paidOrders are the family's paid orders for this feis, the ones Submit priced the order on: they
+ * decide whether this order carries RunFeis's flat fee.
+ */
 export function buildCreateOrderPayload(
   order: PricedOrder,
-  opts: { applicationFeePercent: number; consentIp: string | null }
+  opts: { paidOrders: PaidOrder[]; consentIp: string | null }
 ): CreateOrderPayload {
-  const percent = opts.applicationFeePercent
-  if (!Number.isFinite(percent) || percent < 0 || percent >= 100) {
-    throw new Error(`The application fee percent must be at least 0 and below 100, not ${percent}`)
-  }
   const total = order.breakdown.grand_total_cents
   return {
     total_cents: total,
-    // Whole basis points: a float percent mis-rounds half cents (2.9% of 500 is 15, not 14)
-    application_fee_cents: Math.round((total * Math.round(percent * 100)) / 10000),
+    application_fee_cents: runfeisFeeCents(total, opts.paidOrders),
     event_fee_cents: order.breakdown.event_fee_cents,
     is_late: order.breakdown.active_late_tier !== null,
     consent_ip: opts.consentIp,

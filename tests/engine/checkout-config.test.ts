@@ -170,7 +170,7 @@ describe('the checkout for an order Submit priced', () => {
       entries: [{ dancerId: 'd1', competitionId: 'c1' }, { dancerId: 'd1', competitionId: 'c2' }],
       feeSchedule: schedule,
     })
-    const order = buildCreateOrderPayload(priced, { applicationFeePercent: 2.9, consentIp: null })
+    const order = buildCreateOrderPayload(priced, { paidOrders: [], consentIp: null })
     const config = buildCheckoutConfig(configInput({
       totalCents: order.total_cents, applicationFeeCents: order.application_fee_cents,
       eventFeeCents: order.event_fee_cents, snapshot: order.purchase_snapshot,
@@ -182,8 +182,7 @@ describe('the checkout for an order Submit priced', () => {
       { name: 'Late fee', amount_cents: 2500 }
     ])
     expect(lineTotal(config.line_items)).toBe(order.total_cents)
-    // The config carries the fee Submit worked out in whole basis points: 2.9% of $65.00 is 188.5 cents,
-    // so 189 (a float percent gives 188)
-    expect(config).toMatchObject({ total_cents: 6500, application_fee_cents: 189 })
+    // The config carries the fee Submit worked out: a first order, so RunFeis's flat $6
+    expect(config).toMatchObject({ total_cents: 6500, application_fee_cents: 600 })
   })
 })

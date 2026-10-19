@@ -9,6 +9,8 @@ import {
   paidOrdersFrom,
   PRICING_VERSION,
   priceOrder,
+  RUNFEIS_FEE_CENTS,
+  runfeisFeeCents,
   type PaidOrderRow,
   type PriceOrderInput
 } from '@/lib/engine/purchase-snapshot'
@@ -127,11 +129,70 @@ describe('priceOrder', () => {
   })
 })
 
+/** A paid order of the family's, as Submit reads it; the fee rule only looks at the fee it took */
+const paidWithFee = (application_fee_cents: number): PaidOrder => ({
+  id: `7d1a0000-0000-4000-8000-${String(application_fee_cents).padStart(12, '0')}`,
+  confirmation_number: 'RF-2026-AAAAA',
+  event_fee_cents: 1000,
+  application_fee_cents,
+  entries: [
+    {
+      dancer_id: 'd1',
+      competition_id: 'c1',
+      base_fee_cents: 1500,
+      late_fee_cents: 0,
+      counts_toward_family_cap: true
+    }
+  ]
+})
+
+// Daniel, 2026-10-19: RunFeis takes a flat $6 once per family per feis, from the host's share
+describe('runfeisFeeCents', () => {
+  it('is a flat $6 as a code constant', () => {
+    expect(RUNFEIS_FEE_CENTS).toBe(600)
+  })
+
+  it('takes the $6 on a first order', () => {
+    expect(runfeisFeeCents(4000, [])).toBe(600)
+  })
+
+  it('takes nothing when an earlier paid order already carried the fee', () => {
+    expect(runfeisFeeCents(1500, [paidWithFee(600)])).toBe(0)
+  })
+
+  it('takes nothing after a legacy paid order that carried the old 5% fee', () => {
+    expect(runfeisFeeCents(1500, [paidWithFee(425)])).toBe(0)
+  })
+
+  it("takes the $6 on the next paid order when the family's earlier paid order was $0", () => {
+    expect(runfeisFeeCents(1500, [paidWithFee(0)])).toBe(600)
+  })
+
+  it('takes nothing when any one of several earlier paid orders carried the fee', () => {
+    expect(runfeisFeeCents(1500, [paidWithFee(0), paidWithFee(600), paidWithFee(0)])).toBe(0)
+  })
+
+  it('takes nothing on a $0 order, which never reaches Stripe', () => {
+    expect(runfeisFeeCents(0, [])).toBe(0)
+    expect(runfeisFeeCents(0, [paidWithFee(0)])).toBe(0)
+  })
+
+  it('takes the whole order when it is under $6, so the fee never exceeds the payment', () => {
+    expect(runfeisFeeCents(300, [])).toBe(300)
+    expect(runfeisFeeCents(599, [])).toBe(599)
+    expect(runfeisFeeCents(600, [])).toBe(600)
+    expect(runfeisFeeCents(601, [])).toBe(600)
+  })
+})
+
 describe('buildCreateOrderPayload', () => {
   it('carries whole-cent totals, the entries and the snapshot', () => {
-    const payload = buildCreateOrderPayload(priceOrder(input()), { applicationFeePercent: 3.3, consentIp: '203.0.113.7' })
+    const payload = buildCreateOrderPayload(priceOrder(input()), {
+      paidOrders: [],
+      consentIp: '203.0.113.7'
+    })
     expect(payload.total_cents).toBe(4000)
-    expect(payload.application_fee_cents).toBe(132)
+    expect(payload.application_fee_cents).toBe(600)
     expect(payload.event_fee_cents).toBe(1000)
     expect(payload.is_late).toBe(false)
     expect(payload.consent_ip).toBe('203.0.113.7')
@@ -140,32 +201,51 @@ describe('buildCreateOrderPayload', () => {
   })
 
   it('carries the current RunFeis consent and terms versions', () => {
-    const payload = buildCreateOrderPayload(priceOrder(input()), { applicationFeePercent: 5, consentIp: null })
+    const payload = buildCreateOrderPayload(priceOrder(input()), {
+      paidOrders: [],
+      consentIp: null
+    })
     expect(payload.consent_version).toBe('consent-2026-10-16b')
     expect(payload.platform_terms_version).toBe('runfeis-terms-2026-10-16/privacy-2026-10-16')
   })
 
-  /** The application fee on an order whose total is exactly `totalCents` (one entry, no event fee) */
-  function applicationFee(totalCents: number, applicationFeePercent: number): number {
-    const order = priceOrder(input({
-      feeSchedule: { ...schedule, event_fee_cents: 0, solo_fee_cents: totalCents },
-      entries: [{ dancerId: 'd1', competitionId: 'c1' }],
-    }))
-    expect(order.breakdown.grand_total_cents).toBe(totalCents)
-    return buildCreateOrderPayload(order, { applicationFeePercent, consentIp: null }).application_fee_cents
-  }
+  it('puts the $6 on the first order, and nothing on an add-on after a fee-paying order', () => {
+    const first = buildCreateOrderPayload(priceOrder(input()), { paidOrders: [], consentIp: null })
+    expect(first.application_fee_cents).toBe(600)
 
-  it('works the application fee in basis points, so an exact half cent rounds up', () => {
-    // As a float, 500 × 0.029 is 14.499…, which rounds to 14
-    expect(applicationFee(500, 2.9)).toBe(15)
-    expect(applicationFee(1000, 5)).toBe(50)
-    expect(applicationFee(1000, 0)).toBe(0)
+    const paid = [paidWithFee(first.application_fee_cents)]
+    const addOn = priceOrder(
+      input({ entries: [{ dancerId: 'd1', competitionId: 'c2' }], paidOrders: paid })
+    )
+    const payload = buildCreateOrderPayload(addOn, { paidOrders: paid, consentIp: null })
+    expect(payload.total_cents).toBe(1500)
+    expect(payload.application_fee_cents).toBe(0)
   })
 
-  it('refuses an application fee percent that is not a number from 0 up to 100, naming it', () => {
-    for (const percent of [Number.NaN, -1, 100, Infinity]) {
-      expect(() => applicationFee(1000, percent), String(percent)).toThrow(new RegExp(`, not ${percent}$`))
-    }
+  it("changes only the fee, never the family's total or anything else", () => {
+    const priced = priceOrder(input())
+    const withFee = buildCreateOrderPayload(priced, { paidOrders: [], consentIp: null })
+    const without = buildCreateOrderPayload(priced, {
+      paidOrders: [paidWithFee(600)],
+      consentIp: null
+    })
+    expect(without).toEqual({ ...withFee, application_fee_cents: 0 })
+    expect(withFee.total_cents).toBe(priced.breakdown.grand_total_cents)
+  })
+
+  it('takes the fee from an order under $6, and none from a $0 order', () => {
+    const orderOf = (cents: number) =>
+      priceOrder(
+        input({
+          feeSchedule: { ...schedule, event_fee_cents: 0, solo_fee_cents: cents },
+          entries: [{ dancerId: 'd1', competitionId: 'c1' }]
+        })
+      )
+    const fee = (cents: number) =>
+      buildCreateOrderPayload(orderOf(cents), { paidOrders: [], consentIp: null })
+    expect(fee(300)).toMatchObject({ total_cents: 300, application_fee_cents: 300 })
+    expect(fee(1000)).toMatchObject({ total_cents: 1000, application_fee_cents: 600 })
+    expect(fee(0)).toMatchObject({ total_cents: 0, application_fee_cents: 0 })
   })
 })
 
@@ -267,6 +347,7 @@ describe('pricing with earlier paid orders', () => {
     id,
     confirmation_number: `RF-2026-${id.slice(0, 5).toUpperCase()}`,
     event_fee_cents: 1000,
+    application_fee_cents: 600,
     entries: [
       {
         dancer_id: 'd1',
@@ -277,6 +358,17 @@ describe('pricing with earlier paid orders', () => {
       }
     ],
     ...overrides
+  })
+
+  /**
+   * An order as the frozen record holds it: the fee RunFeis took is not in it, because create_order
+   * rebuilds the record in SQL without it and compares the two exactly
+   */
+  const counted = (order: PaidOrder) => ({
+    id: order.id,
+    confirmation_number: order.confirmation_number,
+    event_fee_cents: order.event_fee_cents,
+    entries: order.entries
   })
 
   it('freezes prior as null on a first order', () => {
@@ -292,7 +384,7 @@ describe('pricing with earlier paid orders', () => {
     expect(breakdown.event_fee_cents).toBe(0)
     expect(breakdown.grand_total_cents).toBe(1500)
     expect(snapshot.pricing.prior).toEqual({
-      orders: [first],
+      orders: [counted(first)],
       event_fee_paid: true,
       cappable_paid_cents: 1500,
       late_fee_dancer_ids: [],
@@ -373,6 +465,22 @@ describe('pricing with earlier paid orders', () => {
     ])
     expect(countedOrdersRecord([])).toBeNull()
   })
+
+  it('leaves the fee RunFeis took out of the record create_order compares exactly', () => {
+    const record = countedOrdersRecord([
+      paid('7d1a0000-0000-4000-8000-000000000001', { application_fee_cents: 600 }),
+      paid('7d1a0000-0000-4000-8000-000000000002', { application_fee_cents: 0 })
+    ])
+    for (const order of record?.orders ?? []) {
+      expect(Object.keys(order).sort()).toEqual([
+        'confirmation_number',
+        'entries',
+        'event_fee_cents',
+        'id'
+      ])
+    }
+    expect(JSON.stringify(record)).not.toContain('application_fee')
+  })
 })
 
 describe('paidOrdersFrom', () => {
@@ -380,6 +488,7 @@ describe('paidOrdersFrom', () => {
     id: 'o1',
     confirmation_number: 'RF-2026-AAAAA',
     event_fee_cents: 1000,
+    application_fee_cents: 600,
     purchase_snapshot,
     registration_entries: [
       { dancer_id: 'd1', feis_competition_id: 'c1', base_fee_cents: 1500, late_fee_cents: 0 }
@@ -400,6 +509,7 @@ describe('paidOrdersFrom', () => {
       id: 'o1',
       confirmation_number: 'RF-2026-AAAAA',
       event_fee_cents: 1000,
+      application_fee_cents: 600,
       entries: [
         {
           dancer_id: 'd1',
@@ -410,6 +520,20 @@ describe('paidOrdersFrom', () => {
         }
       ]
     })
+  })
+
+  it('copies the fee RunFeis took on each order, whatever it was', () => {
+    const rows = [
+      { ...row(null), id: 'o1', application_fee_cents: 600 },
+      { ...row(null), id: 'o2', application_fee_cents: 425 },
+      { ...row(null), id: 'o3', application_fee_cents: 0 }
+    ]
+    const orders = paidOrdersFrom(rows, [])
+    expect(orders.map((o) => [o.id, o.application_fee_cents])).toEqual([
+      ['o1', 600],
+      ['o2', 425],
+      ['o3', 0]
+    ])
   })
 
   it("counts an entry toward the family max when its competition can't be found at all", () => {

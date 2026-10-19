@@ -32,6 +32,8 @@ export class FakeStripe implements StripeGateway {
   /** Make every list call fail, as if Stripe were unreachable */
   listFails = false
   createCalls = 0
+  /** The request body of each session this fake made, as the real gateway sends it to Stripe */
+  readonly requests: ReturnType<typeof checkoutSessionParams>[] = []
   private readonly byKey = new Map<string, { params: string; outcome: CreateSessionOutcome }>()
   private counter = 0
   /** Unique to this fake, so no two fakes make the same session id (the database refuses one session on two orders) */
@@ -148,6 +150,7 @@ export class FakeStripe implements StripeGateway {
       metadata: { ...config.metadata }, account: config.account, created: this.now().getTime(),
     }
     this.sessions.set(id, session)
+    this.requests.push(checkoutSessionParams(config))
     return session
   }
 

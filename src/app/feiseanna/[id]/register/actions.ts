@@ -151,7 +151,7 @@ async function loadOrderInputs(service: ServiceClient, feisListingId: string, ho
     service
       .from('registrations')
       .select(
-        'id, confirmation_number, event_fee_cents, purchase_snapshot, registration_entries(dancer_id, feis_competition_id, base_fee_cents, late_fee_cents)'
+        'id, confirmation_number, event_fee_cents, application_fee_cents, purchase_snapshot, registration_entries(dancer_id, feis_competition_id, base_fee_cents, late_fee_cents)'
       )
       .eq('feis_listing_id', feisListingId)
       .eq('household_id', householdId)
@@ -236,9 +236,9 @@ export async function createDraftRegistration(
       paidOrders
     })
     payload = buildCreateOrderPayload(priced, {
-      // parseFloat keeps a fractional percent. Missing, it parses as NaN, which the engine refuses
-      // like any value outside 0 to 100, so Submit stops instead of pricing wrongly (spec §4)
-      applicationFeePercent: Number.parseFloat(process.env.STRIPE_APPLICATION_FEE_PERCENT ?? ''),
+      // RunFeis's flat fee goes on the family's first paid order only, so it reads the same paid
+      // orders the price was counted on. create_order refuses if they changed since (spec §4)
+      paidOrders,
       consentIp: clientIpFrom(await headers())
     })
     breakdown = priced.breakdown
