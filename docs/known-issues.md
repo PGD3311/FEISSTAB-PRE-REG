@@ -16,6 +16,9 @@ Found during the October 2026 restyle and left for later. RunFeis is for Northea
 ## Parents
 - **The entry page links to `/terms` and `/privacy`, which don't exist yet.**
 
+## Payments
+- **A refund doesn't return RunFeis's $6.** The runbook's refund step (3b) refunds the payment intent and nothing else, and Stripe returns an application fee only when the refund asks for it. So the feis's account bears the whole refund, and the family's next first paid order carries the $6 again. Decide whether refunds should return it (Daniel, 2026-10-19: not decided). No code refunds anything yet.
+
 ## Already tracked elsewhere
 Payment and Stripe webhook problems are handled by the payment hardening work (`docs/2026-10-16-payment-hardening-design.md`). Dropping or swapping a dance after paying waits on Steve's refund and withdrawal policy.
 

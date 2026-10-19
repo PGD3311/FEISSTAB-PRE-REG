@@ -1,7 +1,7 @@
 # Payment Hardening
 
 **Date:** 2026-10-16
-**Status:** Revision 5: add-on orders and $0 orders come into scope before go-live (see "Changes in Revision 5"). Revision 4 was the implementation baseline for Tasks 1–15, which are built on branch `payment-hardening`; revision 5 changes migrations 012–017 in place (they aren't applied live yet) and the app. Revision 3 made the three payment-correctness fixes, and revision 2 answered the review of revision 1. The implementation plan is `docs/2026-10-16-payment-hardening.md`.
+**Status:** Revision 5: add-on orders and $0 orders come into scope before go-live (see "Changes in Revision 5"). Revision 4 was the implementation baseline for Tasks 1–15, which are built on branch `payment-hardening`; revision 5 changes migrations 012–017 in place (they aren't applied live yet) and the app. Revision 3 made the three payment-correctness fixes, and revision 2 answered the review of revision 1. The implementation plan is `docs/2026-10-16-payment-hardening.md`. Amended 2026-10-19: RunFeis's own fee is a flat $6 once per family per feis, not a percentage (Decision 14).
 **Goal:**
 - An order counts as paid only when three things are true:
   - The right amount reached the Stripe account the order was bound to.
@@ -29,6 +29,7 @@ Add-on orders went live on `main` (commit `0670edb`, migration `019_add_on_order
 | The entry page, the add-on receipt, My entries, the success page and the email handle several orders per feis. One pure function, `canStartOrder`, decides when a new order (a first order or an add-on) can start, and blocks it while message A is open | §12, §14 |
 | The runbook (`docs/runbooks/payment-exceptions.md`) is updated: the "a newer order" wording, step 3a's conditions, the new admin rule, and $0 orders. `CLAUDE.md`'s rule that only `confirm_order_payment` marks an order paid also names `confirm_free_order` and `payments_admin.confirm_late_payment` | §11, §6 |
 | Tests and rollout cover add-ons and $0 orders. The test database applies 019 and 020, as live will have them | Testing, Rollout |
+| RunFeis's own fee is a flat $6, once per family per feis, taken from the host's share. It replaces the percentage (`STRIPE_APPLICATION_FEE_PERCENT`), which is no longer read. The family's total is unchanged and the family sees no fee line. Amended 2026-10-19, before go-live (Decision 14) | §4, §6, Rollout |
 
 ## Changes in Revision 4
 
@@ -39,7 +40,7 @@ Building and reviewing Tasks 1–4 settled these. None of them changes the desig
 | Every privilege on the order tables is revoked from `PUBLIC`, `anon` and `authenticated` before `SELECT` is granted back. 012 turns row-level security on itself. `TRUNCATE` is refused for every role | §2 |
 | A checkout claim is all-or-nothing and never null. An unpaid order always has a hold. Moving to `paid` or `pending_payment` needs payment evidence. Entries and snapshots can only be written in the transaction that creates or pays the order | §3 |
 | Submit judges eligibility against every competition of the feis, with 1 January of the feis year as the fallback age cutoff, exactly as the entry page does | §4 |
-| The purchase snapshot also freezes each competition's labels, age bounds and flags, and the feis's own terms link. The application fee is worked out in whole basis points | §4 |
+| The purchase snapshot also freezes each competition's labels, age bounds and flags, and the feis's own terms link. The application fee is RunFeis's flat $6, once per family per feis (revision 4 first worked it out as a percentage in whole basis points; Decision 14 replaced that) | §4 |
 | The consent and terms versions name the documents the parent actually accepts. The checkbox also covers a guardian or family friend entering a dancer with permission | §4, Decision 6 |
 | `consent_ip` and `checkout_config` can't be read by parents or organisers | §2, Decision 7 |
 | The confirmation number uses the year in Eastern time | §9 |
@@ -286,7 +287,12 @@ Triggers enforce this for every role, including the service role:
 
    `PurchaseSnapshot.version` stays 1: `pricing.prior` is a new field, and the snapshot has no readers that depend on its absence.
 
-   The application fee is `STRIPE_APPLICATION_FEE_PERCENT` of the total, worked out in whole basis points and rounded to the cent. If the percentage is missing or out of range, Submit stops instead of pricing the order wrongly.
+   RunFeis's own fee is a flat $6 (`RUNFEIS_FEE_CENTS = 600`, a constant in the code, not a Vercel setting), taken once per family per feis as Stripe's application fee, out of the hosting school's share (Decision 14). The family's total never changes, and the family sees no fee line on the entry page, the receipt or the emails. An order's application fee is:
+   - 0 when the order's total is 0, since a $0 order never reaches Stripe.
+   - 0 when any of the family's paid orders for this feis (the ones step 4 counted) already carried an application fee. That includes a paid order made under the old 5% default.
+   - Otherwise the smaller of $6 and the order's total.
+
+   So the first paid order carries the $6, and an add-on carries none. If the family's first order was $0, their next paid order carries it. Submit decides this from the same paid orders it priced the order on, so the exact check of the counted orders below also refuses an order whose decision went stale: if the family's paid orders change between Submit reading them and creating the order, nothing is created. The counted-orders record doesn't hold the fee, and the database stores the order's fee as given: it never changes once the order is created.
 
    If the priced total is 1 to 49 cents, Submit refuses with "This order is too small to pay by card. Please contact the organiser." and creates nothing, since Stripe's card minimum is 50 cents. `create_order` refuses it too (Decision 10). A total of 0 is allowed: it's typically an add-on once the family max is reached, and Pay confirms it without Stripe (§6, Decision 9).
 
@@ -364,7 +370,7 @@ Nothing is visible to other requests until the transaction commits, and nothing 
    - Otherwise build `checkout_config`, the complete Stripe request, from the order's stored values. It contains:
      - the bound connected account (the listing's `stripe_account_id` now)
      - currency `usd`
-     - the application fee stored on the order
+     - the application fee stored on the order: RunFeis's $6 on a family's first paid order, and 0 on an add-on. When it is 0, the request sent to Stripe leaves `application_fee_amount` out, since we haven't verified that Stripe accepts 0; the stored `checkout_config` still says 0, and 014 still checks that it equals the order's
      - the line items: names and amounts from `purchase_snapshot`, collapsed to one line when the family max applies (existing rule)
      - the success and cancel URLs
      - `payment_method_types: ['card']`; Apple Pay and Google Pay work through card
@@ -838,7 +844,7 @@ This runs with the real Stripe setup, using test keys and a connected test accou
 - delivering the same event twice
 - delivering the webhook late, after the expiry job has run
 - an expiry notice for an old session
-- an add-on paid by card, with no second event fee and the family max across orders
+- an add-on paid by card, with no second event fee, no second RunFeis $6 fee, and the family max across orders
 - a $0 add-on confirmed without Stripe
 - an add-on refused for a dance already paid for
 - a family whose first order's late payment is an open message-A case: the entry page shows message A and offers no way to choose or pay a new order
@@ -858,7 +864,7 @@ This runs with the real Stripe setup, using test keys and a connected test accou
    - unpaid orders without `purchase_snapshot`
    - row-level security, column-level grants and `TRUNCATE` on the three order tables
    - any `confirmed` orders, or a status check that allows them (from 011)
-   - the live `STRIPE_APPLICATION_FEE_PERCENT` value
+   - whether `STRIPE_APPLICATION_FEE_PERCENT` was set on live. It was unset, so live's Submit used its old default of 5%. Paid orders made under it carry a 5% application fee, and a family with one isn't charged the $6 again (Decision 14). Nothing reads the variable any more
    - that `idx_registrations_active_unique` is 019's: on `(feis_listing_id, household_id)`, for `draft` and `pending_payment` only
    - add-ons made by `main`'s live code:
      - families with more than one paid order for a feis
@@ -882,7 +888,7 @@ This runs with the real Stripe setup, using test keys and a connected test accou
    - `PAYMENTS_ALERT_EMAIL`
    - `NOTIFICATIONS_CRON_SECRET`
 
-   The Stripe and Resend keys come with their own items.
+   The Stripe and Resend keys come with their own items. RunFeis's $6 fee needs no setting: it is a constant in the code.
 5. **Apply 012–017 and then 020 (019 is already live), deploy straight after, then schedule the notification job.** 020 runs last: it refuses to apply unless the index is 019's, which also proves 012–017 left it alone. The old code can't write under the new permissions, so the migration and the deploy go out together. That includes `main`'s add-on code, which writes order tables directly; the deploy replaces it. If the deploy fails, registration stays shut until a fixed deploy goes out. There are no real registrations yet, so there's nothing to roll back.
 6. **Run the live verification** and record the result here. It includes the add-on and $0 checks, and checking that the organiser entries view works under the new policies and lists a family's add-on entries.
 
@@ -906,6 +912,10 @@ This runs with the real Stripe setup, using test keys and a connected test accou
 11. **The family fee is charged once:** an add-on charges the event fee only if no earlier paid order charged one (`main`'s rule: any paid order with `event_fee_cents > 0`).
 12. **Late payments after a newer order expired:** `payments_admin.confirm_late_payment` may confirm a late payment when a newer order of the family reached checkout and then expired unpaid. Rule (b) turns any later payment on that newer order into a case.
 13. **No new order while message A is open:** while the family has an open message-A case for a feis, no new order for that feis can start. That covers a first order as well as an add-on. The entry page blocks choosing and paying, and "Add dances" is hidden on the entry page and in My entries. Submit and Pay also refuse on the server, with message A and its reference, so an entry page opened before the case existed (another tab, or Back from Stripe) can't start or pay an order; if the open-case check can't be read, they refuse and ask the family to try again. This extension to a first order, and the server check, are the controller's rulings.
+
+## Decisions (Daniel, 2026-10-19)
+
+14. **RunFeis's fee is a flat $6, once per family per feis:** it replaces the percentage, and is taken as Stripe's application fee, out of the hosting school's share. The family's total never changes and the family sees no fee line, so the family terms ("may add a small service fee, shown before you pay") stay true and `PLATFORM_TERMS_VERSION` doesn't change. The first paid order for a feis carries the $6; an add-on carries none, and nor does any order after a paid order that carried a fee (a legacy 5% order counts). A $0 order carries none, so a family whose first order was $0 pays the $6 on their next paid order. An order under $6 carries its whole total, so the fee never exceeds the payment. The amount is a code constant, `RUNFEIS_FEE_CENTS`, and nothing reads `STRIPE_APPLICATION_FEE_PERCENT` any more. A refund of a family's payment in Stripe returns RunFeis's $6 only if the refund asks for it, and the runbook's refund step doesn't (see the runbook); whether to return it hasn't been decided.
 
 ## Dependencies
 

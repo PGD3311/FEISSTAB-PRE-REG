@@ -75,6 +75,10 @@
     - **The app (batch 4):** Back from Stripe re-enables Pay. The dashboard says when it couldn't load entries. The success page shows "This payment has been reviewed…" once a message-A case is closed. One bad email row doesn't stall the rest. An ignored failure notice is logged.
   - **Task 16** is updated to match: the live test fixture's snapshot has `rules`; Step 4 sets `STRIPE_APPLICATION_FEE_PERCENT` and `NEXT_PUBLIC_BASE_URL`, checks Fluid compute and sets `PAYMENTS_ALERT_EMAIL` (Task 16 goes live with email on: Daniel, 2026-10-17); Step 7 reloads the API's schema cache and adds the three new webhook events after the deploy; the live script also checks `payments_admin`, the email queue functions and the one-active-order index; Step 8 dry-reads the runbook and checks the email job isn't paused; Step 12 confirms the first real email arrives.
 - **Spec revision 5 (add-on orders and $0 orders, Daniel 2026-10-17) adds Tasks 17–21, which run before Task 16.** Task 17 merges `main` (migration 019 and its add-on screens) into this branch; Tasks 18–20 rebuild add-ons and $0 orders on this branch's order model (012, 013, 015 and 017 change in place, and the new last migration 020 checks 019's index); Task 21 updates the runbook and `CLAUDE.md`. Task 16 is updated for them: it applies 012–017 and then 020, its live check counts main's live add-ons, and its rehearsal and live tests cover an add-on, a $0 add-on and late payments against several orders.
+- **A flat RunFeis fee (Daniel, 2026-10-19), built on this branch before it goes live:** RunFeis's own fee is now a flat $6, once per family per feis, taken from the host's share. It replaces the percentage, and the family's total doesn't change.
+  - Submit decides it from the same paid orders it priced the order on (`runfeisFeeCents` in `src/lib/engine/purchase-snapshot.ts`): the first paid order carries the $6, and an add-on carries none.
+  - Nothing reads `STRIPE_APPLICATION_FEE_PERCENT` any more, and no Vercel setting is needed.
+  - The earlier tasks' text below, which describes the percentage and basis points (Tasks 4 and 7, and their tests), is left as it was written. The code is the record. Task 16 below is updated: Steps 2, 4 and 10 no longer set or read the variable, and Step 11 checks the $6 in Stripe. The Task 16 line above that says Step 4 sets `STRIPE_APPLICATION_FEE_PERCENT` is the old plan.
 
 ## Global Constraints
 
@@ -16291,7 +16295,7 @@ Section 10's other findings are for information: families with several paid orde
 
 Otherwise, carry on. Note whether `cron.job_run_details` shows the old hold-expiry job failing; 012 replaces it either way.
 
-Also read `STRIPE_APPLICATION_FEE_PERCENT` for Production and Preview in Vercel (project "project-f06v2" → Settings → Environment Variables), and record it. Today's Submit reads it with `parseInt`, so `2.9` charges 2%. From Task 7 on, Submit reads it with `parseFloat` and charges the whole percentage, worked out in basis points, so a fractional value raises the platform fee at deploy. If it's fractional, tell Daniel before Step 7. If it's missing, today's Submit falls back to 5%, but from this branch on a missing value makes every Submit fail to price ("Your entries could not be priced"), so no family can enter until it's set: Step 4 sets it, before Step 7.
+RunFeis's fee needs no setting (Daniel, 2026-10-19): it is a flat $6 in the code, once per family per feis, so there is nothing to read or set in Vercel for it. This step read `STRIPE_APPLICATION_FEE_PERCENT` for Production and Preview (project "project-f06v2" → Settings → Environment Variables) all the same: it was unset on live, so live's Submit used its old default of 5%. Paid orders made under that default carry a 5% application fee, and the flat-fee rule counts them as having carried the fee, so a family with one isn't charged the $6 again on an add-on. Nothing reads the variable any more, so it doesn't matter if it is set or not.
 
 - [ ] **Step 3: Rehearse 012–017 and 020 on a copy of the live data (ask first)**
 
@@ -16470,7 +16474,7 @@ Expected: the last two lines are `PAYMENT HARDENING LIVE TESTS: N/N passed; FAIL
 - [ ] **Step 4: Set and check the Vercel settings (ask first)**
 
 For project "project-f06v2" (team cgds-projects), in Production and Preview (Settings → Environment Variables). Use the Vercel connector once it's reconnected to that team, or Daniel does it in the dashboard. Set or confirm:
-- `STRIPE_APPLICATION_FEE_PERCENT`: RunFeis's platform fee, as a percentage (`2.9` means 2.9%). Daniel hasn't decided the value yet (2026-10-18): ask him then; Step 2 recorded what's there now. It's a percentage of the order total, taken from the organiser's payout as Stripe's application fee; the family's total doesn't change. From this branch on, Submit refuses to price an order without it, so every family's Submit would fail, and Step 7 can't start without it.
+- No fee setting is needed: RunFeis's fee is a flat $6 code constant (`RUNFEIS_FEE_CENTS`), once per family per feis, taken from the organiser's payout as Stripe's application fee. The family's total doesn't change. Nothing reads `STRIPE_APPLICATION_FEE_PERCENT` any more, so don't set it, and Step 7 doesn't wait on it.
 - `NEXT_PUBLIC_BASE_URL`: the site's real URL, with `https://` and no trailing slash. For Preview, the URL previews are tested on, never `localhost`. It's inlined at build time, and it's frozen into every order's Stripe return URLs (at Pay's claim) and into every email, so check it here, before Step 7. Without it they all point to `http://localhost:3000`. After changing it, redeploy, since a built site keeps the old value.
 - `SUPABASE_SERVICE_ROLE_KEY`: Submit, Pay, Cancel, the webhook and the email job use it.
 - `NOTIFICATIONS_CRON_SECRET`: from `openssl rand -hex 32`. Step 8 stores the same value in Vault.
@@ -16555,7 +16559,7 @@ Append to the "Rollout" section of `docs/2026-10-16-payment-hardening-design.md`
 - Live check before: <summary of anything found and how it was handled>
 - Add-ons from main's live code: <families with several paid orders, pairs paid twice, family fees paid twice, paid $0 orders, and what was done about each>
 - Rehearsal on a copy of the live data: <REHEARSAL PASSED, and the before and after counts>
-- STRIPE_APPLICATION_FEE_PERCENT: <the value in Production and Preview>
+- RunFeis fee: a flat $6 in the code, with no Vercel setting; `STRIPE_APPLICATION_FEE_PERCENT` was <unset on live, so live used the old 5% default>
 - NEXT_PUBLIC_BASE_URL: <the value in Production and Preview>; Fluid compute: <on, or the maxDuration set>
 - Email: on (EMAIL_FROM RunFeis <entries@runfeis.com>, PAYMENTS_ALERT_EMAIL set)
 - Schema reload: <the smoke call's answer>
@@ -16577,7 +16581,7 @@ Once Stripe test keys and a connected test account exist, run each of these on a
 
 | Case | Expected |
 |---|---|
-| Pay | Paid, with an `RF-` confirmation number |
+| Pay | Paid, with an `RF-` confirmation number. Stripe shows an application fee of $6.00 on a first test order |
 | Back out of Stripe and press Pay again | The same checkout page resumes |
 | Double-click Pay | One checkout session in Stripe |
 | Cancel mid-checkout | Cancelled; the old Stripe link shows as expired |
@@ -16585,7 +16589,7 @@ Once Stripe test keys and a connected test account exist, run each of these on a
 | Resend the same event from the Stripe dashboard | Unchanged |
 | Pause the webhook endpoint, pay, wait past the hold, then resume | Confirmed late; a `late_payment_conflict` case only if, meanwhile, the family started another order that is still unpaid, or paid one this order didn't count |
 | Send an expiry notice for an old session (Stripe CLI `stripe trigger`, or resend an old event) | Unchanged |
-| After paying, add a dance by card (Add dances) | A second paid order with no second family fee, priced with the family max across both orders; the email says the dance was added and shows the dancer's number |
+| After paying, add a dance by card (Add dances) | A second paid order with no second family fee, priced with the family max across both orders; the email says the dance was added and shows the dancer's number. Stripe shows no application fee on the add-on |
 | After paying, add a dance once the family max is reached | The receipt says there's nothing to pay and the button reads Confirm entries; confirmed without Stripe, with an `RF-` number and a $0.00 email |
 | Add a dance already paid for (from a second tab opened before the first add-on was paid) | Refused: "One of these dances is already entered and paid for…" or "…is already entered in…" |
 | A family whose late payment is an open message-A case | The entry page shows message A and offers no way to choose dances or pay, and My entries offers no Add dances |

@@ -114,6 +114,7 @@ npx vitest run tests/engine/  # engine tests only
 - Submit and Pay also enforce the message-A part of that gate on the server: `newOrderGate()` (`src/lib/payment-review-messages.ts`, called by `newOrderGateFor` in the register `actions.ts` through `checkNewOrderGate()` in `src/app/_payments/new-order-gate.ts`) refuses with message A while the family has an open message-A case for the feis, even from a page opened before the case existed, and refuses if that can't be checked
 - Reads of `registrations` with a user's client select `REGISTRATION_COLUMNS` (`src/lib/registration-columns.ts`) or a subset of it, never `*`. `consent_ip` and `checkout_config` are private: the database refuses them to a user's client, so a new `registrations` column stays private until a migration grants it and it is added to that list
 - Submit refuses an order of 1 to 49 cents (`tooSmallToCharge()` in `src/lib/engine/checkout-policy.ts`), below Stripe's card minimum, and `create_order` refuses it too, so no order is made that could never be paid. A $0 order is allowed: Pay confirms it without Stripe
+- RunFeis's own fee is a flat $6 (`RUNFEIS_FEE_CENTS` in `src/lib/engine/purchase-snapshot.ts`), once per family per feis, never a percentage or a Vercel setting. `runfeisFeeCents()` puts it on the family's first paid order and gives later orders 0 (any earlier paid order that carried a fee counts, legacy 5% ones too), and Submit decides it from the same paid orders it priced on. The Stripe request leaves `application_fee_amount` out when an order's fee is 0. `countedOrdersRecord()` never includes the fee, because `create_order` compares that record exactly
 - Eligibility engine is pure — no Supabase, no side effects
 
 ---
@@ -274,7 +275,7 @@ Organiser creates feis    →  Parents register   →  BRIDGE  →  Check-in →
 | Account Type | **Express** | Bridget needs "connect bank, get paid" — not a full Stripe dashboard. Stripe-hosted onboarding. Organizer cannot bypass platform. |
 | Charge Type | **Direct Charges** | Organizer is merchant of record. Parent's bank statement shows the feis name, not "FeisTab." Refunds from organizer's balance. |
 | Payment UI | **Stripe Checkout (Hosted)** | Zero PCI surface area. Apple Pay, Google Pay, Link out of the box. Mobile-optimized. |
-| Platform Revenue | **Application fee** (flat % per charge) | `application_fee_amount` on each payment. |
+| Platform Revenue | **Application fee** (flat $6 per family per feis) | `application_fee_amount` on the family's first paid order for a feis, out of the host's share (Daniel, 2026-10-19). None on an add-on or a $0 order. The family's total never changes. |
 | Currency | **Organizer's local currency** | Feis in Ireland = charge EUR. Parent's bank handles conversion. |
 | Webhooks | **Two separate endpoints** | Platform events + Connect events require separate Stripe webhook configurations. |
 
