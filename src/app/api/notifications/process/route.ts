@@ -10,7 +10,8 @@ function authorised(header: string | null, secret: string | undefined): boolean 
   return given.length === expected.length && timingSafeEqual(given, expected)
 }
 
-// Called every 5 minutes by pg_cron through pg_net (docs/runbooks/payment-exceptions.md, "Emails")
+// For pg_cron through pg_net once the email job is on; off until families sign up (Daniel, 2026-10-19).
+// See docs/runbooks/payment-exceptions.md, "Emails"
 export async function POST(request: Request) {
   if (!authorised(request.headers.get('authorization'), process.env.NOTIFICATIONS_CRON_SECRET)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
