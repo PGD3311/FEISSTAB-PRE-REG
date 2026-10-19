@@ -1,9 +1,10 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { createClient, getSignedInUser } from '@/lib/supabase/server'
-import { competitionFeeCents, getActiveLateTier } from '@/lib/engine/fee-calculator'
-import { formatCents, sortLateTiers } from '@/lib/format'
-import { entryDeadline, groupForEntryForm } from '@/lib/entry-display'
+import { getActiveLateTier } from '@/lib/engine/fee-calculator'
+import { formatCents, siteName, sortLateTiers, websiteHref } from '@/lib/format'
+import { entryDeadline } from '@/lib/entry-display'
+import { joinWithAnd, syllabusOutline } from '@/lib/syllabus-summary'
 import { FeisCover } from '@/components/feis-cover'
 import type {
   FeeSchedule,
@@ -39,10 +40,6 @@ function tierStart(tier: LateFeeTier, timeZone: string): string {
   })
 }
 
-function competitionName(comp: FeisCompetition): string {
-  return comp.competition_type === 'solo' && comp.dance_label ? comp.dance_label : comp.display_name
-}
-
 export default async function FeisDetailPage({ params }: PageParams) {
   const { id } = await params
   const supabase = await createClient()
@@ -75,13 +72,7 @@ export default async function FeisDetailPage({ params }: PageParams) {
 
   const feeSchedule = feeResult.data as FeeSchedule | null
   const competitions = (compsResult.data ?? []) as FeisCompetition[]
-  const groups = groupForEntryForm(
-    competitions.map((competition) => ({
-      competition,
-      eligible: true,
-      reason: ''
-    }))
-  )
+  const outline = syllabusOutline(competitions)
   const deadline = entryDeadline(listing)
   const activeTier = feeSchedule ? getActiveLateTier(feeSchedule.late_fee_tiers, new Date()) : null
   const enterHref = `/feiseanna/${listing.id}/register`
@@ -108,63 +99,45 @@ export default async function FeisDetailPage({ params }: PageParams) {
       />
 
       <main className="mx-auto grid max-w-6xl items-start gap-7 px-4 py-7 sm:px-7 lg:grid-cols-[minmax(0,1fr)_300px]">
-        <div className="grid min-w-0 gap-7">
-          {listing.description && (
+        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-7">
+          {(listing.description || listing.website_url) && (
             <section>
               <h2 className="mb-2 text-[22px] font-extrabold [font-stretch:75%]">
                 About this feis
               </h2>
-              <p className="max-w-[65ch] text-[15px] leading-relaxed whitespace-pre-line">
-                {listing.description}
-              </p>
+              {listing.description && (
+                <p className="max-w-[65ch] text-[15px] leading-relaxed whitespace-pre-line">
+                  {listing.description}
+                </p>
+              )}
+              {listing.website_url && (
+                <p className={`text-[15px] ${listing.description ? 'mt-3' : ''}`}>
+                  Feis website:{' '}
+                  <a
+                    href={websiteHref(listing.website_url)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="font-semibold text-primary underline underline-offset-[3px]"
+                  >
+                    {siteName(listing.website_url)}
+                  </a>
+                </p>
+              )}
             </section>
           )}
 
           <section>
-            <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
-              <h2 className="text-[22px] font-extrabold [font-stretch:75%]">Competitions</h2>
-              <span className="text-sm text-muted-foreground">
-                {competitions.length} in the syllabus. When you enter, each dancer sees only the
-                ones they can dance.
-              </span>
-            </div>
-
+            <h2 className="mb-2 text-[22px] font-extrabold [font-stretch:75%]">Competitions</h2>
             {competitions.length === 0 ? (
               <p className="feis-sticker rounded px-4 py-3 text-sm">
                 The organiser hasn&apos;t published the competitions yet.
               </p>
             ) : (
-              <div className="feis-entry-form">
-                {groups.map((group, i) => (
-                  <section key={group.label}>
-                    <h3
-                      className={`px-4 pt-2 pb-1 text-[12.5px] font-bold text-muted-foreground ${
-                        i > 0 ? 'border-t-[1.5px] border-[var(--color-feis-charcoal)]' : ''
-                      }`}
-                    >
-                      {group.label}
-                    </h3>
-                    <ul>
-                      {group.items.map(({ competition }) => (
-                        <li
-                          key={competition.id}
-                          className="grid grid-cols-[56px_minmax(0,1fr)_auto] items-center gap-2.5 border-t border-[#E2DCCD] px-4 py-2 sm:grid-cols-[64px_minmax(0,1fr)_auto]"
-                        >
-                          <span className="feis-narrow text-[17px]">
-                            {competition.display_code ?? ''}
-                          </span>
-                          <span className="min-w-0">{competitionName(competition)}</span>
-                          {feeSchedule && (
-                            <span className="text-muted-foreground tabular-nums">
-                              {formatCents(competitionFeeCents(competition, feeSchedule))}
-                            </span>
-                          )}
-                        </li>
-                      ))}
-                    </ul>
-                  </section>
-                ))}
-              </div>
+              <p className="max-w-[65ch] text-[15px] leading-relaxed">
+                {joinWithAnd(outline.levels)}
+                {outline.ages && `, ${outline.ages}`}. When you enter, each dancer sees only the
+                dances they can enter.
+              </p>
             )}
           </section>
         </div>
