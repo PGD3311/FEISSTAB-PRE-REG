@@ -164,6 +164,8 @@ async function loadOrderInputs(service: ServiceClient, feisListingId: string, ho
     feeSchedule: feeSchedule.data as FeeSchedule | null,
     dancers: (dancers.data ?? []) as OrderDancer[],
     competitions,
+    // The client has no generated types for this select, hence the cast. paidOrdersFrom checks the
+    // fee column at run time and throws on a bad one, so a missing column can't read as "no fee"
     paidOrderRows: (paidOrders.data ?? []) as unknown as PaidOrderRow[]
   }
 }

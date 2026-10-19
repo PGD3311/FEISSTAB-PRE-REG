@@ -275,7 +275,7 @@ Organiser creates feis    →  Parents register   →  BRIDGE  →  Check-in →
 | Account Type | **Express** | Bridget needs "connect bank, get paid" — not a full Stripe dashboard. Stripe-hosted onboarding. Organizer cannot bypass platform. |
 | Charge Type | **Direct Charges** | Organizer is merchant of record. Parent's bank statement shows the feis name, not "FeisTab." Refunds from organizer's balance. |
 | Payment UI | **Stripe Checkout (Hosted)** | Zero PCI surface area. Apple Pay, Google Pay, Link out of the box. Mobile-optimized. |
-| Platform Revenue | **Application fee** (flat $6 per family per feis) | `application_fee_amount` on the family's first paid order for a feis, out of the host's share (Daniel, 2026-10-19). None on an add-on or a $0 order. The family's total never changes. |
+| Platform Revenue | **Application fee** (flat $6 per family per feis) | `application_fee_amount` out of the host's share (Daniel, 2026-10-19). On the family's first paid order with a total above $0; none on later orders or a $0 order. Never refunded (Daniel, 2026-10-19). The family's total never changes. |
 | Currency | **Organizer's local currency** | Feis in Ireland = charge EUR. Parent's bank handles conversion. |
 | Webhooks | **Two separate endpoints** | Platform events + Connect events require separate Stripe webhook configurations. |
 

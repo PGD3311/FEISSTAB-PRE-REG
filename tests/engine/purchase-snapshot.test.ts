@@ -536,6 +536,14 @@ describe('paidOrdersFrom', () => {
     ])
   })
 
+  it('refuses a paid order whose fee is missing or not a whole number of cents', () => {
+    const bad = [undefined, null, -1, 4.5, Number.NaN, '600']
+    for (const fee of bad) {
+      const rows = [{ ...row(null), application_fee_cents: fee as unknown as number }]
+      expect(() => paidOrdersFrom(rows, []), String(fee)).toThrow(/no valid application fee/)
+    }
+  })
+
   it("counts an entry toward the family max when its competition can't be found at all", () => {
     const [order] = paidOrdersFrom([row({ competitions: [] })], [])
     expect(order.entries[0].counts_toward_family_cap).toBe(true)

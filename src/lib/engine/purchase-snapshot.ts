@@ -42,6 +42,8 @@ export const RUNFEIS_FEE_CENTS = 600
  * nothing on a $0 order (it never reaches Stripe), nothing once any earlier paid order carried a
  * fee (this includes an order made under the old 5% percentage), and never more than the order's
  * own total. So an add-on carries none, and the family's total is never touched.
+ * The min() never bites in practice: every dance costs at least $15, so a first paid order is
+ * always over $6.
  */
 export function runfeisFeeCents(
   totalCents: number,
@@ -189,6 +191,13 @@ export function paidOrdersFrom(
 ): PaidOrder[] {
   const current = new Map(competitions.map((c) => [c.id, c.exclude_from_family_cap]))
   return rows.map((row) => {
+    // Fail closed: a missing or odd fee must never read as "no fee taken", or the family would be
+    // charged the $6 again. Submit's try turns this into "could not be priced"
+    if (!Number.isInteger(row.application_fee_cents) || row.application_fee_cents < 0) {
+      throw new Error(
+        `Paid order ${row.id} has no valid application fee (${String(row.application_fee_cents)})`
+      )
+    }
     const frozen = new Map(
       (row.purchase_snapshot?.competitions ?? []).map((c) => [c.id, c.exclude_from_family_cap])
     )

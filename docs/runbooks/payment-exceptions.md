@@ -140,13 +140,17 @@ The one exception is `payment_reused`: the case's payment intent belongs to the 
 refund it. Refund only the genuine second charge you found in Stripe for this order's checkout session, and record
 that charge's refund ID.
 
-**RunFeis's $6 fee.** RunFeis takes a flat $6 once per family per feis, as the application fee on the family's first
-paid order (never on an add-on or a $0 order). A refund as 3b describes it, of the payment intent and nothing else,
-does not return that $6: Stripe gives an application fee back only when the refund asks for it
-(`refund_application_fee` in the API). So the feis's account pays the whole refund and RunFeis keeps its $6, and when
-the family registers again their new first paid order carries a $6 fee again, since the refunded order isn't paid
-(Daniel hasn't decided whether refunds should return it; until he does, refund as 3b says). The fee never shows on
-the family's receipt or emails, so it is no part of what you tell the family.
+**RunFeis's $6 fee is never refunded** (Daniel, 2026-10-19). RunFeis takes a flat $6 once per family per feis, as the
+application fee on the family's first paid order with a total above $0 (none on later orders or a $0 order). Refund as
+3b says, the payment intent and nothing else, and do not tick "refund application fee" in Stripe: RunFeis keeps the $6.
+Refunding entry money is the organiser's business, so the feis's account pays the whole refund. Two results follow, and
+both are accepted:
+- When the family registers again, their new first paid order carries a $6 again, since the refunded order isn't paid.
+- In a `late_payment_conflict` or `payment_reused` refund the family usually already has another paid order that
+  carried the $6, so RunFeis ends up with two $6 fees from that family, and the feis is out of pocket by $6 plus
+  Stripe's card fee on the refunded payment.
+
+The fee never shows on the family's receipt or emails, so it is no part of what you tell the family.
 
 Copy the refund ID (`re_…`), then run this straight after refunding, so the case doesn't sit open for someone to
 refund or confirm it again:

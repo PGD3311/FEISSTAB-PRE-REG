@@ -61,9 +61,10 @@ WHERE status NOT IN ('draft', 'pending_payment', 'paid', 'expired', 'cancelled')
 
 -- 3. Cron jobs. 002's hold-expiry job names no schema, so it may have been failing every minute. 012
 -- replaces the job called 'expire-registration-holds'; any other job listed in the second query is 002's
--- under another name, and has to be unscheduled when 012 goes live.
-SELECT jobid, jobname, schedule, command, active FROM cron.job ORDER BY jobid;
-SELECT jobid, jobname, command FROM cron.job WHERE command ILIKE '%hold_expires_at%' ORDER BY jobid;
+-- under another name, and has to be unscheduled when 012 goes live. pg_cron replaces a job by name only for the
+-- same user, so 'username' must match whoever applies 012 (expect postgres).
+SELECT jobid, jobname, username, schedule, command, active FROM cron.job ORDER BY jobid;
+SELECT jobid, jobname, username, command FROM cron.job WHERE command ILIKE '%hold_expires_at%' ORDER BY jobid;
 SELECT j.jobname, d.status, d.return_message, d.start_time
 FROM cron.job_run_details d JOIN cron.job j USING (jobid)
 ORDER BY d.start_time DESC LIMIT 20;
@@ -130,6 +131,10 @@ GROUP BY r.feis_listing_id, e.dancer_id, e.feis_competition_id HAVING count(*) >
 SELECT household_id, feis_listing_id, array_agg(id ORDER BY paid_at) AS orders, sum(event_fee_cents) AS event_fees
 FROM pre_registration.registrations WHERE status = 'paid' AND event_fee_cents > 0
 GROUP BY household_id, feis_listing_id HAVING count(*) > 1;
+-- Paid orders that cost money but carried no application fee (RunFeis's flat $6 is taken once per family per feis,
+-- on the first paid order). Each such family would pay the $6 on their next add-on.
+SELECT household_id, feis_listing_id, id, total_cents, application_fee_cents, paid_at
+FROM pre_registration.registrations WHERE status = 'paid' AND total_cents > 0 AND application_fee_cents = 0;
 -- Paid orders with a total of 0 (main's free path: no claim and no session); section 4 lists paid orders with no
 -- snapshot row, which these are too
 SELECT id, household_id, feis_listing_id, confirmation_number, paid_at, stripe_checkout_session_id

@@ -41,6 +41,8 @@ $$;
 -- A one-dance create_order payload at the test feis: no family fee, a $15.00 family max, and the given dance fee
 -- and family-max saving, counting `p_prior` (what _counted_orders returns; null for a first order). create_order
 -- checks it against the snapshot exactly as it checks Submit's.
+-- application_fee_cents is a stand-in (5%): create_order stores the fee as given and checks nothing about its
+-- value, so neither it nor these tests depend on RunFeis's flat $6.
 CREATE FUNCTION pg_temp.payload(p_dancer uuid, p_comp uuid, p_fee integer, p_saving integer, p_prior jsonb)
 RETURNS jsonb LANGUAGE sql AS $$
   SELECT jsonb_build_object(
