@@ -4,6 +4,7 @@ import { useState, useEffect, useTransition, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 
 import type { FeisListing, FeeSchedule, ListingTransitionContext } from '@/lib/types/feis-listing'
+import { checklistLinkFor } from '@/lib/approval-gate'
 import { getListingTransitionBlockReasons } from '@/lib/feis-listing-states'
 import {
   formatTimezone,
@@ -131,8 +132,12 @@ export function FeisWizardStep5({
     if (listing.reg_opens_at && listing.reg_closes_at) items.push('Deadlines set')
     if (stripeSimulated) items.push('Stripe connected')
     if (listing.privacy_policy_url) items.push('Privacy policy set')
+    if (listing.sanction_region?.trim() && listing.sanction_reference?.trim()) {
+      items.push('Sanction details set')
+    }
+    if (hasOrganiserProfile) items.push('Your organiser details set')
     return items
-  }, [listing, feeSchedule, competitionSummary.total, stripeSimulated])
+  }, [listing, feeSchedule, competitionSummary.total, stripeSimulated, hasOrganiserProfile])
 
   async function handleSimulateStripe() {
     const { error: updateError } = await supabase
@@ -148,7 +153,7 @@ export function FeisWizardStep5({
     router.refresh()
   }
 
-  function handlePublish() {
+  function handleSubmitForApproval() {
     if (blocks.length > 0) return
 
     setError(null)
@@ -156,13 +161,13 @@ export function FeisWizardStep5({
       try {
         const result = await transitionListingStatus(listing.id, 'pending_review')
         if ('error' in result) {
-          setError(result.error as string)
+          setError(result.error + (result.blocks ? ' ' + result.blocks.join('. ') : ''))
           return
         }
         window.location.href = `/organiser/feiseanna/${listing.id}`
       } catch (err) {
-        console.error('Failed to publish:', err)
-        setError('An unexpected error occurred while publishing.')
+        console.error('Failed to submit for approval:', err)
+        setError('Your feis could not be submitted. Check your connection and try again.')
       }
     })
   }
@@ -184,9 +189,10 @@ export function FeisWizardStep5({
       )}
 
       <div className="mb-4">
-        <h2 className="feis-display text-[22px]">Review and publish</h2>
+        <h2 className="feis-display text-[22px]">Review and submit</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Check your feis before you publish it. Once it is published, parents can register.
+          Check your feis, then submit it for approval. RunFeis checks every feis before it takes
+          entries, and we&apos;ll email you when it&apos;s approved. Then parents can register.
         </p>
       </div>
 
@@ -351,16 +357,21 @@ export function FeisWizardStep5({
           {!stripeSimulated && (
             <p className="mt-2 text-xs text-muted-foreground">
               Stripe is simulated for now. This button marks the account as connected so you can try
-              publishing.
+              submitting.
             </p>
           )}
         </section>
       </div>
 
-      {/* Publish Checklist */}
+      {/* Submit checklist */}
       <section className="mt-6">
-        <h3 className={`${sectionHeading} mb-3`}>Before you publish</h3>
-        <PublishChecklist blocks={blocks} warnings={warnings} passed={passed} />
+        <h3 className={`${sectionHeading} mb-3`}>Before you submit</h3>
+        <PublishChecklist
+          blocks={blocks}
+          warnings={warnings}
+          passed={passed}
+          linkFor={(block) => checklistLinkFor(block, listing.id)}
+        />
       </section>
 
       {/* Navigation */}
@@ -371,15 +382,19 @@ export function FeisWizardStep5({
         <div className="flex flex-col items-start gap-1.5">
           <button
             type="button"
-            onClick={handlePublish}
+            onClick={handleSubmitForApproval}
             disabled={isPending || blocks.length > 0}
             className="feis-btn feis-btn-primary"
           >
-            {isPending ? 'Publishing…' : blocks.length > 0 ? "Can't publish yet" : 'Publish feis'}
+            {isPending
+              ? 'Submitting…'
+              : blocks.length > 0
+                ? "Can't submit yet"
+                : 'Submit for approval'}
           </button>
           {blocks.length > 0 && (
             <p className="text-sm font-semibold text-destructive">
-              Fix the items above before publishing.
+              Fix the items above before submitting.
             </p>
           )}
         </div>

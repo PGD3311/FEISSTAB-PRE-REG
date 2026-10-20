@@ -6,6 +6,8 @@ import { createClient } from '@/lib/supabase/server'
 import { expandSyllabus } from '@/lib/engine/syllabus-expander'
 import { redactWithEnv, safeErrorMessage } from '@/lib/redact-secrets'
 import { endOfLocalDateIso, startOfLocalDateIso } from '@/lib/timezone'
+import { listingSubmittedEmail } from '@/lib/email/templates'
+import { isRegion } from '@/lib/regions'
 import {
   canTransitionListing,
   getListingTransitionBlockReasons,
@@ -19,6 +21,7 @@ import type {
   ListingStatus,
   ListingTransitionContext,
 } from '@/lib/types/feis-listing'
+import { approvalEmailBaseUrl, sendApprovalEmail } from '@/app/_approvals/approval-email'
 
 export async function createDraftListing(formData: FormData) {
   const supabase = await createClient()
@@ -112,9 +115,17 @@ export async function updateListingDetails(
     (formData.get('website_url') as string | null) || null
   const logo_url =
     (formData.get('logo_url') as string | null) || null
+  // The region's sanction: blank is allowed while setting up, and submitting needs region and reference
+  const sanctionText = (key: string) => ((formData.get(key) as string | null) ?? '').trim() || null
+  const sanction_region = sanctionText('sanction_region')
+  const sanction_reference = sanctionText('sanction_reference')
+  const sanction_notes = sanctionText('sanction_notes')
 
   if (!name || !feis_date || !venue_name || !contact_email || !timezone) {
     return { error: 'Missing required fields' }
+  }
+  if (sanction_region !== null && !isRegion(sanction_region)) {
+    return { error: 'Choose the sanctioning region from the list' }
   }
 
   const feisYear = new Date(feis_date + 'T00:00:00').getFullYear()
@@ -138,6 +149,9 @@ export async function updateListingDetails(
       logo_url,
       age_cutoff_date,
       season_year,
+      sanction_region,
+      sanction_reference,
+      sanction_notes,
     })
     .eq('id', listingId)
     .eq('created_by', user.id)
@@ -634,7 +648,11 @@ export async function transitionListingStatus(
       .from('feis_competitions')
       .select('competition_type, championship_key, fee_category')
       .eq('feis_listing_id', listingId),
-    supabase.from('organiser_profiles').select('user_id').eq('user_id', user.id).maybeSingle(),
+    supabase
+      .from('organiser_profiles')
+      .select('full_name, organisation')
+      .eq('user_id', user.id)
+      .maybeSingle(),
   ])
 
   if (profileResult.error) {
@@ -661,15 +679,32 @@ export async function transitionListingStatus(
   }
 
   // Perform the transition
-  const { error: updateError } = await supabase
+  const { data: updated, error: updateError } = await supabase
     .from('feis_listings')
     .update({ status: to })
     .eq('id', listingId)
     .eq('created_by', user.id)
+    .select('submitted_at')
+    .single()
 
   if (updateError) {
     console.error('Failed to update listing status:', updateError)
     return { error: 'Failed to update listing status' }
+  }
+
+  // Tell RunFeis a feis is waiting. Email never blocks the submit: a failure is only logged.
+  if (to === 'pending_review') {
+    await sendApprovalEmail(
+      'admins',
+      listingSubmittedEmail({
+        listing: typedListing,
+        organiser: profileResult.data
+          ? { ...profileResult.data, email: user.email ?? null }
+          : null,
+        baseUrl: approvalEmailBaseUrl()
+      }),
+      `listing-submitted:${listingId}:${updated.submitted_at ?? Date.now()}`
+    )
   }
 
   return { success: true as const, warnings }

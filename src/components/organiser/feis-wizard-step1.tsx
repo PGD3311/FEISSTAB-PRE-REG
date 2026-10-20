@@ -3,6 +3,7 @@
 import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 
+import { REGIONS } from '@/lib/regions'
 import type { FeisListing } from '@/lib/types/feis-listing'
 import { updateListingDetails } from '@/app/organiser/feiseanna/actions'
 
@@ -57,13 +58,18 @@ export function FeisWizardStep1({ listing, onNext }: FeisWizardStep1Props) {
     }
 
     startTransition(async () => {
-      const result = await updateListingDetails(listing.id, formData)
-      if ('error' in result) {
-        setError(result.error as string)
-        return
+      try {
+        const result = await updateListingDetails(listing.id, formData)
+        if ('error' in result) {
+          setError(result.error as string)
+          return
+        }
+        router.refresh()
+        onNext()
+      } catch (err) {
+        console.error('Failed to save details:', err)
+        setError('Your details could not be saved. Check your connection and try again.')
       }
-      router.refresh()
-      onNext()
     })
   }
 
@@ -255,8 +261,69 @@ export function FeisWizardStep1({ listing, onNext }: FeisWizardStep1Props) {
               className="feis-input"
             />
             <p id="privacy_policy_url-hint" className="mt-1 text-xs text-muted-foreground">
-              Needed before you can publish. Parents see it when they register.
+              Needed before you can submit for approval. Parents see it when they register.
             </p>
+          </div>
+        </section>
+
+        <section className="space-y-4 px-5 py-5 sm:px-6">
+          <div>
+            <h2 className="feis-display text-[22px]">Sanction</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              RunFeis checks that your region approved the feis before it takes entries.
+            </p>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div>
+              <label htmlFor="sanction_region" className="feis-label">
+                Sanctioning region
+              </label>
+              <select
+                id="sanction_region"
+                name="sanction_region"
+                defaultValue={listing.sanction_region ?? ''}
+                className="feis-input"
+              >
+                <option value="">Choose a region</option>
+                {REGIONS.map((region) => (
+                  <option key={region} value={region}>
+                    {region}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label htmlFor="sanction_reference" className="feis-label">
+                Sanction reference
+              </label>
+              <input
+                id="sanction_reference"
+                name="sanction_reference"
+                type="text"
+                defaultValue={listing.sanction_reference ?? ''}
+                aria-describedby="sanction_reference-hint"
+                className="feis-input"
+              />
+              <p id="sanction_reference-hint" className="mt-1 text-xs text-muted-foreground">
+                The approval or permit number from your region. Needed before you can submit.
+              </p>
+            </div>
+          </div>
+
+          <div>
+            <label htmlFor="sanction_notes" className="feis-label">
+              Notes for RunFeis <span className="font-normal text-muted-foreground">(optional)</span>
+            </label>
+            <textarea
+              id="sanction_notes"
+              name="sanction_notes"
+              rows={2}
+              defaultValue={listing.sanction_notes ?? ''}
+              placeholder="Anything that helps us check the sanction"
+              className="feis-input"
+            />
           </div>
         </section>
 

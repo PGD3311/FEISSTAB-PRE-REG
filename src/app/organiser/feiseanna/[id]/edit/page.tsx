@@ -1,6 +1,7 @@
 import Link from 'next/link'
-import { notFound } from 'next/navigation'
+import { notFound, redirect } from 'next/navigation'
 
+import { isAwaitingApproval } from '@/lib/approval-gate'
 import { createClient, getSignedInUser } from '@/lib/supabase/server'
 import type { FeisListing } from '@/lib/types/feis-listing'
 import { EditDetailsForm } from '@/components/organiser/edit-details-form'
@@ -26,6 +27,11 @@ export default async function EditFeisDetailsPage({ params }: { params: Promise<
   }
 
   const typedListing = listing as FeisListing
+
+  // Nothing can change while RunFeis reviews the feis; its page offers Withdraw instead
+  if (isAwaitingApproval(typedListing.status)) {
+    redirect(`/organiser/feiseanna/${id}`)
+  }
 
   return (
     <div className="max-w-2xl">

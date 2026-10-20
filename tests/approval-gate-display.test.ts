@@ -115,8 +115,9 @@ describe('parseOrganiserProfile', () => {
     expect(parseOrganiserProfile(form({ organisation: 'B', region: 'Southern' }))).toEqual({
       error: 'Please fill in your name, school or committee, and region.'
     })
-    expect(parseOrganiserProfile(form({ full_name: 'A', organisation: ' ', region: 'Southern' })))
-      .toEqual({ error: 'Please fill in your name, school or committee, and region.' })
+    expect(
+      parseOrganiserProfile(form({ full_name: 'A', organisation: ' ', region: 'Southern' }))
+    ).toEqual({ error: 'Please fill in your name, school or committee, and region.' })
     expect(parseOrganiserProfile(form({ full_name: 'A', organisation: 'B' }))).toEqual({
       error: 'Please fill in your name, school or committee, and region.'
     })

@@ -16,16 +16,23 @@ export function StatusActions({ listingId, status }: StatusActionsProps) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
+  const [confirmingWithdraw, setConfirmingWithdraw] = useState(false)
 
   function handleTransition(to: ListingStatus) {
     setError(null)
     startTransition(async () => {
-      const result = await transitionListingStatus(listingId, to)
-      if ('error' in result) {
-        setError(result.error + (result.blocks ? ' ' + result.blocks.join(' ') : ''))
-        return
+      try {
+        const result = await transitionListingStatus(listingId, to)
+        if ('error' in result) {
+          setError(result.error + (result.blocks ? ' ' + result.blocks.join(' ') : ''))
+          return
+        }
+        setConfirmingWithdraw(false)
+        router.refresh()
+      } catch (err) {
+        console.error('Failed to change the feis status:', err)
+        setError('The change could not be saved. Check your connection and try again.')
       }
-      router.refresh()
     })
   }
 
@@ -45,6 +52,51 @@ export function StatusActions({ listingId, status }: StatusActionsProps) {
       {error}
     </p>
   )
+
+  if (status === 'pending_review') {
+    return (
+      <div>
+        {confirmingWithdraw ? (
+          <div className="max-w-xl border-l-4 border-[var(--color-feis-orange)] bg-white px-4 py-3">
+            <p className="text-sm">
+              Withdraw this feis from review? It goes back to a draft so you can change it, and
+              you&apos;ll need to submit it again.
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => handleTransition('draft')}
+                disabled={isPending}
+                className="feis-btn feis-btn-ink"
+              >
+                {isPending ? 'Withdrawing…' : 'Yes, withdraw it'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmingWithdraw(false)}
+                disabled={isPending}
+                className="feis-btn feis-btn-outline"
+              >
+                Keep it waiting
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => {
+              setError(null)
+              setConfirmingWithdraw(true)
+            }}
+            className="feis-btn feis-btn-outline"
+          >
+            Withdraw
+          </button>
+        )}
+        {errorBanner}
+      </div>
+    )
+  }
 
   if (status === 'open' || status === 'closed') {
     const closing = status === 'open'
