@@ -15,6 +15,7 @@ export type ServiceClient = ReturnType<typeof createServiceClient>
 function requiredEnv(name: string): string {
   const value = process.env[name]?.trim()
   if (!value) throw new Error(`${name} is not set`)
+  if (/\s/.test(value)) throw new Error(`${name} contains whitespace`)
   return value
 }
 

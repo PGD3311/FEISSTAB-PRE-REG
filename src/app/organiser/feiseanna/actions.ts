@@ -4,7 +4,7 @@ import { redirect } from 'next/navigation'
 
 import { createClient } from '@/lib/supabase/server'
 import { expandSyllabus } from '@/lib/engine/syllabus-expander'
-import { redactSecrets, safeErrorMessage } from '@/lib/redact-secrets'
+import { redactWithEnv, safeErrorMessage } from '@/lib/redact-secrets'
 import { endOfLocalDateIso, startOfLocalDateIso } from '@/lib/timezone'
 import {
   canTransitionListing,
@@ -808,7 +808,9 @@ export async function launchFeisDay(feisListingId: string) {
     p_feis_listing_id: feisListingId,
   })
   if (numberingError) {
-    console.error('[BRIDGE] Failed to assign missing competitor numbers:', numberingError)
+    console.error(
+      `[BRIDGE] Failed to assign missing competitor numbers: ${redactWithEnv(numberingError.message)}`
+    )
     return { error: 'Failed to assign competitor numbers' }
   }
 
@@ -886,7 +888,7 @@ export async function launchFeisDay(feisListingId: string) {
       .eq('id', feisListingId)
 
     if (updateError) {
-      console.error(`[BRIDGE] Failed to mark listing as launched: ${redactSecrets(updateError.message)}`)
+      console.error(`[BRIDGE] Failed to mark listing as launched: ${redactWithEnv(updateError.message)}`)
       return {
         error:
           "Feis day was set up, but we couldn't mark your feis as launched. Please try again. Nothing will be duplicated."

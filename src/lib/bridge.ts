@@ -2,7 +2,7 @@
 // Pure bridge logic: maps pre-reg data to Phase 1 format and writes it.
 // Uses upsert on external ID columns for idempotent re-runs.
 import { createFeisDayClient } from '@/lib/supabase/service'
-import { safeErrorMessage } from '@/lib/redact-secrets'
+import { redactWithEnv, safeErrorMessage } from '@/lib/redact-secrets'
 
 interface PreRegData {
   listing: {
@@ -109,7 +109,7 @@ export async function executeBridge(data: PreRegData): Promise<BridgeResult> {
     .single()
 
   if (eventError || !event) {
-    throw new Error(`Failed to create Phase 1 event: ${eventError?.message ?? 'unknown'}`)
+    throw new Error(`Failed to create Phase 1 event: ${redactWithEnv(eventError?.message ?? 'unknown')}`)
   }
 
   try {

@@ -1,7 +1,7 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 
-import { createClient } from '@/lib/supabase/server'
+import { createClient, getSignedInUser } from '@/lib/supabase/server'
 import type { FeisListing, FeeSchedule, LateFeeTier } from '@/lib/types/feis-listing'
 import {
   formatTimezone,
@@ -101,7 +101,7 @@ function OverviewTab({
             <h2 className="feis-display text-[20px]">Feis day launched</h2>
             <p className="mt-1 text-sm">
               The entries were sent to RunFeis for the day on{' '}
-              <strong>{formatDateTime(listing.launched_at, 'an unknown date', listing.timezone)}</strong>. This feis
+              <strong>{formatDateTime(listing.launched_at, 'an unknown date', listing.timezone ?? 'America/New_York')}</strong>. This feis
               can no longer be changed here.
             </p>
             {listing.launched_event_id && (
@@ -180,7 +180,7 @@ function OverviewTab({
         <div className="mt-2.5 border-t-[3px] border-[var(--color-feis-gold)] pt-2.5">
           <p className="text-sm font-bold">Entries close</p>
           <p className="text-[22px] leading-tight font-extrabold [font-stretch:75%]">
-            {formatDateTime(listing.reg_closes_at, 'Not set yet', listing.timezone)}
+            {formatDateTime(listing.reg_closes_at, 'Not set yet', listing.timezone ?? 'America/New_York')}
           </p>
         </div>
         <p className="mt-3 text-[13px] text-muted-foreground">
@@ -301,13 +301,13 @@ function SettingsTab({ listing }: { listing: FeisListing }) {
         <h2 className="feis-display mb-2 text-[22px]">Deadlines</h2>
         <dl className="feis-entry-form">
           <DetailRow label="Entries open">
-            {formatDateTime(listing.reg_opens_at, '', listing.timezone) || <NotSet />}
+            {formatDateTime(listing.reg_opens_at, '', listing.timezone ?? 'America/New_York') || <NotSet />}
           </DetailRow>
           <DetailRow label="Entries close">
-            {formatDateTime(listing.reg_closes_at, '', listing.timezone) || <NotSet />}
+            {formatDateTime(listing.reg_closes_at, '', listing.timezone ?? 'America/New_York') || <NotSet />}
           </DetailRow>
           <DetailRow label="Late entries close">
-            {formatDateTime(listing.late_reg_closes_at, '', listing.timezone) || <NotSet />}
+            {formatDateTime(listing.late_reg_closes_at, '', listing.timezone ?? 'America/New_York') || <NotSet />}
           </DetailRow>
         </dl>
       </section>
@@ -351,12 +351,15 @@ export default async function FeisDashboardPage({
   const { id } = await params
   const { tab: tabParam } = await searchParams
   const supabase = await createClient()
+  const user = await getSignedInUser(supabase)
+  if (!user) notFound()
 
   // Fetch listing
   const { data: listing, error: listingError } = await supabase
     .from('feis_listings')
     .select('*')
     .eq('id', id)
+    .eq('created_by', user.id)
     .single()
 
   if (listingError || !listing) {

@@ -1,7 +1,7 @@
 import Link from 'next/link'
 import { notFound, redirect } from 'next/navigation'
 
-import { createClient } from '@/lib/supabase/server'
+import { createClient, getSignedInUser } from '@/lib/supabase/server'
 import { formatDate, formatDateTime } from '@/lib/format'
 import type { FeisListing } from '@/lib/types/feis-listing'
 import { LaunchButton } from '@/components/organiser/launch-button'
@@ -67,12 +67,15 @@ function BackLink({ id }: { id: string }) {
 export default async function LaunchPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
   const supabase = await createClient()
+  const user = await getSignedInUser(supabase)
+  if (!user) notFound()
 
   // Fetch listing
   const { data: listing, error: listingError } = await supabase
     .from('feis_listings')
     .select('*')
     .eq('id', id)
+    .eq('created_by', user.id)
     .single()
 
   if (listingError || !listing) {
@@ -100,7 +103,7 @@ export default async function LaunchPage({ params }: { params: Promise<{ id: str
           <p className="text-sm">
             The entries were sent to RunFeis for the day on{' '}
             <strong>
-              {formatDateTime(typedListing.launched_at, 'an unknown date', typedListing.timezone)}
+              {formatDateTime(typedListing.launched_at, 'an unknown date', typedListing.timezone ?? 'America/New_York')}
             </strong>
             . This
             feis can no longer be changed here.

@@ -1,6 +1,6 @@
 import { notFound } from 'next/navigation'
 
-import { createClient } from '@/lib/supabase/server'
+import { createClient, getSignedInUser } from '@/lib/supabase/server'
 import { FeisWizard } from '@/components/organiser/feis-wizard'
 import type { FeisListing, FeeSchedule } from '@/lib/types/feis-listing'
 
@@ -13,12 +13,15 @@ export default async function FeisSetupPage({
 }) {
   const { id } = await params
   const supabase = await createClient()
+  const user = await getSignedInUser(supabase)
+  if (!user) notFound()
 
   // Fetch listing
   const { data: listing, error: listingError } = await supabase
     .from('feis_listings')
     .select('*')
     .eq('id', id)
+    .eq('created_by', user.id)
     .single()
 
   if (listingError || !listing) {

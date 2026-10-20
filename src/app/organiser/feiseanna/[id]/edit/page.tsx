@@ -1,7 +1,7 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 
-import { createClient } from '@/lib/supabase/server'
+import { createClient, getSignedInUser } from '@/lib/supabase/server'
 import type { FeisListing } from '@/lib/types/feis-listing'
 import { EditDetailsForm } from '@/components/organiser/edit-details-form'
 import { PageTitle } from '@/components/page-title'
@@ -11,11 +11,14 @@ export const dynamic = 'force-dynamic'
 export default async function EditFeisDetailsPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
   const supabase = await createClient()
+  const user = await getSignedInUser(supabase)
+  if (!user) notFound()
 
   const { data: listing, error: listingError } = await supabase
     .from('feis_listings')
     .select('*')
     .eq('id', id)
+    .eq('created_by', user.id)
     .single()
 
   if (listingError || !listing) {
