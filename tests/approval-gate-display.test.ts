@@ -3,6 +3,7 @@ import { REGIONS, isRegion } from '@/lib/regions'
 import {
   ORGANISER_DETAILS_BLOCK,
   adminAlertRecipients,
+  adminDecisionError,
   checklistLinkFor,
   isAwaitingApproval,
   parseOrganiserProfile,
@@ -151,5 +152,27 @@ describe('adminAlertRecipients', () => {
 
   it('is empty when neither is set', () => {
     expect(adminAlertRecipients({})).toEqual([])
+  })
+})
+
+describe('adminDecisionError', () => {
+  it('explains each refusal from approve_listing and send_back_listing', () => {
+    expect(adminDecisionError('42501', 'approve')).toBe('Only RunFeis admins can do this.')
+    expect(adminDecisionError('55000', 'approve')).toBe(
+      'This feis is no longer waiting for approval. Refresh the page to see where it is.'
+    )
+    expect(adminDecisionError('P0002', 'send_back')).toBe('That feis no longer exists.')
+    expect(adminDecisionError('22023', 'send_back')).toBe(
+      'Write a note saying what the organiser needs to fix.'
+    )
+  })
+
+  it('falls back to a plain message for anything else', () => {
+    expect(adminDecisionError(undefined, 'approve')).toBe(
+      'The feis could not be approved. Please try again.'
+    )
+    expect(adminDecisionError('XX000', 'send_back')).toBe(
+      'The feis could not be sent back. Please try again.'
+    )
   })
 })

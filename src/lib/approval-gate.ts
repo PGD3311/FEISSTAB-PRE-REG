@@ -72,3 +72,24 @@ export function adminAlertRecipients(env: Record<string, string | undefined>): s
   const admins = addresses(env.ADMIN_ALERT_EMAIL)
   return admins.length > 0 ? admins : addresses(env.PAYMENTS_ALERT_EMAIL)
 }
+
+/** What the admin sees when approve_listing or send_back_listing refuses (SQLSTATEs from 021) */
+export function adminDecisionError(
+  code: string | undefined,
+  action: 'approve' | 'send_back'
+): string {
+  switch (code) {
+    case '42501':
+      return 'Only RunFeis admins can do this.'
+    case '55000':
+      return 'This feis is no longer waiting for approval. Refresh the page to see where it is.'
+    case 'P0002':
+      return 'That feis no longer exists.'
+    case '22023':
+      return 'Write a note saying what the organiser needs to fix.'
+    default:
+      return action === 'approve'
+        ? 'The feis could not be approved. Please try again.'
+        : 'The feis could not be sent back. Please try again.'
+  }
+}
