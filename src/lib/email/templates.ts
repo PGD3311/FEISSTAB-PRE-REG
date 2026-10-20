@@ -318,3 +318,90 @@ export function renderDeliveryFailureAlertEmail(ctx: DeliveryFailureContext): Em
     </div>`
   return { subject: `[RunFeis] Email ${headline}: ${f.dedupe_key}`, html }
 }
+
+// ─── The approval gate (migration 021) ───
+
+export interface ApprovalListing {
+  id: string
+  name: string | null
+  feis_date: string | null
+}
+
+function feisName(listing: ApprovalListing): string {
+  return listing.name?.trim() || 'Untitled feis'
+}
+
+/** A subject line stays short: a long note is cut, and the email body carries all of it */
+function subjectLine(value: string, max = 120): string {
+  const oneLine = value.replace(/\s+/g, ' ').trim()
+  return oneLine.length <= max ? oneLine : `${oneLine.slice(0, max - 1).trimEnd()}…`
+}
+
+function approvalEmailHtml(heading: string, body: string): string {
+  return `
+    <div style="font-family: system-ui, -apple-system, sans-serif; max-width: 600px; padding: 20px; color: #17191B;">
+      <h2 style="margin: 0 0 12px;">${heading}</h2>
+      ${body}
+      <p style="margin-top: 24px; font-size: 13px; color: #615D55;">RunFeis</p>
+    </div>`
+}
+
+function button(href: string, label: string): string {
+  return `<p><a href="${escapeHtml(href)}" style="display: inline-block; background: #0B4D2C; color: #FFFFFF; padding: 10px 16px; text-decoration: none; font-weight: bold;">${escapeHtml(label)}</a></p>`
+}
+
+export interface ListingSubmittedContext {
+  listing: ApprovalListing
+  organiser: { full_name: string; organisation: string; email: string | null } | null
+  baseUrl: string
+}
+
+/** For the RunFeis admins: a feis is waiting for approval */
+export function listingSubmittedEmail(ctx: ListingSubmittedContext): EmailContent {
+  const name = feisName(ctx.listing)
+  const html = approvalEmailHtml(
+    `New feis waiting for approval: ${text(name)}`,
+    `<table style="border-collapse: collapse;">
+        ${rows([
+          ['Feis', name],
+          ['Date', ctx.listing.feis_date ? formatDate(ctx.listing.feis_date) : null],
+          ['Organiser', ctx.organiser?.full_name],
+          ['School or committee', ctx.organiser?.organisation],
+          ['Organiser email', ctx.organiser?.email]
+        ])}
+      </table>
+      ${button(`${ctx.baseUrl}/admin/approvals`, 'Review it')}`
+  )
+  return { subject: subjectLine(`New feis waiting for approval: ${name}`), html }
+}
+
+export interface ListingDecisionContext {
+  listing: ApprovalListing
+  baseUrl: string
+}
+
+/** For the organiser: RunFeis approved the feis and it is taking entries */
+export function listingApprovedEmail(ctx: ListingDecisionContext): EmailContent {
+  const name = feisName(ctx.listing)
+  const html = approvalEmailHtml(
+    `${text(name)} is approved`,
+    `<p>RunFeis has approved your feis. It is listed now and families can enter.</p>
+      ${button(`${ctx.baseUrl}/organiser/feiseanna/${ctx.listing.id}`, 'Open your feis')}`
+  )
+  return { subject: subjectLine(`${name} approved: entries open`), html }
+}
+
+/** For the organiser: RunFeis sent the feis back to them with a note */
+export function listingSentBackEmail(
+  ctx: ListingDecisionContext & { note: string }
+): EmailContent {
+  const name = feisName(ctx.listing)
+  const html = approvalEmailHtml(
+    `${text(name)} was sent back`,
+    `<p>RunFeis looked at your feis and needs something changed before it can take entries:</p>
+      <blockquote style="margin: 0 0 16px; padding: 8px 14px; border-left: 4px solid #D4652A; background: #FFF6EF; white-space: pre-wrap;">${text(ctx.note)}</blockquote>
+      <p>Fix what's needed, then submit it again.</p>
+      ${button(`${ctx.baseUrl}/organiser/feiseanna/${ctx.listing.id}/setup`, 'Fix your feis')}`
+  )
+  return { subject: subjectLine(`${name} sent back: ${ctx.note}`), html }
+}
