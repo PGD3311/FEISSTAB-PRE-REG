@@ -98,19 +98,120 @@ export function buildRegistrationRow(
   }
 }
 
-export async function executeBridge(data: PreRegData): Promise<BridgeResult> {
-  const phase1 = createFeisDayClient()
+export function shouldCreateStage(existingStageCount: number): boolean {
+  return existingStageCount === 0
+}
 
-  // 1. Create event with external ID (upsert for idempotency)
+const REGISTRATION_CODE_ATTEMPTS = 6
+
+function randomRegistrationCode(): string {
+  return Math.random().toString(16).slice(2, 8).padEnd(6, '0').toUpperCase()
+}
+
+// Same shape as feis day's create_event: 6 uppercase hex characters, retried on collision.
+export async function generateRegistrationCode(
+  exists: (code: string) => Promise<boolean>,
+  random: () => string = randomRegistrationCode
+): Promise<string> {
+  for (let attempt = 0; attempt < REGISTRATION_CODE_ATTEMPTS; attempt++) {
+    const code = random()
+    if (!(await exists(code))) return code
+  }
+  throw new Error('Failed to generate a unique registration code')
+}
+
+type FeisDayClient = ReturnType<typeof createFeisDayClient>
+
+// Does what feis day's create_event RPC does, so the organiser can see the event:
+// created_by, registration code, organizer role, first stage, audit entry.
+// Safe to re-run: existing owner, code, role and stages are kept.
+export async function createOwnedEvent(
+  phase1: FeisDayClient,
+  listing: PreRegData['listing'],
+  organiserId: string
+): Promise<{ id: string }> {
+  const { data: existing, error: lookupError } = await phase1
+    .from('events')
+    .select('id, created_by, registration_code')
+    .eq('prereg_feis_listing_id', listing.id)
+    .maybeSingle()
+
+  if (lookupError) {
+    throw new Error(`Failed to look up Phase 1 event: ${redactWithEnv(lookupError.message)}`)
+  }
+
+  const row: Record<string, unknown> = { ...buildEventRow(listing) }
+  if (!existing?.created_by) row.created_by = organiserId
+  if (!existing?.registration_code) {
+    row.registration_code = await generateRegistrationCode(async (code) => {
+      const { data, error } = await phase1
+        .from('events')
+        .select('id')
+        .eq('registration_code', code)
+        .limit(1)
+      if (error) throw new Error(`Failed to check registration code: ${redactWithEnv(error.message)}`)
+      return (data ?? []).length > 0
+    })
+  }
+
   const { data: event, error: eventError } = await phase1
     .from('events')
-    .upsert(buildEventRow(data.listing), { onConflict: 'prereg_feis_listing_id' })
+    .upsert(row, { onConflict: 'prereg_feis_listing_id' })
     .select('id')
     .single()
 
   if (eventError || !event) {
     throw new Error(`Failed to create Phase 1 event: ${redactWithEnv(eventError?.message ?? 'unknown')}`)
   }
+
+  const { error: roleError } = await phase1
+    .from('event_roles')
+    .upsert(
+      { user_id: organiserId, event_id: event.id, role: 'organizer', created_by: organiserId },
+      { onConflict: 'user_id,event_id,role', ignoreDuplicates: true }
+    )
+  if (roleError) {
+    throw new Error(`Failed to give the organiser a role: ${redactWithEnv(roleError.message)}`)
+  }
+
+  const { count, error: stageCountError } = await phase1
+    .from('stages')
+    .select('id', { count: 'exact', head: true })
+    .eq('event_id', event.id)
+  if (stageCountError) {
+    throw new Error(`Failed to check stages: ${redactWithEnv(stageCountError.message)}`)
+  }
+  if (shouldCreateStage(count ?? 0)) {
+    const { error: stageError } = await phase1
+      .from('stages')
+      .insert({ event_id: event.id, name: 'Stage 1', display_order: 1 })
+    if (stageError) {
+      throw new Error(`Failed to create the first stage: ${redactWithEnv(stageError.message)}`)
+    }
+  }
+
+  const { error: auditError } = await phase1.from('audit_log').insert({
+    user_id: organiserId,
+    entity_type: 'event',
+    entity_id: event.id,
+    action: 'launch_from_registration',
+    after_data: { name: listing.name, prereg_feis_listing_id: listing.id }
+  })
+  if (auditError) {
+    throw new Error(`Failed to write the audit entry: ${redactWithEnv(auditError.message)}`)
+  }
+
+  return { id: event.id }
+}
+
+export async function executeBridge(
+  data: PreRegData,
+  organiserId: string
+): Promise<BridgeResult> {
+  const phase1 = createFeisDayClient()
+
+  // 1. Create the event, owned by the organiser who launched it
+  const event = await createOwnedEvent(phase1, data.listing, organiserId)
 
   try {
     // 2. Create competitions with external IDs (upsert for idempotency)

@@ -875,7 +875,7 @@ export async function launchFeisDay(feisListingId: string) {
           dancer_school_name: dancer?.school_name ?? null,
         }
       }),
-    })
+    }, user.id)
 
     // 5. Mark listing as launched
     const { error: updateError } = await supabase
