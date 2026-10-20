@@ -1,6 +1,7 @@
 'use server'
 
 import { redirect } from 'next/navigation'
+import { after } from 'next/server'
 
 import { createClient } from '@/lib/supabase/server'
 import { expandSyllabus } from '@/lib/engine/syllabus-expander'
@@ -704,17 +705,13 @@ export async function transitionListingStatus(
       console.error(`Failed to read back submitted_at for ${listingId}:`, readBackError.message)
     }
     const submittedAt = submitted?.submitted_at ?? `fallback-${Date.now()}`
-    await sendApprovalEmail(
-      'admins',
-      listingSubmittedEmail({
-        listing: typedListing,
-        organiser: profileResult.data
-          ? { ...profileResult.data, email: user.email ?? null }
-          : null,
-        baseUrl: approvalEmailBaseUrl()
-      }),
-      `listing-submitted:${listingId}:${submittedAt}`
-    )
+    const email = listingSubmittedEmail({
+      listing: typedListing,
+      organiser: profileResult.data ? { ...profileResult.data, email: user.email ?? null } : null,
+      baseUrl: approvalEmailBaseUrl()
+    })
+    // Sent after the response, so the organiser isn't kept waiting on the email service
+    after(() => sendApprovalEmail('admins', email, `listing-submitted:${listingId}:${submittedAt}`))
   }
 
   return { success: true as const, warnings }

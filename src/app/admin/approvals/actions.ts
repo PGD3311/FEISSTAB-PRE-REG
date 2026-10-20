@@ -1,5 +1,6 @@
 'use server'
 
+import { after } from 'next/server'
 import { adminDecisionError } from '@/lib/approval-gate'
 import { listingApprovedEmail, listingSentBackEmail } from '@/lib/email/templates'
 import { createClient, getSignedInUser } from '@/lib/supabase/server'
@@ -51,16 +52,19 @@ export async function approveListing(listingId: string): Promise<DecisionResult>
   // The feis is approved; the email to its organiser never undoes or blocks that
   const listing = await decidedListing(supabase, listingId)
   if (listing) {
-    const to = await organiserEmail(listing.created_by)
-    if (to) {
-      await sendApprovalEmail(
-        [to],
-        listingApprovedEmail({ listing, baseUrl: approvalEmailBaseUrl() }),
-        `listing-approved:${listingId}`
-      )
-    } else {
-      console.error(`[ADMIN_EMAIL_FAILED] no organiser email for feis ${listingId}`)
-    }
+    // Sent after the response, so the admin isn't kept waiting on the email service
+    after(async () => {
+      const to = await organiserEmail(listing.created_by)
+      if (to) {
+        await sendApprovalEmail(
+          [to],
+          listingApprovedEmail({ listing, baseUrl: approvalEmailBaseUrl() }),
+          `listing-approved:${listingId}`
+        )
+      } else {
+        console.error(`[ADMIN_EMAIL_FAILED] no organiser email for feis ${listingId}`)
+      }
+    })
   }
   return { success: true }
 }
@@ -85,16 +89,18 @@ export async function sendBackListing(listingId: string, note: string): Promise<
 
   const listing = await decidedListing(supabase, listingId)
   if (listing) {
-    const to = await organiserEmail(listing.created_by)
-    if (to) {
-      await sendApprovalEmail(
-        [to],
-        listingSentBackEmail({ listing, note: trimmed, baseUrl: approvalEmailBaseUrl() }),
-        `listing-sent-back:${listingId}:${listing.updated_at}`
-      )
-    } else {
-      console.error(`[ADMIN_EMAIL_FAILED] no organiser email for feis ${listingId}`)
-    }
+    after(async () => {
+      const to = await organiserEmail(listing.created_by)
+      if (to) {
+        await sendApprovalEmail(
+          [to],
+          listingSentBackEmail({ listing, note: trimmed, baseUrl: approvalEmailBaseUrl() }),
+          `listing-sent-back:${listingId}:${listing.updated_at}`
+        )
+      } else {
+        console.error(`[ADMIN_EMAIL_FAILED] no organiser email for feis ${listingId}`)
+      }
+    })
   }
   return { success: true }
 }
