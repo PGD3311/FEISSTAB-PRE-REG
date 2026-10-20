@@ -166,6 +166,46 @@ CREATE TRIGGER guard_feis_listings
   BEFORE INSERT OR UPDATE ON feis_listings
   FOR EACH ROW EXECUTE FUNCTION guard_feis_listings();
 
+-- ─── Fees and syllabus are frozen with the listing while it waits for approval ───
+-- The tables that hang off a listing's price and syllabus: fee_schedules and feis_competitions
+-- (008 and 009 only add columns to them; 019 adds no listing-level table). Same roles as the guard above.
+-- An update checks both the old and the new parent, so a row can't be moved into or out of a pending feis.
+CREATE OR REPLACE FUNCTION guard_pending_listing_children()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pre_registration, pg_temp
+AS $$
+BEGIN
+  IF current_user NOT IN ('anon', 'authenticated') THEN
+    RETURN coalesce(NEW, OLD);
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM feis_listings l
+    WHERE l.status = 'pending_review'
+      AND l.id IN (
+        CASE WHEN TG_OP IN ('UPDATE', 'DELETE') THEN OLD.feis_listing_id END,
+        CASE WHEN TG_OP IN ('INSERT', 'UPDATE') THEN NEW.feis_listing_id END
+      )
+  ) THEN
+    RAISE EXCEPTION 'This feis is waiting for RunFeis approval. Withdraw it first to make changes.'
+      USING ERRCODE = '42501';
+  END IF;
+
+  RETURN coalesce(NEW, OLD);
+END;
+$$;
+
+DROP TRIGGER IF EXISTS guard_pending_fee_schedules ON fee_schedules;
+CREATE TRIGGER guard_pending_fee_schedules
+  BEFORE INSERT OR UPDATE OR DELETE ON fee_schedules
+  FOR EACH ROW EXECUTE FUNCTION guard_pending_listing_children();
+
+DROP TRIGGER IF EXISTS guard_pending_feis_competitions ON feis_competitions;
+CREATE TRIGGER guard_pending_feis_competitions
+  BEFORE INSERT OR UPDATE OR DELETE ON feis_competitions
+  FOR EACH ROW EXECUTE FUNCTION guard_pending_listing_children();
+
 -- ─── Admin decisions ───
 CREATE OR REPLACE FUNCTION approve_listing(p_listing_id uuid)
 RETURNS uuid

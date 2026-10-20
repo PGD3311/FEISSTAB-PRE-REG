@@ -588,6 +588,145 @@ describe('organiser_profiles', () => {
   })
 })
 
+describe('every move outside the table', () => {
+  const STATUSES = ['draft', 'pending_review', 'open', 'closed', 'launched']
+  const ALLOWED = [
+    'draft>pending_review',
+    'pending_review>draft',
+    'open>closed',
+    'closed>open',
+    'closed>launched'
+  ]
+  const refusedMoves = STATUSES.flatMap((from) =>
+    STATUSES.filter((to) => to !== from && !ALLOWED.includes(`${from}>${to}`)).map((to) => [
+      from,
+      to
+    ])
+  )
+
+  it.each(refusedMoves)('refuses an organiser moving a feis from %s to %s', async (from, to) => {
+    const ownerId = await createOrganiser()
+    const id = await seedListing(ownerId, { status: from, approved: true })
+    const message = await refused(
+      asUser(ownerId, (c) =>
+        c.query('UPDATE feis_listings SET status = $2 WHERE id = $1', [id, to])
+      )
+    )
+    expect(message).toMatch(new RegExp(`a feis cannot move from ${from} to ${to}`))
+    expect((await listingRow(id)).status).toBe(from)
+  })
+})
+
+describe('fees and syllabus while waiting for approval', () => {
+  const FROZEN = /This feis is waiting for RunFeis approval\. Withdraw it first to make changes\./
+
+  async function pendingWithFeesAndSyllabus() {
+    const ownerId = await createOrganiser()
+    const id = await seedListing(ownerId)
+    await db.pool.query('INSERT INTO fee_schedules (feis_listing_id) VALUES ($1)', [id])
+    const {
+      rows: [comp]
+    } = await db.pool.query(
+      `INSERT INTO feis_competitions (feis_listing_id, age_group_key, age_group_label, level_key, level_label,
+         dance_key, dance_label, competition_type, fee_category, display_name, enabled)
+       VALUES ($1, 'U10', 'Under 10', 'NOV', 'Novice', 'reel', 'Reel', 'solo', 'solo', 'Novice Reel U10', true)
+       RETURNING id`,
+      [id]
+    )
+    await submit(ownerId, id)
+    return { ownerId, id, competitionId: comp.id as string }
+  }
+
+  const NEW_COMPETITION = `INSERT INTO feis_competitions (feis_listing_id, age_group_key, age_group_label,
+      level_key, level_label, dance_key, dance_label, competition_type, fee_category, display_name, enabled)
+    VALUES ($1, 'U12', 'Under 12', 'NOV', 'Novice', 'reel', 'Reel', 'solo', 'solo', 'Novice Reel U12', true)`
+
+  it('refuses the organiser changing the fee schedule or a competition, then allows it after a withdraw', async () => {
+    const { ownerId, id, competitionId } = await pendingWithFeesAndSyllabus()
+
+    for (const [sql, param] of [
+      ['UPDATE fee_schedules SET solo_fee_cents = 1 WHERE feis_listing_id = $1', id],
+      ['DELETE FROM fee_schedules WHERE feis_listing_id = $1', id],
+      ['UPDATE feis_competitions SET enabled = false WHERE id = $1', competitionId],
+      ['DELETE FROM feis_competitions WHERE id = $1', competitionId],
+      [NEW_COMPETITION, id]
+    ]) {
+      const message = await refused(asUser(ownerId, (c) => c.query(sql, [param])))
+      expect(message).toMatch(FROZEN)
+    }
+
+    await asUser(ownerId, (c) =>
+      c.query(`UPDATE feis_listings SET status = 'draft' WHERE id = $1`, [id])
+    )
+    await asUser(ownerId, (c) =>
+      c.query('UPDATE fee_schedules SET solo_fee_cents = 1600 WHERE feis_listing_id = $1', [id])
+    )
+    await asUser(ownerId, (c) =>
+      c.query('UPDATE feis_competitions SET enabled = false WHERE id = $1', [competitionId])
+    )
+    await asUser(ownerId, (c) => c.query(NEW_COMPETITION, [id]))
+
+    const fee = await db.pool.query(
+      'SELECT solo_fee_cents FROM fee_schedules WHERE feis_listing_id = $1',
+      [id]
+    )
+    expect(fee.rows[0].solo_fee_cents).toBe(1600)
+    const comps = await db.pool.query(
+      'SELECT enabled FROM feis_competitions WHERE feis_listing_id = $1 ORDER BY display_name',
+      [id]
+    )
+    expect(comps.rows.map((r) => r.enabled)).toEqual([false, true]) // U10 disabled, U12 added
+  })
+
+  it('refuses adding a fee schedule to a feis waiting for approval', async () => {
+    const ownerId = await createOrganiser()
+    const id = await seedListing(ownerId)
+    await submit(ownerId, id)
+    const message = await refused(
+      asUser(ownerId, (c) =>
+        c.query('INSERT INTO fee_schedules (feis_listing_id) VALUES ($1)', [id])
+      )
+    )
+    expect(message).toMatch(FROZEN)
+  })
+
+  it('refuses moving a competition into a feis waiting for approval', async () => {
+    const ownerId = await createOrganiser()
+    const pendingId = await seedListing(ownerId)
+    await submit(ownerId, pendingId)
+    const draftId = await seedListing(ownerId)
+    const {
+      rows: [comp]
+    } = await db.pool.query(
+      `INSERT INTO feis_competitions (feis_listing_id, age_group_key, age_group_label, level_key, level_label,
+         dance_key, dance_label, competition_type, fee_category, display_name, enabled)
+       VALUES ($1, 'U10', 'Under 10', 'NOV', 'Novice', 'reel', 'Reel', 'solo', 'solo', 'Novice Reel U10', true)
+       RETURNING id`,
+      [draftId]
+    )
+    const message = await refused(
+      asUser(ownerId, (c) =>
+        c.query('UPDATE feis_competitions SET feis_listing_id = $2 WHERE id = $1', [
+          comp.id,
+          pendingId
+        ])
+      )
+    )
+    expect(message).toMatch(FROZEN)
+  })
+
+  it('still lets an admin approve and the database apply its own changes', async () => {
+    const adminId = await createAdmin()
+    const { id } = await pendingWithFeesAndSyllabus()
+    await db.pool.query(
+      'UPDATE fee_schedules SET event_fee_cents = 900 WHERE feis_listing_id = $1',
+      [id]
+    )
+    await asUser(adminId, (c) => c.query('SELECT approve_listing($1)', [id]))
+    expect((await listingRow(id)).status).toBe('open')
+  })
+})
+
 describe('the migration', () => {
   it('approves existing open, closed and launched listings, and runs again cleanly', async () => {
     const ownerId = await createOrganiser()
