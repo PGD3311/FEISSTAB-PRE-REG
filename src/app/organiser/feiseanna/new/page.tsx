@@ -1,7 +1,9 @@
+import { redirect } from 'next/navigation'
 import Link from 'next/link'
 
-import { createClient } from '@/lib/supabase/server'
+import { createClient, getSignedInUser } from '@/lib/supabase/server'
 import { createEmptyDraftAndRedirect } from '@/app/organiser/feiseanna/actions'
+import { StartBlankButton } from '@/components/organiser/start-blank-button'
 import { ClonePicker } from '@/components/organiser/clone-picker'
 import { PageTitle } from '@/components/page-title'
 
@@ -9,11 +11,15 @@ export const dynamic = 'force-dynamic'
 
 export default async function NewFeisPage() {
   const supabase = await createClient()
+  const user = await getSignedInUser(supabase)
+  if (!user) redirect('/auth/login')
   const { data: listings, error } = await supabase
     .from('feis_listings')
     .select('id, name, feis_date, status, reg_closes_at, late_reg_closes_at')
+    .eq('created_by', user.id)
     .order('feis_date', { ascending: false })
 
+  if (error) console.error('Failed to fetch listings to copy:', error)
   const hasExisting = !error && listings && listings.length > 0
 
   return (
@@ -37,9 +43,7 @@ export default async function NewFeisPage() {
             point.
           </p>
           <form action={createEmptyDraftAndRedirect} className="mt-5">
-            <button type="submit" className="feis-btn feis-btn-primary">
-              Start a blank feis
-            </button>
+            <StartBlankButton />
           </form>
         </section>
 

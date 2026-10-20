@@ -167,7 +167,7 @@ export async function cloneFeis(sourceId: string) {
 
   if (sourceError || !source) {
     console.error('Failed to fetch source listing:', sourceError)
-    return { error: 'Failed to fetch source listing' }
+    return { error: 'You can only copy a feis you set up.' }
   }
 
   // Year-bump the name: replace any 4-digit year with next year

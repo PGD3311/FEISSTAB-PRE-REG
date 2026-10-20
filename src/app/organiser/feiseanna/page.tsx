@@ -1,6 +1,7 @@
+import { redirect } from 'next/navigation'
 import Link from 'next/link'
 
-import { createClient } from '@/lib/supabase/server'
+import { createClient, getSignedInUser } from '@/lib/supabase/server'
 import { parseLocalDate } from '@/lib/format'
 import type { ListingStatus } from '@/lib/types/feis-listing'
 import { PageTitle } from '@/components/page-title'
@@ -10,9 +11,12 @@ export const dynamic = 'force-dynamic'
 
 export default async function FeiseannaPage() {
   const supabase = await createClient()
+  const user = await getSignedInUser(supabase)
+  if (!user) redirect('/auth/login')
   const { data: listings, error } = await supabase
     .from('feis_listings')
     .select('id, name, feis_date, status, reg_closes_at, late_reg_closes_at')
+    .eq('created_by', user.id)
     .order('feis_date', { ascending: false })
 
   const newFeisLink = (
