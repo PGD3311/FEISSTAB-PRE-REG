@@ -102,6 +102,19 @@ export function shouldCreateStage(existingStageCount: number): boolean {
   return existingStageCount === 0
 }
 
+// Most feiseanna run at least five stages (Steve); unused ones can be deleted in feis day
+export const STARTING_STAGE_COUNT = 5
+
+export function startingStages(
+  eventId: string
+): { event_id: string; name: string; display_order: number }[] {
+  return Array.from({ length: STARTING_STAGE_COUNT }, (_, i) => ({
+    event_id: eventId,
+    name: `Stage ${i + 1}`,
+    display_order: i + 1
+  }))
+}
+
 const REGISTRATION_CODE_ATTEMPTS = 6
 
 function randomRegistrationCode(): string {
@@ -184,7 +197,7 @@ export async function createOwnedEvent(
   if (shouldCreateStage(count ?? 0)) {
     const { error: stageError } = await phase1
       .from('stages')
-      .insert({ event_id: event.id, name: 'Stage 1', display_order: 1 })
+      .insert(startingStages(event.id))
     if (stageError) {
       throw new Error(`Failed to create the first stage: ${redactWithEnv(stageError.message)}`)
     }

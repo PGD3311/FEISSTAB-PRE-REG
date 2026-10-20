@@ -100,10 +100,13 @@ describe("createOwnedEvent", () => {
       onConflict: "user_id,event_id,role",
       ignoreDuplicates: true,
     });
-    expect(calls.inserts.find((i) => i.table === "stages")!.row).toMatchObject({
-      name: "Stage 1",
-      display_order: 1,
-    });
+    expect(calls.inserts.find((i) => i.table === "stages")!.row).toEqual(
+      [1, 2, 3, 4, 5].map((n) => ({
+        event_id: "event-1",
+        name: `Stage ${n}`,
+        display_order: n,
+      })),
+    );
     expect(
       calls.inserts.find((i) => i.table === "audit_log")!.row,
     ).toMatchObject({
