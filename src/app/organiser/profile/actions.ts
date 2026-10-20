@@ -21,7 +21,7 @@ export async function saveOrganiserProfile(
     .upsert({ user_id: user.id, ...parsed.values }, { onConflict: 'user_id' })
 
   if (error) {
-    console.error('Failed to save organiser details:', error)
+    console.error('Failed to save organiser details:', error.message)
     return { error: 'Your details could not be saved. Please try again.' }
   }
   return { success: true }

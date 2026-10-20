@@ -93,3 +93,18 @@ export function adminDecisionError(
         : 'The feis could not be sent back. Please try again.'
   }
 }
+
+export const WAITING_FOR_APPROVAL_ERROR =
+  'This feis is waiting for RunFeis approval. Withdraw it first to make changes.'
+
+/**
+ * The message for a failed organiser save of a feis's details, fees or competitions. The guards
+ * in 021 refuse those writes with SQLSTATE 42501 while the feis waits for approval, which a tab
+ * opened before the submit can still try.
+ */
+export function ownerSaveError(
+  error: { code?: string; message: string },
+  fallback: string
+): string {
+  return error.code === '42501' ? WAITING_FOR_APPROVAL_ERROR : fallback
+}

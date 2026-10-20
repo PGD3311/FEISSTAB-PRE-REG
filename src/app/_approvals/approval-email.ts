@@ -5,6 +5,9 @@ import { redactWithEnv, safeErrorMessage } from '@/lib/redact-secrets'
 import { createServiceClient } from '@/lib/supabase/service'
 import { createResendSender } from '@/app/_payments/email-sender'
 
+/** An approval waits at most this long on Resend, then carries on without the email */
+const SEND_TIMEOUT_MS = 5000
+
 /** Where the links in approval emails point */
 export function approvalEmailBaseUrl(): string {
   return process.env.NEXT_PUBLIC_BASE_URL ?? 'http://localhost:3000'
@@ -31,10 +34,18 @@ export async function sendApprovalEmail(
       return
     }
     const sender = createResendSender(process.env.RESEND_API_KEY!)
-    const outcome = await sender.send(
-      { from: process.env.EMAIL_FROM!, to: recipients, ...content },
-      idempotencyKey
-    )
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timedOut = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), SEND_TIMEOUT_MS)
+    })
+    const outcome = await Promise.race([
+      sender.send({ from: process.env.EMAIL_FROM!, to: recipients, ...content }, idempotencyKey),
+      timedOut
+    ]).finally(() => clearTimeout(timer))
+    if (outcome === 'timeout') {
+      console.error(`[ADMIN_EMAIL_FAILED] timeout after ${SEND_TIMEOUT_MS}ms: ${idempotencyKey}`)
+      return
+    }
     if (outcome.kind !== 'accepted') {
       console.error(`[ADMIN_EMAIL_FAILED] ${idempotencyKey}: ${redactWithEnv(outcome.message)}`)
     }

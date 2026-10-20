@@ -6,6 +6,7 @@ import { createClient } from '@/lib/supabase/server'
 import { expandSyllabus } from '@/lib/engine/syllabus-expander'
 import { redactWithEnv, safeErrorMessage } from '@/lib/redact-secrets'
 import { endOfLocalDateIso, startOfLocalDateIso } from '@/lib/timezone'
+import { ownerSaveError } from '@/lib/approval-gate'
 import { listingSubmittedEmail } from '@/lib/email/templates'
 import { isRegion } from '@/lib/regions'
 import {
@@ -158,7 +159,7 @@ export async function updateListingDetails(
 
   if (error) {
     console.error('Failed to update listing:', error)
-    return { error: 'Failed to update listing' }
+    return { error: ownerSaveError(error, 'Failed to update listing') }
   }
 
   return { success: true as const }
@@ -341,7 +342,7 @@ export async function expandAndSaveSyllabus(
     .eq('id', listingId)
     .eq('created_by', user.id)
 
-  if (listingError) return { error: listingError.message }
+  if (listingError) return { error: ownerSaveError(listingError, listingError.message) }
 
   // 2. Expand new competitions
   const expanded = expandSyllabus(templateData, selection)
@@ -353,7 +354,7 @@ export async function expandAndSaveSyllabus(
       .delete()
       .eq('feis_listing_id', listingId)
 
-    if (deleteError) return { error: deleteError.message }
+    if (deleteError) return { error: ownerSaveError(deleteError, deleteError.message) }
     return { success: true as const, count: 0 }
   }
 
@@ -368,7 +369,7 @@ export async function expandAndSaveSyllabus(
     .insert(rows)
     .select('id')
 
-  if (insertError) return { error: insertError.message }
+  if (insertError) return { error: ownerSaveError(insertError, insertError.message) }
 
   // 4. Only now delete old competitions that were replaced
   const newIds = (inserted ?? []).map((r: { id: string }) => r.id)
@@ -492,7 +493,7 @@ export async function saveFeeSchedule(
 
     if (error) {
       console.error('Failed to update fee schedule:', error)
-      return { error: 'Failed to save fee schedule' }
+      return { error: ownerSaveError(error, 'Failed to save fee schedule') }
     }
   } else {
     const { error } = await supabase.from('fee_schedules').insert({
@@ -508,7 +509,7 @@ export async function saveFeeSchedule(
 
     if (error) {
       console.error('Failed to create fee schedule:', error)
-      return { error: 'Failed to save fee schedule' }
+      return { error: ownerSaveError(error, 'Failed to save fee schedule') }
     }
   }
 
@@ -568,7 +569,7 @@ export async function saveDeadlines(
 
   if (error) {
     console.error('Failed to save deadlines:', error)
-    return { error: 'Failed to save deadlines' }
+    return { error: ownerSaveError(error, 'Failed to save deadlines') }
   }
 
   return { success: true as const }
@@ -679,13 +680,11 @@ export async function transitionListingStatus(
   }
 
   // Perform the transition
-  const { data: updated, error: updateError } = await supabase
+  const { error: updateError } = await supabase
     .from('feis_listings')
     .update({ status: to })
     .eq('id', listingId)
     .eq('created_by', user.id)
-    .select('submitted_at')
-    .single()
 
   if (updateError) {
     console.error('Failed to update listing status:', updateError)
@@ -694,6 +693,17 @@ export async function transitionListingStatus(
 
   // Tell RunFeis a feis is waiting. Email never blocks the submit: a failure is only logged.
   if (to === 'pending_review') {
+    // The submit time keys the email so a retried send isn't sent twice. The status has
+    // already changed, so a failed read-back only logs and falls back to another key.
+    const { data: submitted, error: readBackError } = await supabase
+      .from('feis_listings')
+      .select('submitted_at')
+      .eq('id', listingId)
+      .maybeSingle()
+    if (readBackError) {
+      console.error(`Failed to read back submitted_at for ${listingId}:`, readBackError.message)
+    }
+    const submittedAt = submitted?.submitted_at ?? `fallback-${Date.now()}`
     await sendApprovalEmail(
       'admins',
       listingSubmittedEmail({
@@ -703,7 +713,7 @@ export async function transitionListingStatus(
           : null,
         baseUrl: approvalEmailBaseUrl()
       }),
-      `listing-submitted:${listingId}:${updated.submitted_at ?? Date.now()}`
+      `listing-submitted:${listingId}:${submittedAt}`
     )
   }
 
@@ -1029,7 +1039,7 @@ export async function updateCompetition(listingId: string, competitionId: string
 
   if (error) {
     console.error('Failed to update competition:', error)
-    return { error: 'Failed to save the competition' }
+    return { error: ownerSaveError(error, 'Failed to save the competition') }
   }
   return { success: true as const }
 }
@@ -1074,7 +1084,7 @@ export async function addCompetition(listingId: string, input: NewCompetition) {
 
   if (error) {
     console.error('Failed to add competition:', error)
-    return { error: 'Failed to add the competition' }
+    return { error: ownerSaveError(error, 'Failed to add the competition') }
   }
   return { success: true as const }
 }

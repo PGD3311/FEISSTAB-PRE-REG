@@ -4,6 +4,8 @@ import {
   ORGANISER_DETAILS_BLOCK,
   adminAlertRecipients,
   adminDecisionError,
+  WAITING_FOR_APPROVAL_ERROR,
+  ownerSaveError,
   checklistLinkFor,
   isAwaitingApproval,
   parseOrganiserProfile,
@@ -173,6 +175,26 @@ describe('adminDecisionError', () => {
     )
     expect(adminDecisionError('XX000', 'send_back')).toBe(
       'The feis could not be sent back. Please try again.'
+    )
+  })
+})
+
+describe('ownerSaveError', () => {
+  it("explains the database's refusal while the feis waits for approval", () => {
+    expect(WAITING_FOR_APPROVAL_ERROR).toBe(
+      'This feis is waiting for RunFeis approval. Withdraw it first to make changes.'
+    )
+    expect(ownerSaveError({ code: '42501', message: 'x' }, 'Failed to save fee schedule')).toBe(
+      WAITING_FOR_APPROVAL_ERROR
+    )
+  })
+
+  it('keeps the usual message for any other failure', () => {
+    expect(ownerSaveError({ code: '23505', message: 'x' }, 'Failed to save fee schedule')).toBe(
+      'Failed to save fee schedule'
+    )
+    expect(ownerSaveError({ message: 'x' }, 'Failed to update listing')).toBe(
+      'Failed to update listing'
     )
   })
 })
