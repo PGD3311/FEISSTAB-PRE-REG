@@ -894,6 +894,22 @@ This runs with the real Stripe setup, using test keys and a connected test accou
 
 ---
 
+### Live verification (2026-10-18 to 2026-10-20)
+- Live check before: 4 paid and 3 cancelled orders, none unpaid; no duplicates, total mismatches or missing columns; 019's index exactly. 011 (pay at the door) had been applied by hand: its trigger, three functions, `'confirmed'` in the status check and two columns. No order was `confirmed` and every `payment_method` was NULL, so nothing needed handling; 012 removed the trigger and functions, and the status check and columns are left for a later 021. 002's hold-expiry job had been failing every minute (it resolved `registrations` to `public.registrations`); 012 replaced it in place. `pg_net` isn't installed.
+- Add-ons from main's live code: one family with two paid orders for the demo feis; no pair paid twice, no family fee paid twice, no paid $0 orders. Nothing to do.
+- Rehearsal on a copy of the live data: REHEARSAL PASSED, 34/34 live tests. Before and after: cancelled 3, paid 4, paid fingerprint unchanged, 0 unpaid, 0 paid without a snapshot.
+- RunFeis fee: a flat $6 in the code (once per family per feis, from the host's share, never refunded), with no Vercel setting. `STRIPE_APPLICATION_FEE_PERCENT` was unset on live, so live used the old 5% default until the deploy.
+- NEXT_PUBLIC_BASE_URL: https://www.runfeis.com in Production; Preview left unset (nothing is tested on previews). Fluid compute: on.
+- Email: on for immediate sends (EMAIL_FROM RunFeis <entries@runfeis.com>, PAYMENTS_ALERT_EMAIL walshdaniel143@gmail.com). Both test confirmations were sent on the first attempt.
+- Schema reload: the smoke call answered 42501 (permission denied for `get_my_payment_reviews`), as expected.
+- Stripe webhook events: the four events on the sandbox Connect endpoint, added 2026-10-20.
+- Migrations 012–017 and 020 applied: 2026-10-19, through the SQL editor as `postgres` (pre-flight `current_user` postgres; `payments_admin` functions owned by postgres); deployed commit 22b27a8.
+- Live tests: 34/34 passed on live (2026-10-20).
+- Verify after: six SELECT-only policies; no write grants for anon or authenticated; `consent_ip` and `checkout_config` unreadable; the three guards and three TRUNCATE guards; the hold-expiry job qualified and succeeding; no open payment cases.
+- Organiser entries view: covered by the live test script's organiser checks.
+- Stripe test mode end to end (production site, demo feis, sandbox): a first order of $95.00 paid (RF-2026-7H9EC) with a $6.00 application fee; an add-on of $30.00 paid (RF-2026-DDUXN) with no application fee and no second family fee; both confirmation emails arrived.
+- Email job: deferred (Daniel, 2026-10-19); turn it on once families are signing up (runbook, "Turning the email job on").
+
 ## Decisions (Daniel, 2026-10-16)
 
 1. **Payment alerts** go to both Daniel and Steve to start. `PAYMENTS_ALERT_EMAIL` takes a comma-separated list.
