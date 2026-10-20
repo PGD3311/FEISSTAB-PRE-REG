@@ -53,7 +53,15 @@ npx vitest run tests/engine/  # engine tests only
 
 ### 1.2 Listing State Machine
 - **All status changes go through `canTransitionListing()`** in `src/lib/feis-listing-states.ts`.
-- **Publish gate:** A listing cannot go `draft → open` without passing ALL publish prerequisites (name, date, venue, fees, competitions, Stripe, date ordering).
+- **Submit gate:** A listing cannot go `draft → pending_review` without passing ALL prerequisites (name, date, venue, fees, competitions, Stripe, date ordering, sanction region and reference, the organiser's details). Nothing goes `draft → open`: only a RunFeis admin's approval opens a feis.
+
+### 1.2a Approval gate (migration 021, `docs/2026-10-20-approval-gate.md`)
+- **Statuses.** The organiser submits (`draft → pending_review`) or withdraws (`pending_review → draft`). Only an admin approves (`pending_review → open`, `approve_listing`) or sends back with a note (`pending_review → draft`, `send_back_listing`, which sets `review_note`). `closed → open` works only for a feis approved before (`approved_at`).
+- **The guard is in the database.** `guard_feis_listings` and `guard_pending_listing_children` refuse anon/authenticated writes outside that table. While a feis is `pending_review` its organiser can change nothing (the listing, its fees or its competitions) except withdraw it, so the pages offer no edits then: setup and Edit details redirect to the feis page, which shows Withdraw. The organiser never sets `approved_at`, `approved_by`, `review_note` or `submitted_at`.
+- **After approval the organiser can still edit everything**, including the sanction fields and the name (Decision 5). RunFeis doesn't re-review those edits; an admin reviews again only if the feis is sent back and resubmitted.
+- **Admins** are rows in `pre_registration.platform_admins` (no API access; RLS on, no policies). `is_platform_admin()` checks the caller. The admin page is `/admin/approvals` (anyone else gets not found). Call `approve_listing` and `send_back_listing` with the signed-in admin's client (`createClient()`), never the service client: they're revoked from service_role and check `auth.uid()`.
+- **Add an admin** (SQL editor, once they've signed up): `INSERT INTO pre_registration.platform_admins (user_id) SELECT id FROM auth.users WHERE email = 'them@example.com' ON CONFLICT DO NOTHING;`
+- **Emails** (`src/app/_approvals/approval-email.ts`) never block the action and skip when `emailIsConfigured()` is false. Submit emails `ADMIN_ALERT_EMAIL` (comma-separated), else `PAYMENTS_ALERT_EMAIL`; approve and send back email the organiser's sign-in address. A failure logs `[ADMIN_EMAIL_FAILED]`.
 
 ### 1.3 Frozen Snapshots
 - **Templates are mutable. Live listings are frozen.** When a template is expanded into `feis_competitions`, the template data is deep-copied into `syllabus_snapshot`. Each competition row stores its own frozen eligibility data. Template edits NEVER mutate existing listings.
