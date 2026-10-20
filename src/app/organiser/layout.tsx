@@ -19,13 +19,20 @@ export default async function OrganiserLayout({
     redirect('/auth/login')
   }
 
+  // RunFeis admins get a link to the approvals queue
+  const { data: isAdmin, error: adminError } = await supabase.rpc('is_platform_admin')
+  if (adminError) console.error('Failed to check admin role:', adminError.message)
+
+  const links = [
+    { href: '/organiser/feiseanna', label: 'Your feiseanna', matchChildren: true },
+    { href: '/organiser/profile', label: 'Your details' },
+    ...(isAdmin === true ? [{ href: '/admin/approvals', label: 'Approvals' }] : [])
+  ]
+
   return (
     <div className="min-h-screen bg-[var(--color-feis-cream)]">
       <AppBand
-        links={[
-          { href: '/organiser/feiseanna', label: 'Your feiseanna', matchChildren: true },
-          { href: '/organiser/profile', label: 'Your details' }
-        ]}
+        links={links}
       >
         <span className="hidden text-white/70 sm:inline">{user.email}</span>
         <LogoutButton />
