@@ -6,6 +6,10 @@ const TAGS: Record<ListingStatus | 'deadline_passed', { label: string; className
     label: 'Draft',
     className: 'bg-[var(--color-feis-cream-dark)] text-muted-foreground'
   },
+  pending_review: {
+    label: 'Waiting for approval',
+    className: 'bg-[var(--color-feis-orange-light)] text-[var(--color-feis-orange-ink)]'
+  },
   open: {
     label: 'Open for entries',
     className: 'bg-[var(--color-feis-green-light)] text-[var(--color-feis-green)]'

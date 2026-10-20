@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import Link from 'next/link'
 
+import { sentBackMessage } from '@/lib/approval-gate'
 import type { FeisListing, FeeSchedule } from '@/lib/types/feis-listing'
 import { FeisWizardStep1 } from '@/components/organiser/feis-wizard-step1'
 import { FeisWizardStep2 } from '@/components/organiser/feis-wizard-step2'
@@ -55,6 +56,7 @@ function getCompletedStep(
 
 export function FeisWizard({ listing, feeSchedule, competitionsCount }: FeisWizardProps) {
   const completedStep = getCompletedStep(listing, feeSchedule, competitionsCount)
+  const sentBack = sentBackMessage(listing)
   const [currentStep, setCurrentStep] = useState(Math.min(completedStep + 1, 5))
 
   function handleStepClick(stepNumber: number) {
@@ -89,6 +91,15 @@ export function FeisWizard({ listing, feeSchedule, competitionsCount }: FeisWiza
           intro="Set up your feis in five steps. You can go back to any step you have reached."
         />
       </div>
+
+      {sentBack && (
+        <p
+          role="status"
+          className="mb-6 max-w-3xl border-l-4 border-[var(--color-feis-orange)] bg-[var(--color-feis-orange-light)] px-4 py-3 text-sm whitespace-pre-line text-[var(--color-feis-orange-ink)]"
+        >
+          {sentBack}
+        </p>
+      )}
 
       {/* Step indicator */}
       <nav aria-label="Setup steps" className="mb-8">

@@ -7,7 +7,6 @@ Found during the October 2026 restyle and left for later. RunFeis is for Northea
 - **Two organiser buttons still use browser `alert()`** for errors: `clone-feis-button.tsx` and `delete-draft-button.tsx`. (Status changes now show an in-page message.)
 - **A failed "connect Stripe" shows nothing.** `handleSimulateStripe` in `feis-wizard-step5.tsx` only logs the error to the console. The step is simulated anyway; real Stripe Connect onboarding still needs building.
 - **Step 5 ignores a failed competitions load.** `fetchCompetitions` doesn't check `.error`, so the breakdown silently shows zero.
-- **Step 1 save has no try/catch** around the server action (steps 2 to 5 do).
 - **The setup page ignores query errors** on the fee schedule and competition count (`src/app/organiser/feiseanna/[id]/setup/page.tsx`).
 
 ## Organiser feis page

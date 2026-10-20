@@ -1,5 +1,6 @@
-import { notFound } from 'next/navigation'
+import { notFound, redirect } from 'next/navigation'
 
+import { isAwaitingApproval } from '@/lib/approval-gate'
 import { createClient, getSignedInUser } from '@/lib/supabase/server'
 import { FeisWizard } from '@/components/organiser/feis-wizard'
 import type { FeisListing, FeeSchedule } from '@/lib/types/feis-listing'
@@ -26,6 +27,11 @@ export default async function FeisSetupPage({
 
   if (listingError || !listing) {
     notFound()
+  }
+
+  // Nothing can change while RunFeis reviews the feis; its page offers Withdraw instead
+  if (isAwaitingApproval(listing.status)) {
+    redirect(`/organiser/feiseanna/${id}`)
   }
 
   // Fetch fee schedule

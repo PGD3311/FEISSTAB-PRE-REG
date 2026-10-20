@@ -64,6 +64,8 @@ export async function middleware(request: NextRequest) {
 export const config = {
   matcher: [
     '/organiser/:path*',
+    // Only to keep the session fresh: the admin pages answer "not found" to anyone else
+    '/admin/:path*',
     '/dashboard/:path*',
     '/auth/:path*',
     '/feiseanna/:path*/register/:path*',

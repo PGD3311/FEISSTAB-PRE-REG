@@ -47,6 +47,13 @@ function validListing(overrides: Partial<FeisListing> = {}): FeisListing {
     show_contact_publicly: true,
     launched_at: null,
     launched_event_id: null,
+    submitted_at: null,
+    approved_at: null,
+    approved_by: null,
+    review_note: null,
+    sanction_region: 'Mid-Atlantic',
+    sanction_reference: 'MA-2099-014',
+    sanction_notes: null,
     created_by: 'user-001',
     created_at: '2025-01-01T00:00:00Z',
     updated_at: '2025-01-01T00:00:00Z',
@@ -81,6 +88,7 @@ function validContext(
         fee_category: 'solo',
       },
     ],
+    hasOrganiserProfile: true,
     ...overrides,
   }
 }
@@ -88,8 +96,32 @@ function validContext(
 // ─── Tests ───
 
 describe('canTransitionListing', () => {
-  it('allows draft → open', () => {
-    expect(canTransitionListing('draft', 'open')).toBe(true)
+  it('allows an owner to submit a draft for approval', () => {
+    expect(canTransitionListing('draft', 'pending_review')).toBe(true)
+  })
+
+  it('allows an owner to withdraw a feis waiting for approval', () => {
+    expect(canTransitionListing('pending_review', 'draft')).toBe(true)
+  })
+
+  it('refuses draft → open for everyone: a feis opens only through approval', () => {
+    expect(canTransitionListing('draft', 'open')).toBe(false)
+    expect(canTransitionListing('draft', 'open', 'admin')).toBe(false)
+  })
+
+  it('refuses an owner approving their own feis (pending_review → open)', () => {
+    expect(canTransitionListing('pending_review', 'open')).toBe(false)
+  })
+
+  it('allows an admin to approve (→ open) or send back (→ draft) a pending feis', () => {
+    expect(canTransitionListing('pending_review', 'open', 'admin')).toBe(true)
+    expect(canTransitionListing('pending_review', 'draft', 'admin')).toBe(true)
+  })
+
+  it('gives an admin no other moves', () => {
+    expect(canTransitionListing('draft', 'pending_review', 'admin')).toBe(false)
+    expect(canTransitionListing('open', 'closed', 'admin')).toBe(false)
+    expect(canTransitionListing('closed', 'open', 'admin')).toBe(false)
   })
 
   it('allows open → closed', () => {
@@ -104,8 +136,17 @@ describe('canTransitionListing', () => {
     expect(canTransitionListing('draft', 'closed')).toBe(false)
   })
 
+  it('rejects pending_review → closed or launched', () => {
+    expect(canTransitionListing('pending_review', 'closed')).toBe(false)
+    expect(canTransitionListing('pending_review', 'launched')).toBe(false)
+  })
+
   it('rejects open → draft (no going back to draft)', () => {
     expect(canTransitionListing('open', 'draft')).toBe(false)
+  })
+
+  it('rejects open → pending_review (an approved feis is not resubmitted)', () => {
+    expect(canTransitionListing('open', 'pending_review')).toBe(false)
   })
 
   it('allows closed -> launched', () => {
@@ -116,19 +157,28 @@ describe('canTransitionListing', () => {
     expect(canTransitionListing('launched', 'draft')).toBe(false)
     expect(canTransitionListing('launched', 'open')).toBe(false)
     expect(canTransitionListing('launched', 'closed')).toBe(false)
-    expect(canTransitionListing('launched', 'launched')).toBe(false)
+    expect(canTransitionListing('launched', 'pending_review')).toBe(false)
   })
 
   it('rejects same-state transitions', () => {
     expect(canTransitionListing('draft', 'draft')).toBe(false)
+    expect(canTransitionListing('pending_review', 'pending_review')).toBe(false)
     expect(canTransitionListing('open', 'open')).toBe(false)
     expect(canTransitionListing('closed', 'closed')).toBe(false)
   })
 })
 
 describe('getNextListingStates', () => {
-  it('returns [open] for draft', () => {
-    expect(getNextListingStates('draft')).toEqual(['open'])
+  it('returns [pending_review] for draft', () => {
+    expect(getNextListingStates('draft')).toEqual(['pending_review'])
+  })
+
+  it('returns [draft] for pending_review: the owner can only withdraw', () => {
+    expect(getNextListingStates('pending_review')).toEqual(['draft'])
+  })
+
+  it('returns [open, draft] for pending_review when the actor is an admin', () => {
+    expect(getNextListingStates('pending_review', 'admin')).toEqual(['open', 'draft'])
   })
 
   it('returns [closed] for open', () => {
@@ -156,14 +206,87 @@ describe('getListingTransitionBlockReasons', () => {
       expect(result.warnings).toEqual([])
     })
 
-    it('closed → open has no blocks or warnings', () => {
+    it('closed → open has no blocks or warnings once RunFeis has approved the feis', () => {
       const result = getListingTransitionBlockReasons(
         'closed',
         'open',
-        validContext()
+        validContext({
+          listing: validListing({ status: 'closed', approved_at: '2026-10-20T12:00:00Z' }),
+        })
       )
       expect(result.blocks).toEqual([])
       expect(result.warnings).toEqual([])
+    })
+
+    it('withdraw (pending_review → draft) has no blocks or warnings', () => {
+      const result = getListingTransitionBlockReasons(
+        'pending_review',
+        'draft',
+        validContext({ listing: validListing({ status: 'pending_review' }) })
+      )
+      expect(result.blocks).toEqual([])
+      expect(result.warnings).toEqual([])
+    })
+  })
+
+  describe('closed → open needs an earlier approval', () => {
+    it('blocks reopening a feis RunFeis never approved', () => {
+      const result = getListingTransitionBlockReasons(
+        'closed',
+        'open',
+        validContext({ listing: validListing({ status: 'closed', approved_at: null }) })
+      )
+      expect(result.blocks).toContain('RunFeis has not approved this feis')
+    })
+  })
+
+  describe('submitting for approval', () => {
+    it('runs the publish checks on draft → pending_review', () => {
+      const ctx = validContext({ listing: validListing({ name: null }) })
+      const result = getListingTransitionBlockReasons('draft', 'pending_review', ctx)
+      expect(result.blocks).toContain('Feis name is required')
+    })
+
+    it('no longer runs the publish checks on draft → open', () => {
+      const ctx = validContext({ listing: validListing({ name: null }) })
+      const result = getListingTransitionBlockReasons('draft', 'open', ctx)
+      expect(result.blocks).toEqual([])
+    })
+
+    it('blocks when the sanction region is missing', () => {
+      const ctx = validContext({ listing: validListing({ sanction_region: null }) })
+      const result = getListingTransitionBlockReasons('draft', 'pending_review', ctx)
+      expect(result.blocks).toContain('Sanction region is required')
+    })
+
+    it('blocks when the sanction region is blank', () => {
+      const ctx = validContext({ listing: validListing({ sanction_region: '   ' }) })
+      const result = getListingTransitionBlockReasons('draft', 'pending_review', ctx)
+      expect(result.blocks).toContain('Sanction region is required')
+    })
+
+    it('blocks when the sanction reference is missing', () => {
+      const ctx = validContext({ listing: validListing({ sanction_reference: null }) })
+      const result = getListingTransitionBlockReasons('draft', 'pending_review', ctx)
+      expect(result.blocks).toContain('Sanction reference is required')
+    })
+
+    it('blocks when the sanction reference is blank', () => {
+      const ctx = validContext({ listing: validListing({ sanction_reference: ' ' }) })
+      const result = getListingTransitionBlockReasons('draft', 'pending_review', ctx)
+      expect(result.blocks).toContain('Sanction reference is required')
+    })
+
+    it('blocks when the organiser details are missing', () => {
+      const ctx = validContext({ hasOrganiserProfile: false })
+      const result = getListingTransitionBlockReasons('draft', 'pending_review', ctx)
+      expect(result.blocks).toContain('Your organiser details are required')
+    })
+
+    it('does not need sanction notes', () => {
+      const ctx = validContext({ listing: validListing({ sanction_notes: null }) })
+      const result = getListingTransitionBlockReasons('draft', 'pending_review', ctx)
+      expect(result.blocks).toEqual([])
     })
   })
 
@@ -171,7 +294,7 @@ describe('getListingTransitionBlockReasons', () => {
     it('returns no blocks for a fully valid listing', () => {
       const result = getListingTransitionBlockReasons(
         'draft',
-        'open',
+        'pending_review',
         validContext()
       )
       expect(result.blocks).toEqual([])
@@ -183,7 +306,7 @@ describe('getListingTransitionBlockReasons', () => {
       const ctx = validContext({
         listing: validListing({ name: null }),
       })
-      const result = getListingTransitionBlockReasons('draft', 'open', ctx)
+      const result = getListingTransitionBlockReasons('draft', 'pending_review', ctx)
       expect(result.blocks).toContain('Feis name is required')
     })
 
@@ -191,7 +314,7 @@ describe('getListingTransitionBlockReasons', () => {
       const ctx = validContext({
         listing: validListing({ feis_date: null }),
       })
-      const result = getListingTransitionBlockReasons('draft', 'open', ctx)
+      const result = getListingTransitionBlockReasons('draft', 'pending_review', ctx)
       expect(result.blocks).toContain('Feis date is required')
     })
 
@@ -199,7 +322,7 @@ describe('getListingTransitionBlockReasons', () => {
       const ctx = validContext({
         listing: validListing({ feis_date: '2020-01-01' }),
       })
-      const result = getListingTransitionBlockReasons('draft', 'open', ctx)
+      const result = getListingTransitionBlockReasons('draft', 'pending_review', ctx)
       expect(result.blocks).toContain('Feis date must be in the future')
     })
 
@@ -207,7 +330,7 @@ describe('getListingTransitionBlockReasons', () => {
       const ctx = validContext({
         listing: validListing({ venue_name: null }),
       })
-      const result = getListingTransitionBlockReasons('draft', 'open', ctx)
+      const result = getListingTransitionBlockReasons('draft', 'pending_review', ctx)
       expect(result.blocks).toContain('Venue name is required')
     })
 
@@ -215,7 +338,7 @@ describe('getListingTransitionBlockReasons', () => {
       const ctx = validContext({
         listing: validListing({ contact_email: null }),
       })
-      const result = getListingTransitionBlockReasons('draft', 'open', ctx)
+      const result = getListingTransitionBlockReasons('draft', 'pending_review', ctx)
       expect(result.blocks).toContain('Contact email is required')
     })
 
@@ -223,7 +346,7 @@ describe('getListingTransitionBlockReasons', () => {
       const ctx = validContext({
         listing: validListing({ timezone: null }),
       })
-      const result = getListingTransitionBlockReasons('draft', 'open', ctx)
+      const result = getListingTransitionBlockReasons('draft', 'pending_review', ctx)
       expect(result.blocks).toContain('Timezone is required')
     })
 
@@ -231,7 +354,7 @@ describe('getListingTransitionBlockReasons', () => {
       const ctx = validContext({
         listing: validListing({ privacy_policy_url: null }),
       })
-      const result = getListingTransitionBlockReasons('draft', 'open', ctx)
+      const result = getListingTransitionBlockReasons('draft', 'pending_review', ctx)
       expect(result.blocks).toContain('Privacy policy URL is required')
     })
   })
@@ -239,7 +362,7 @@ describe('getListingTransitionBlockReasons', () => {
   describe('hard blocks — competitions', () => {
     it('blocks when no enabled competitions', () => {
       const ctx = validContext({ enabledCompetitions: [] })
-      const result = getListingTransitionBlockReasons('draft', 'open', ctx)
+      const result = getListingTransitionBlockReasons('draft', 'pending_review', ctx)
       expect(result.blocks).toContain('At least one competition must be enabled')
     })
   })
@@ -247,7 +370,7 @@ describe('getListingTransitionBlockReasons', () => {
   describe('hard blocks — fee schedule', () => {
     it('blocks when fee schedule is missing', () => {
       const ctx = validContext({ feeSchedule: null })
-      const result = getListingTransitionBlockReasons('draft', 'open', ctx)
+      const result = getListingTransitionBlockReasons('draft', 'pending_review', ctx)
       expect(result.blocks).toContain('Fee schedule is required')
     })
 
@@ -262,7 +385,7 @@ describe('getListingTransitionBlockReasons', () => {
           },
         ],
       })
-      const result = getListingTransitionBlockReasons('draft', 'open', ctx)
+      const result = getListingTransitionBlockReasons('draft', 'pending_review', ctx)
       expect(result.blocks).toContain(
         'Solo fee must be greater than $0 when solo competitions exist'
       )
@@ -279,7 +402,7 @@ describe('getListingTransitionBlockReasons', () => {
           },
         ],
       })
-      const result = getListingTransitionBlockReasons('draft', 'open', ctx)
+      const result = getListingTransitionBlockReasons('draft', 'pending_review', ctx)
       expect(result.blocks).toContain(
         'Championship fee must be greater than $0 when championship competitions exist'
       )
@@ -296,7 +419,7 @@ describe('getListingTransitionBlockReasons', () => {
           },
         ],
       })
-      const result = getListingTransitionBlockReasons('draft', 'open', ctx)
+      const result = getListingTransitionBlockReasons('draft', 'pending_review', ctx)
       expect(result.blocks).toContain(
         'Championship fee must be greater than $0 when championship competitions exist'
       )
@@ -313,7 +436,7 @@ describe('getListingTransitionBlockReasons', () => {
           },
         ],
       })
-      const result = getListingTransitionBlockReasons('draft', 'open', ctx)
+      const result = getListingTransitionBlockReasons('draft', 'pending_review', ctx)
       expect(result.blocks).not.toContain(
         'Solo fee must be greater than $0 when solo competitions exist'
       )
@@ -325,7 +448,7 @@ describe('getListingTransitionBlockReasons', () => {
       const ctx = validContext({
         listing: validListing({ reg_opens_at: null }),
       })
-      const result = getListingTransitionBlockReasons('draft', 'open', ctx)
+      const result = getListingTransitionBlockReasons('draft', 'pending_review', ctx)
       expect(result.blocks).toContain(
         'Registration open date is required'
       )
@@ -335,7 +458,7 @@ describe('getListingTransitionBlockReasons', () => {
       const ctx = validContext({
         listing: validListing({ reg_closes_at: null }),
       })
-      const result = getListingTransitionBlockReasons('draft', 'open', ctx)
+      const result = getListingTransitionBlockReasons('draft', 'pending_review', ctx)
       expect(result.blocks).toContain(
         'Registration close date is required'
       )
@@ -348,7 +471,7 @@ describe('getListingTransitionBlockReasons', () => {
           reg_closes_at: '2099-06-20T00:00:00Z',
         }),
       })
-      const result = getListingTransitionBlockReasons('draft', 'open', ctx)
+      const result = getListingTransitionBlockReasons('draft', 'pending_review', ctx)
       expect(result.blocks).toContain(
         'Registration must close before the feis date'
       )
@@ -361,7 +484,7 @@ describe('getListingTransitionBlockReasons', () => {
           reg_closes_at: '2099-06-05T00:00:00Z',
         }),
       })
-      const result = getListingTransitionBlockReasons('draft', 'open', ctx)
+      const result = getListingTransitionBlockReasons('draft', 'pending_review', ctx)
       expect(result.blocks).toContain(
         'Registration open date must be before close date'
       )
@@ -374,7 +497,7 @@ describe('getListingTransitionBlockReasons', () => {
           late_reg_closes_at: '2099-06-05T00:00:00Z',
         }),
       })
-      const result = getListingTransitionBlockReasons('draft', 'open', ctx)
+      const result = getListingTransitionBlockReasons('draft', 'pending_review', ctx)
       expect(result.blocks).toContain(
         'Late registration must close after regular registration'
       )
@@ -386,7 +509,7 @@ describe('getListingTransitionBlockReasons', () => {
       const ctx = validContext({
         listing: validListing({ stripe_charges_enabled: false }),
       })
-      const result = getListingTransitionBlockReasons('draft', 'open', ctx)
+      const result = getListingTransitionBlockReasons('draft', 'pending_review', ctx)
       expect(result.blocks).toContain(
         'Stripe payments must be enabled'
       )
@@ -401,7 +524,7 @@ describe('getListingTransitionBlockReasons', () => {
           end_date: '2099-06-14',
         }),
       })
-      const result = getListingTransitionBlockReasons('draft', 'open', ctx)
+      const result = getListingTransitionBlockReasons('draft', 'pending_review', ctx)
       expect(result.blocks).toContain(
         'End date must be on or after the feis start date'
       )
@@ -414,7 +537,7 @@ describe('getListingTransitionBlockReasons', () => {
           end_date: '2099-06-15',
         }),
       })
-      const result = getListingTransitionBlockReasons('draft', 'open', ctx)
+      const result = getListingTransitionBlockReasons('draft', 'pending_review', ctx)
       expect(result.blocks).not.toContain(
         'End date must be on or after the feis start date'
       )
@@ -424,7 +547,7 @@ describe('getListingTransitionBlockReasons', () => {
       const ctx = validContext({
         listing: validListing({ end_date: null }),
       })
-      const result = getListingTransitionBlockReasons('draft', 'open', ctx)
+      const result = getListingTransitionBlockReasons('draft', 'pending_review', ctx)
       expect(result.blocks).not.toContain(
         'End date must be on or after the feis start date'
       )
@@ -482,7 +605,7 @@ describe('getListingTransitionBlockReasons', () => {
       const ctx = validContext({
         feeSchedule: { ...validFeeSchedule(), event_fee_cents: 0 },
       })
-      const result = getListingTransitionBlockReasons('draft', 'open', ctx)
+      const result = getListingTransitionBlockReasons('draft', 'pending_review', ctx)
       expect(result.blocks).toEqual([])
       expect(result.warnings).toContain('Event fee is $0')
     })
@@ -491,7 +614,7 @@ describe('getListingTransitionBlockReasons', () => {
       const ctx = validContext({
         listing: validListing({ description: null }),
       })
-      const result = getListingTransitionBlockReasons('draft', 'open', ctx)
+      const result = getListingTransitionBlockReasons('draft', 'pending_review', ctx)
       expect(result.blocks).toEqual([])
       expect(result.warnings).toContain('No description provided')
     })
@@ -500,7 +623,7 @@ describe('getListingTransitionBlockReasons', () => {
       const ctx = validContext({
         listing: validListing({ venue_address: null }),
       })
-      const result = getListingTransitionBlockReasons('draft', 'open', ctx)
+      const result = getListingTransitionBlockReasons('draft', 'pending_review', ctx)
       expect(result.blocks).toEqual([])
       expect(result.warnings).toContain('No venue address provided')
     })
@@ -511,7 +634,7 @@ describe('getListingTransitionBlockReasons', () => {
           reg_opens_at: '2020-01-01T00:00:00Z',
         }),
       })
-      const result = getListingTransitionBlockReasons('draft', 'open', ctx)
+      const result = getListingTransitionBlockReasons('draft', 'pending_review', ctx)
       expect(result.blocks).toEqual([])
       expect(result.warnings).toContain(
         'Registration open date is in the past'

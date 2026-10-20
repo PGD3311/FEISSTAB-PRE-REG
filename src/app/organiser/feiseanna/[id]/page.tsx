@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 
+import { isAwaitingApproval, sentBackMessage } from '@/lib/approval-gate'
 import { createClient, getSignedInUser } from '@/lib/supabase/server'
 import type { FeisListing, FeeSchedule, LateFeeTier } from '@/lib/types/feis-listing'
 import {
@@ -86,6 +87,15 @@ function SetupLink({ listingId, children }: { listingId: string; children: React
   )
 }
 
+/** Said wherever a change is offered, while RunFeis reviews the feis and nothing can change */
+function WaitingForApprovalNote() {
+  return (
+    <p className="text-sm text-muted-foreground">
+      Waiting for approval. Withdraw the feis from the Overview tab to make changes.
+    </p>
+  )
+}
+
 function OverviewTab({
   listing,
   competitionsCount
@@ -93,9 +103,32 @@ function OverviewTab({
   listing: FeisListing
   competitionsCount: number
 }) {
+  const sentBack = sentBackMessage(listing)
   return (
     <div className="grid items-start gap-8 lg:grid-cols-[minmax(0,1fr)_320px]">
       <div className="grid gap-8">
+        {isAwaitingApproval(listing.status) && (
+          <div
+            role="status"
+            className="border-l-4 border-[var(--color-feis-orange)] bg-[var(--color-feis-orange-light)] px-5 py-4"
+          >
+            <h2 className="feis-display text-[20px]">Waiting for RunFeis approval</h2>
+            <p className="mt-1 text-sm">
+              We&apos;ll email you when it&apos;s approved. Until then the feis can&apos;t be
+              changed. To change something, withdraw it, then submit it again.
+            </p>
+          </div>
+        )}
+
+        {sentBack && (
+          <p
+            role="status"
+            className="border-l-4 border-[var(--color-feis-orange)] bg-[var(--color-feis-orange-light)] px-5 py-4 text-sm whitespace-pre-line text-[var(--color-feis-orange-ink)]"
+          >
+            {sentBack}
+          </p>
+        )}
+
         {listing.status === 'launched' && (
           <div className="border-l-4 border-[var(--color-feis-green)] bg-[var(--color-feis-green-light)] px-5 py-4">
             <h2 className="feis-display text-[20px]">Feis day launched</h2>
@@ -158,12 +191,14 @@ function OverviewTab({
                     Launch feis day
                   </Link>
                 )}
-                <Link
-                  href={`/organiser/feiseanna/${listing.id}/edit`}
-                  className="feis-btn feis-btn-outline"
-                >
-                  Edit details
-                </Link>
+                {!isAwaitingApproval(listing.status) && (
+                  <Link
+                    href={`/organiser/feiseanna/${listing.id}/edit`}
+                    className="feis-btn feis-btn-outline"
+                  >
+                    Edit details
+                  </Link>
+                )}
               </>
             )}
             <CloneFeisButton listingId={listing.id} />
@@ -213,7 +248,11 @@ function SyllabusTab({
         ageGroups={listing.syllabus_snapshot?.age_groups ?? []}
         editable={listing.status === 'draft' || listing.status === 'open'}
       />
-      <SetupLink listingId={listing.id}>Change the syllabus in the setup steps</SetupLink>
+      {isAwaitingApproval(listing.status) ? (
+        <WaitingForApprovalNote />
+      ) : (
+        <SetupLink listingId={listing.id}>Change the syllabus in the setup steps</SetupLink>
+      )}
     </div>
   )
 }
@@ -229,11 +268,13 @@ function tierStart(tier: LateFeeTier, timeZone: string): string {
 function FeesTab({
   feeSchedule,
   listingId,
-  timeZone
+  timeZone,
+  awaitingApproval
 }: {
   feeSchedule: FeeSchedule | null
   listingId: string
   timeZone: string
+  awaitingApproval: boolean
 }) {
   if (!feeSchedule) {
     return (
@@ -244,7 +285,11 @@ function FeesTab({
             Families can&apos;t pay until the fees are in. Add them in the setup steps.
           </p>
         </div>
-        <SetupLink listingId={listingId}>Set the fees</SetupLink>
+        {awaitingApproval ? (
+          <WaitingForApprovalNote />
+        ) : (
+          <SetupLink listingId={listingId}>Set the fees</SetupLink>
+        )}
       </div>
     )
   }
@@ -289,7 +334,11 @@ function FeesTab({
           note="Extra per dancer"
         />
       </section>
-      <SetupLink listingId={listingId}>Change the fees in the setup steps</SetupLink>
+      {awaitingApproval ? (
+        <WaitingForApprovalNote />
+      ) : (
+        <SetupLink listingId={listingId}>Change the fees in the setup steps</SetupLink>
+      )}
     </div>
   )
 }
@@ -310,6 +359,30 @@ function SettingsTab({ listing }: { listing: FeisListing }) {
             {formatDateTime(listing.late_reg_closes_at, '', listing.timezone ?? 'America/New_York') || <NotSet />}
           </DetailRow>
         </dl>
+      </section>
+
+      <section>
+        <h2 className="feis-display mb-2 text-[22px]">Sanction</h2>
+        <dl className="feis-entry-form">
+          <DetailRow label="Region">{listing.sanction_region ?? <NotSet />}</DetailRow>
+          <DetailRow label="Reference">{listing.sanction_reference ?? <NotSet />}</DetailRow>
+          {listing.sanction_notes && (
+            <DetailRow label="Notes">
+              <span className="whitespace-pre-line">{listing.sanction_notes}</span>
+            </DetailRow>
+          )}
+        </dl>
+        <div className="mt-2">
+          {isAwaitingApproval(listing.status) ? (
+            <WaitingForApprovalNote />
+          ) : (
+            listing.status !== 'launched' && (
+              <Link href={`/organiser/feiseanna/${listing.id}/edit`} className="feis-link text-sm">
+                Change the sanction in Edit details
+              </Link>
+            )
+          )}
+        </div>
       </section>
 
       <section>
@@ -445,6 +518,7 @@ export default async function FeisDashboardPage({
             feeSchedule={(feeSchedule as FeeSchedule) ?? null}
             listingId={id}
             timeZone={listing.timezone ?? 'America/New_York'}
+            awaitingApproval={isAwaitingApproval(typedListing.status)}
           />
         )}
         {activeTab === 'settings' && <SettingsTab listing={typedListing} />}

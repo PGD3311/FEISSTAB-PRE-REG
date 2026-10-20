@@ -22,7 +22,10 @@ export default async function OrganiserLayout({
   return (
     <div className="min-h-screen bg-[var(--color-feis-cream)]">
       <AppBand
-        links={[{ href: '/organiser/feiseanna', label: 'Your feiseanna', matchChildren: true }]}
+        links={[
+          { href: '/organiser/feiseanna', label: 'Your feiseanna', matchChildren: true },
+          { href: '/organiser/profile', label: 'Your details' }
+        ]}
       >
         <span className="hidden text-white/70 sm:inline">{user.email}</span>
         <LogoutButton />

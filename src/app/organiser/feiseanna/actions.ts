@@ -6,6 +6,9 @@ import { createClient } from '@/lib/supabase/server'
 import { expandSyllabus } from '@/lib/engine/syllabus-expander'
 import { redactWithEnv, safeErrorMessage } from '@/lib/redact-secrets'
 import { endOfLocalDateIso, startOfLocalDateIso } from '@/lib/timezone'
+import { ownerSaveError } from '@/lib/approval-gate'
+import { listingSubmittedEmail } from '@/lib/email/templates'
+import { isRegion } from '@/lib/regions'
 import {
   canTransitionListing,
   getListingTransitionBlockReasons,
@@ -19,6 +22,7 @@ import type {
   ListingStatus,
   ListingTransitionContext,
 } from '@/lib/types/feis-listing'
+import { approvalEmailBaseUrl, sendApprovalEmail } from '@/app/_approvals/approval-email'
 
 export async function createDraftListing(formData: FormData) {
   const supabase = await createClient()
@@ -112,9 +116,17 @@ export async function updateListingDetails(
     (formData.get('website_url') as string | null) || null
   const logo_url =
     (formData.get('logo_url') as string | null) || null
+  // The region's sanction: blank is allowed while setting up, and submitting needs region and reference
+  const sanctionText = (key: string) => ((formData.get(key) as string | null) ?? '').trim() || null
+  const sanction_region = sanctionText('sanction_region')
+  const sanction_reference = sanctionText('sanction_reference')
+  const sanction_notes = sanctionText('sanction_notes')
 
   if (!name || !feis_date || !venue_name || !contact_email || !timezone) {
     return { error: 'Missing required fields' }
+  }
+  if (sanction_region !== null && !isRegion(sanction_region)) {
+    return { error: 'Choose the sanctioning region from the list' }
   }
 
   const feisYear = new Date(feis_date + 'T00:00:00').getFullYear()
@@ -138,13 +150,16 @@ export async function updateListingDetails(
       logo_url,
       age_cutoff_date,
       season_year,
+      sanction_region,
+      sanction_reference,
+      sanction_notes,
     })
     .eq('id', listingId)
     .eq('created_by', user.id)
 
   if (error) {
     console.error('Failed to update listing:', error)
-    return { error: 'Failed to update listing' }
+    return { error: ownerSaveError(error, 'Failed to update listing') }
   }
 
   return { success: true as const }
@@ -327,7 +342,7 @@ export async function expandAndSaveSyllabus(
     .eq('id', listingId)
     .eq('created_by', user.id)
 
-  if (listingError) return { error: listingError.message }
+  if (listingError) return { error: ownerSaveError(listingError, listingError.message) }
 
   // 2. Expand new competitions
   const expanded = expandSyllabus(templateData, selection)
@@ -339,7 +354,7 @@ export async function expandAndSaveSyllabus(
       .delete()
       .eq('feis_listing_id', listingId)
 
-    if (deleteError) return { error: deleteError.message }
+    if (deleteError) return { error: ownerSaveError(deleteError, deleteError.message) }
     return { success: true as const, count: 0 }
   }
 
@@ -354,7 +369,7 @@ export async function expandAndSaveSyllabus(
     .insert(rows)
     .select('id')
 
-  if (insertError) return { error: insertError.message }
+  if (insertError) return { error: ownerSaveError(insertError, insertError.message) }
 
   // 4. Only now delete old competitions that were replaced
   const newIds = (inserted ?? []).map((r: { id: string }) => r.id)
@@ -478,7 +493,7 @@ export async function saveFeeSchedule(
 
     if (error) {
       console.error('Failed to update fee schedule:', error)
-      return { error: 'Failed to save fee schedule' }
+      return { error: ownerSaveError(error, 'Failed to save fee schedule') }
     }
   } else {
     const { error } = await supabase.from('fee_schedules').insert({
@@ -494,7 +509,7 @@ export async function saveFeeSchedule(
 
     if (error) {
       console.error('Failed to create fee schedule:', error)
-      return { error: 'Failed to save fee schedule' }
+      return { error: ownerSaveError(error, 'Failed to save fee schedule') }
     }
   }
 
@@ -554,7 +569,7 @@ export async function saveDeadlines(
 
   if (error) {
     console.error('Failed to save deadlines:', error)
-    return { error: 'Failed to save deadlines' }
+    return { error: ownerSaveError(error, 'Failed to save deadlines') }
   }
 
   return { success: true as const }
@@ -627,19 +642,30 @@ export async function transitionListingStatus(
     }
   }
 
-  // Fetch fee schedule and competitions in parallel
-  const [{ data: feeSchedule }, { data: competitions }] = await Promise.all([
+  // Fetch fee schedule, competitions and the organiser's details in parallel
+  const [{ data: feeSchedule }, { data: competitions }, profileResult] = await Promise.all([
     supabase.from('fee_schedules').select('*').eq('feis_listing_id', listingId).single(),
     supabase
       .from('feis_competitions')
       .select('competition_type, championship_key, fee_category')
       .eq('feis_listing_id', listingId),
+    supabase
+      .from('organiser_profiles')
+      .select('full_name, organisation')
+      .eq('user_id', user.id)
+      .maybeSingle(),
   ])
+
+  if (profileResult.error) {
+    console.error('Failed to fetch organiser details:', profileResult.error)
+    return { error: 'Failed to fetch your organiser details' }
+  }
 
   const context: ListingTransitionContext = {
     listing: typedListing,
     feeSchedule: (feeSchedule as FeeSchedule) ?? null,
     enabledCompetitions: competitions ?? [],
+    hasOrganiserProfile: profileResult.data !== null,
   }
 
   const { blocks, warnings } = getListingTransitionBlockReasons(
@@ -649,7 +675,8 @@ export async function transitionListingStatus(
   )
 
   if (blocks.length > 0) {
-    return { error: 'Cannot publish: prerequisites not met', blocks }
+    const action = to === 'pending_review' ? 'submit for approval' : 'change status'
+    return { error: `Cannot ${action}: prerequisites not met`, blocks }
   }
 
   // Perform the transition
@@ -662,6 +689,32 @@ export async function transitionListingStatus(
   if (updateError) {
     console.error('Failed to update listing status:', updateError)
     return { error: 'Failed to update listing status' }
+  }
+
+  // Tell RunFeis a feis is waiting. Email never blocks the submit: a failure is only logged.
+  if (to === 'pending_review') {
+    // The submit time keys the email so a retried send isn't sent twice. The status has
+    // already changed, so a failed read-back only logs and falls back to another key.
+    const { data: submitted, error: readBackError } = await supabase
+      .from('feis_listings')
+      .select('submitted_at')
+      .eq('id', listingId)
+      .maybeSingle()
+    if (readBackError) {
+      console.error(`Failed to read back submitted_at for ${listingId}:`, readBackError.message)
+    }
+    const submittedAt = submitted?.submitted_at ?? `fallback-${Date.now()}`
+    await sendApprovalEmail(
+      'admins',
+      listingSubmittedEmail({
+        listing: typedListing,
+        organiser: profileResult.data
+          ? { ...profileResult.data, email: user.email ?? null }
+          : null,
+        baseUrl: approvalEmailBaseUrl()
+      }),
+      `listing-submitted:${listingId}:${submittedAt}`
+    )
   }
 
   return { success: true as const, warnings }
@@ -986,7 +1039,7 @@ export async function updateCompetition(listingId: string, competitionId: string
 
   if (error) {
     console.error('Failed to update competition:', error)
-    return { error: 'Failed to save the competition' }
+    return { error: ownerSaveError(error, 'Failed to save the competition') }
   }
   return { success: true as const }
 }
@@ -1031,7 +1084,7 @@ export async function addCompetition(listingId: string, input: NewCompetition) {
 
   if (error) {
     console.error('Failed to add competition:', error)
-    return { error: 'Failed to add the competition' }
+    return { error: ownerSaveError(error, 'Failed to add the competition') }
   }
   return { success: true as const }
 }
