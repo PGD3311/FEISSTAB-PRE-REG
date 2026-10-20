@@ -627,19 +627,26 @@ export async function transitionListingStatus(
     }
   }
 
-  // Fetch fee schedule and competitions in parallel
-  const [{ data: feeSchedule }, { data: competitions }] = await Promise.all([
+  // Fetch fee schedule, competitions and the organiser's details in parallel
+  const [{ data: feeSchedule }, { data: competitions }, profileResult] = await Promise.all([
     supabase.from('fee_schedules').select('*').eq('feis_listing_id', listingId).single(),
     supabase
       .from('feis_competitions')
       .select('competition_type, championship_key, fee_category')
       .eq('feis_listing_id', listingId),
+    supabase.from('organiser_profiles').select('user_id').eq('user_id', user.id).maybeSingle(),
   ])
+
+  if (profileResult.error) {
+    console.error('Failed to fetch organiser details:', profileResult.error)
+    return { error: 'Failed to fetch your organiser details' }
+  }
 
   const context: ListingTransitionContext = {
     listing: typedListing,
     feeSchedule: (feeSchedule as FeeSchedule) ?? null,
     enabledCompetitions: competitions ?? [],
+    hasOrganiserProfile: profileResult.data !== null,
   }
 
   const { blocks, warnings } = getListingTransitionBlockReasons(
@@ -649,7 +656,8 @@ export async function transitionListingStatus(
   )
 
   if (blocks.length > 0) {
-    return { error: 'Cannot publish: prerequisites not met', blocks }
+    const action = to === 'pending_review' ? 'submit for approval' : 'change status'
+    return { error: `Cannot ${action}: prerequisites not met`, blocks }
   }
 
   // Perform the transition

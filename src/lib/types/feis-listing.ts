@@ -1,7 +1,7 @@
 import type { PurchaseSnapshot } from '@/lib/engine/purchase-snapshot'
 
-// Listing status
-export type ListingStatus = 'draft' | 'open' | 'closed' | 'launched'
+// Listing status. pending_review: submitted, waiting for a RunFeis admin to approve or send it back
+export type ListingStatus = 'draft' | 'pending_review' | 'open' | 'closed' | 'launched'
 
 // Fee category — maps to fee_schedule columns
 export type FeeCategoryType = 'solo' | 'prelim_champ' | 'open_champ'
@@ -93,6 +93,15 @@ export interface FeisListing {
   show_contact_publicly: boolean
   launched_at: string | null
   launched_event_id: string | null
+  // Approval gate (migration 021): set by the database, never by the organiser
+  submitted_at: string | null
+  approved_at: string | null
+  approved_by: string | null
+  review_note: string | null // the admin's note when the feis is sent back; cleared on resubmit
+  // The region's sanction for this feis, required to submit
+  sanction_region: string | null
+  sanction_reference: string | null
+  sanction_notes: string | null
   created_by: string | null
   created_at: string
   updated_at: string
@@ -249,6 +258,8 @@ export interface ListingTransitionContext {
     championship_key: ChampionshipKey | null
     fee_category: FeeCategoryType
   }[]
+  // Submit context (draft → pending_review): the organiser has filled in their details
+  hasOrganiserProfile: boolean
   // Launch context (closed → launched)
   paidRegistrationCount?: number
   unsettledRegistrationCount?: number

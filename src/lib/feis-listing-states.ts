@@ -4,39 +4,65 @@ import type {
   PublishValidation,
 } from '@/lib/types/feis-listing'
 
-// ─── Transition map ───
+// ─── Transition maps (mirror guard_feis_listings and the admin functions in 021) ───
 
-const VALID_TRANSITIONS: Record<ListingStatus, ListingStatus[]> = {
-  draft: ['open'],
+/** Who moves the feis: its organiser, or a RunFeis admin (approve_listing, send_back_listing) */
+export type ListingActor = 'owner' | 'admin'
+
+const OWNER_TRANSITIONS: Record<ListingStatus, ListingStatus[]> = {
+  draft: ['pending_review'], // submit for approval
+  pending_review: ['draft'], // withdraw
   open: ['closed'],
-  closed: ['open', 'launched'],
-  launched: [],  // Terminal state
+  closed: ['open', 'launched'], // reopening needs an earlier approval: see the block reasons
+  launched: [] // Terminal state
+}
+
+const ADMIN_TRANSITIONS: Record<ListingStatus, ListingStatus[]> = {
+  draft: [],
+  pending_review: ['open', 'draft'], // approve, send back
+  open: [],
+  closed: [],
+  launched: []
+}
+
+const TRANSITIONS: Record<ListingActor, Record<ListingStatus, ListingStatus[]>> = {
+  owner: OWNER_TRANSITIONS,
+  admin: ADMIN_TRANSITIONS
 }
 
 // ─── Public API ───
 
 /**
- * Check whether a status transition is allowed.
+ * Check whether a status transition is allowed for the actor (the organiser by default).
+ * A draft never opens directly: it opens only when an admin approves it.
  */
 export function canTransitionListing(
   from: ListingStatus,
-  to: ListingStatus
+  to: ListingStatus,
+  actor: ListingActor = 'owner'
 ): boolean {
-  return VALID_TRANSITIONS[from]?.includes(to) ?? false
+  return TRANSITIONS[actor][from]?.includes(to) ?? false
 }
 
 /**
- * Return the list of valid next states for a given status.
+ * Return the list of valid next states for a given status and actor (the organiser by default).
  */
 export function getNextListingStates(
-  current: ListingStatus
+  current: ListingStatus,
+  actor: ListingActor = 'owner'
 ): ListingStatus[] {
-  return VALID_TRANSITIONS[current] ?? []
+  return TRANSITIONS[actor][current] ?? []
+}
+
+/** True when a text field has something other than spaces in it */
+function filled(value: string | null): boolean {
+  return value !== null && value.trim() !== ''
 }
 
 /**
  * Return publish-gate validation: hard blocks and soft warnings.
- * Enforced on draft → open and closed → launched.
+ * Enforced on draft → pending_review (submit for approval), closed → open (reopen) and
+ * closed → launched.
  */
 export function getListingTransitionBlockReasons(
   from: ListingStatus,
@@ -48,7 +74,15 @@ export function getListingTransitionBlockReasons(
     return getLaunchBlockReasons(context)
   }
 
-  if (from !== 'draft' || to !== 'open') {
+  // closed → open: only a feis RunFeis approved before can take entries again
+  if (from === 'closed' && to === 'open') {
+    return {
+      blocks: context.listing.approved_at ? [] : ['RunFeis has not approved this feis'],
+      warnings: []
+    }
+  }
+
+  if (from !== 'draft' || to !== 'pending_review') {
     return { blocks: [], warnings: [] }
   }
 
@@ -85,6 +119,20 @@ export function getListingTransitionBlockReasons(
 
   if (!listing.privacy_policy_url) {
     blocks.push('Privacy policy URL is required')
+  }
+
+  // ─── Hard blocks: approval details ───
+
+  if (!filled(listing.sanction_region)) {
+    blocks.push('Sanction region is required')
+  }
+
+  if (!filled(listing.sanction_reference)) {
+    blocks.push('Sanction reference is required')
+  }
+
+  if (!context.hasOrganiserProfile) {
+    blocks.push('Your organiser details are required')
   }
 
   // ─── Hard blocks: competitions ───

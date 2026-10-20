@@ -51,6 +51,28 @@ export function FeisWizardStep5({
   const [enabledCompetitions, setEnabledCompetitions] = useState<
     ListingTransitionContext['enabledCompetitions']
   >([])
+  const [hasOrganiserProfile, setHasOrganiserProfile] = useState(false)
+
+  // Whether the organiser has filled in their details, which submitting for approval needs
+  useEffect(() => {
+    async function fetchOrganiserProfile() {
+      const {
+        data: { user }
+      } = await supabase.auth.getUser()
+      if (!user) return
+      const { data, error: profileError } = await supabase
+        .from('organiser_profiles')
+        .select('user_id')
+        .eq('user_id', user.id)
+        .maybeSingle()
+      if (profileError) {
+        console.error('Failed to fetch organiser details:', profileError)
+        return
+      }
+      setHasOrganiserProfile(data !== null)
+    }
+    fetchOrganiserProfile()
+  }, [supabase])
 
   // Fetch competition breakdown on mount
   useEffect(() => {
@@ -92,10 +114,11 @@ export function FeisWizardStep5({
     const context: ListingTransitionContext = {
       listing: effectiveListing,
       feeSchedule,
-      enabledCompetitions
+      enabledCompetitions,
+      hasOrganiserProfile
     }
-    return getListingTransitionBlockReasons('draft', 'open', context)
-  }, [effectiveListing, feeSchedule, enabledCompetitions])
+    return getListingTransitionBlockReasons('draft', 'pending_review', context)
+  }, [effectiveListing, feeSchedule, enabledCompetitions, hasOrganiserProfile])
 
   // Compute positive checks for the checklist
   const passed = useMemo(() => {
@@ -131,7 +154,7 @@ export function FeisWizardStep5({
     setError(null)
     startTransition(async () => {
       try {
-        const result = await transitionListingStatus(listing.id, 'open')
+        const result = await transitionListingStatus(listing.id, 'pending_review')
         if ('error' in result) {
           setError(result.error as string)
           return
