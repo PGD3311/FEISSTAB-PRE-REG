@@ -4,11 +4,11 @@ Found during the October 2026 restyle and left for later. RunFeis is for Northea
 
 ## Organiser setup
 - **Suggested deadline dates can be a day early outside the Americas.** `daysBeforeDate` in `src/components/organiser/feis-wizard-step4.tsx` builds a local date, then reads it back with `toISOString()` (UTC). It's fine in US time zones and only goes wrong east of UTC (e.g. Ireland). Fix it before adding non-US feiseanna.
+- **Two organiser buttons still use browser `alert()`** for errors: `clone-feis-button.tsx` and `delete-draft-button.tsx`. (Status changes now show an in-page message.)
 - **A failed "connect Stripe" shows nothing.** `handleSimulateStripe` in `feis-wizard-step5.tsx` only logs the error to the console. The step is simulated anyway; real Stripe Connect onboarding still needs building.
 - **Step 5 ignores a failed competitions load.** `fetchCompetitions` doesn't check `.error`, so the breakdown silently shows zero.
 - **Step 1 save has no try/catch** around the server action (steps 2 to 5 do).
 - **The setup page ignores query errors** on the fee schedule and competition count (`src/app/organiser/feiseanna/[id]/setup/page.tsx`).
-- **Some organiser buttons still use browser `alert()`** for errors (copy feis, delete draft, status changes).
 
 ## Organiser feis page
 - **The launch page's "Entries are closed" check is hard-coded to passed.** It's true today only because of the redirect above it.
@@ -24,6 +24,11 @@ Found during the October 2026 restyle and left for later. RunFeis is for Northea
 - **The message after a refused claim is wrong.** If an earlier create was refused (for example a connected account that can't take charges), the next Pay after 10 minutes cancels the order with "This registration has expired" (`src/app/_payments/checkout-workflow.ts:~208`).
 - **011's live versions of `_assign_numbers_for_registration` and `assign_missing_competitor_numbers` accept `'confirmed'`.** The tests run 007's versions. Behaviour for `paid` is identical, so it is harmless. Tidy them in a future migration 021, together with the status check.
 - **Two small drifts:** the new-order gate queries through a user client, not an injected `RpcCaller` (`src/app/_payments/new-order-gate.ts`; its `NewOrderReader` interface keeps it testable), and `payments_admin.confirm_late_payment` records no charge id (017 passes NULL).
+
+## Found during the launch fixes (Oct 20), not fixed
+- **Organiser setup-step dates still use the browser's zone in two places:** `daysBeforeDate` (see above) and the wizard's date inputs. Fine for Eastern organisers in the US.
+- **A failed launch can leave partial feis-day rows** (the event, and possibly competitions, dancers, registrations). Every write is an upsert on a pre-reg ID, so Launch again fills in the rest; but until then the feis-day event exists in `draft` with import status `partial_failed`.
+- **Eligibility:** an Open champion is offered Novice grade solos (`grades_only` per competition). Per current rules; a question for Steve.
 
 ## Already tracked elsewhere
 Payment and Stripe webhook problems are handled by the payment hardening work (`docs/2026-10-16-payment-hardening-design.md`). Dropping or swapping a dance after paying waits on Steve's refund and withdrawal policy.

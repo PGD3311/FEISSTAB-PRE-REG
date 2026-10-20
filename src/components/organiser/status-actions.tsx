@@ -1,6 +1,6 @@
 'use client'
 
-import { useTransition } from 'react'
+import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 
@@ -15,13 +15,14 @@ interface StatusActionsProps {
 export function StatusActions({ listingId, status }: StatusActionsProps) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
+  const [error, setError] = useState<string | null>(null)
 
   function handleTransition(to: ListingStatus) {
+    setError(null)
     startTransition(async () => {
       const result = await transitionListingStatus(listingId, to)
       if ('error' in result) {
-        // For now, alert on error — a toast would be better in production
-        alert(result.error + (result.blocks ? '\n' + result.blocks.join('\n') : ''))
+        setError(result.error + (result.blocks ? ' ' + result.blocks.join(' ') : ''))
         return
       }
       router.refresh()
@@ -36,29 +37,35 @@ export function StatusActions({ listingId, status }: StatusActionsProps) {
     )
   }
 
-  if (status === 'open') {
-    return (
-      <button
-        type="button"
-        onClick={() => handleTransition('closed')}
-        disabled={isPending}
-        className="feis-btn feis-btn-ink"
-      >
-        {isPending ? 'Closing entries…' : 'Close entries'}
-      </button>
-    )
-  }
+  const errorBanner = error && (
+    <p
+      role="alert"
+      className="mt-3 max-w-xl border-l-4 border-destructive bg-white px-4 py-3 text-sm text-destructive"
+    >
+      {error}
+    </p>
+  )
 
-  if (status === 'closed') {
+  if (status === 'open' || status === 'closed') {
+    const closing = status === 'open'
     return (
-      <button
-        type="button"
-        onClick={() => handleTransition('open')}
-        disabled={isPending}
-        className="feis-btn feis-btn-outline"
-      >
-        {isPending ? 'Reopening entries…' : 'Reopen entries'}
-      </button>
+      <div>
+        <button
+          type="button"
+          onClick={() => handleTransition(closing ? 'closed' : 'open')}
+          disabled={isPending}
+          className={closing ? 'feis-btn feis-btn-ink' : 'feis-btn feis-btn-outline'}
+        >
+          {closing
+            ? isPending
+              ? 'Closing entries…'
+              : 'Close entries'
+            : isPending
+              ? 'Reopening entries…'
+              : 'Reopen entries'}
+        </button>
+        {errorBanner}
+      </div>
     )
   }
 
