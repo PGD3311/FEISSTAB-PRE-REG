@@ -281,17 +281,17 @@ export function FeisWizardStep5({
           <dl className="mt-2 grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
             <div>
               <dt className="text-muted-foreground">Registration opens</dt>
-              <dd className="font-semibold">{formatDateTime(listing.reg_opens_at, 'Not set')}</dd>
+              <dd className="font-semibold">{formatDateTime(listing.reg_opens_at, 'Not set', listing.timezone)}</dd>
             </div>
             <div>
               <dt className="text-muted-foreground">Registration closes</dt>
-              <dd className="font-semibold">{formatDateTime(listing.reg_closes_at, 'Not set')}</dd>
+              <dd className="font-semibold">{formatDateTime(listing.reg_closes_at, 'Not set', listing.timezone)}</dd>
             </div>
             {listing.late_reg_closes_at && (
               <div>
                 <dt className="text-muted-foreground">Late registration closes</dt>
                 <dd className="font-semibold">
-                  {formatDateTime(listing.late_reg_closes_at, 'Not set')}
+                  {formatDateTime(listing.late_reg_closes_at, 'Not set', listing.timezone)}
                 </dd>
               </div>
             )}

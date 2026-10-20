@@ -53,12 +53,17 @@ export function formatDate(
   })
 }
 
-/** Format an ISO timestamp for display (includes time). */
-export function formatDateTime(isoString: string | null, fallback = ''): string {
+/** Format an ISO timestamp for display (includes time), in the feis's time zone when given. */
+export function formatDateTime(
+  isoString: string | null,
+  fallback = '',
+  timeZone?: string | null
+): string {
   if (!isoString) return fallback
   const date = new Date(isoString)
   if (isNaN(date.getTime())) return fallback
   return date.toLocaleDateString('en-US', {
+    timeZone: timeZone ?? undefined,
     month: 'long',
     day: 'numeric',
     year: 'numeric',

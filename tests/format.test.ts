@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { formatCents, siteName, websiteHref } from '@/lib/format'
+import { formatCents, formatDateTime, siteName, websiteHref } from '@/lib/format'
 
 describe('formatCents', () => {
   it('formats dollars and cents with thousands separators', () => {
@@ -24,5 +24,18 @@ describe('websiteHref and siteName', () => {
   it('shows just the host, without www', () => {
     expect(siteName('https://www.goodwinfeis.com/entries')).toBe('goodwinfeis.com')
     expect(siteName('goodwinfeis.com')).toBe('goodwinfeis.com')
+  })
+})
+
+describe('formatDateTime', () => {
+  it('shows a deadline in the feis time zone, not UTC', () => {
+    const closes = '2027-03-02T04:59:00.000Z' // 11:59 pm on 1 March in New York
+    expect(formatDateTime(closes, '', 'America/New_York')).toBe('March 1, 2027 at 11:59 PM')
+    expect(formatDateTime(closes, '', 'UTC')).toBe('March 2, 2027 at 4:59 AM')
+  })
+
+  it('returns the fallback for a missing or invalid time', () => {
+    expect(formatDateTime(null, 'Not set', 'America/New_York')).toBe('Not set')
+    expect(formatDateTime('nonsense', 'Not set')).toBe('Not set')
   })
 })

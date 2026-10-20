@@ -99,7 +99,10 @@ export default async function LaunchPage({ params }: { params: Promise<{ id: str
         <div className="max-w-2xl border-l-4 border-[var(--color-feis-green)] bg-[var(--color-feis-green-light)] px-5 py-4">
           <p className="text-sm">
             The entries were sent to RunFeis for the day on{' '}
-            <strong>{formatDateTime(typedListing.launched_at, 'an unknown date')}</strong>. This
+            <strong>
+              {formatDateTime(typedListing.launched_at, 'an unknown date', typedListing.timezone)}
+            </strong>
+            . This
             feis can no longer be changed here.
           </p>
           {typedListing.launched_event_id && (
