@@ -11,3 +11,18 @@ export function createServiceClient() {
 }
 
 export type ServiceClient = ReturnType<typeof createServiceClient>
+
+function requiredEnv(name: string): string {
+  const value = process.env[name]?.trim()
+  if (!value) throw new Error(`${name} is not set`)
+  return value
+}
+
+// Service-role client for the feis-day (Phase 1) tables in the public schema.
+// Same project and credentials as the pre-registration client above.
+export function createFeisDayClient() {
+  return createClient(
+    requiredEnv('NEXT_PUBLIC_SUPABASE_URL'),
+    requiredEnv('SUPABASE_SERVICE_ROLE_KEY')
+  )
+}

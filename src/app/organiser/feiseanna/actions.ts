@@ -4,6 +4,7 @@ import { redirect } from 'next/navigation'
 
 import { createClient } from '@/lib/supabase/server'
 import { expandSyllabus } from '@/lib/engine/syllabus-expander'
+import { redactSecrets, safeErrorMessage } from '@/lib/redact-secrets'
 import { endOfLocalDateIso, startOfLocalDateIso } from '@/lib/timezone'
 import {
   canTransitionListing,
@@ -885,8 +886,11 @@ export async function launchFeisDay(feisListingId: string) {
       .eq('id', feisListingId)
 
     if (updateError) {
-      console.error('[BRIDGE] Failed to mark listing as launched:', updateError)
-      return { error: 'Bridge succeeded but failed to update listing status' }
+      console.error(`[BRIDGE] Failed to mark listing as launched: ${redactSecrets(updateError.message)}`)
+      return {
+        error:
+          "Feis day was set up, but we couldn't mark your feis as launched. Please try again. Nothing will be duplicated."
+      }
     }
 
     console.log(`[BRIDGE] Phase 1 event created: ${result.eventId}`)
@@ -899,8 +903,11 @@ export async function launchFeisDay(feisListingId: string) {
       registrationsCreated: result.registrationsCreated,
     }
   } catch (err) {
-    console.error(`[BRIDGE] Launch failed for feis ${feisListingId}:`, err)
-    return { error: `Bridge failed: ${err instanceof Error ? err.message : 'unknown error'}` }
+    console.error(`[BRIDGE] Launch failed for feis ${feisListingId}: ${safeErrorMessage(err)}`)
+    return {
+      error:
+        "We couldn't launch feis day. Your feis listing was not changed, so it is safe to try again. If it keeps happening, contact RunFeis support."
+    }
   }
 }
 

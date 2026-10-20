@@ -1,17 +1,8 @@
 // src/lib/bridge.ts
 // Pure bridge logic: maps pre-reg data to Phase 1 format and writes it.
 // Uses upsert on external ID columns for idempotent re-runs.
-import { createClient } from '@supabase/supabase-js'
-
-// Phase 1 Supabase client (separate project)
-function createPhase1Client() {
-  const url = process.env.PHASE1_SUPABASE_URL
-  const key = process.env.PHASE1_SUPABASE_SERVICE_ROLE_KEY
-  if (!url || !key) {
-    throw new Error('PHASE1_SUPABASE_URL and PHASE1_SUPABASE_SERVICE_ROLE_KEY must be set')
-  }
-  return createClient(url, key)
-}
+import { createFeisDayClient } from '@/lib/supabase/service'
+import { safeErrorMessage } from '@/lib/redact-secrets'
 
 interface PreRegData {
   listing: {
@@ -54,29 +45,66 @@ export interface BridgeResult {
   competitorNumbersAssigned: number
 }
 
+export function buildEventRow(listing: PreRegData['listing']) {
+  const location = [listing.venue_name, listing.venue_address].filter(Boolean).join(' — ')
+  return {
+    prereg_feis_listing_id: listing.id,
+    name: listing.name,
+    start_date: listing.feis_date,
+    end_date: listing.end_date,
+    location: location || null,
+    status: 'draft',
+    import_status: 'importing',
+    import_error: null
+  }
+}
+
+export function buildCompetitionRow(eventId: string, comp: PreRegData['competitions'][number]) {
+  return {
+    event_id: eventId,
+    prereg_feis_competition_id: comp.id,
+    name: comp.display_name,
+    code: comp.display_code ?? comp.display_name,
+    age_group: comp.age_group_label ?? comp.age_group_key,
+    level: comp.level_label ?? comp.level_key,
+    status: 'imported'
+  }
+}
+
+export function buildDancerRow(entry: PreRegData['entries'][number]) {
+  return {
+    prereg_dancer_id: entry.dancer_id,
+    first_name: entry.dancer_first_name,
+    last_name: entry.dancer_last_name,
+    date_of_birth: entry.dancer_date_of_birth,
+    school_name: entry.dancer_school_name
+  }
+}
+
+export function buildRegistrationRow(
+  eventId: string,
+  entry: PreRegData['entries'][number],
+  phase1CompId: string,
+  phase1DancerId: string,
+  competitorNumber: string | null
+) {
+  return {
+    event_id: eventId,
+    dancer_id: phase1DancerId,
+    competition_id: phase1CompId,
+    status: 'registered',
+    competitor_number: competitorNumber,
+    prereg_registration_entry_id: entry.id
+  }
+}
+
 export async function executeBridge(data: PreRegData): Promise<BridgeResult> {
-  const phase1 = createPhase1Client()
+  const phase1 = createFeisDayClient()
 
   // 1. Create event with external ID (upsert for idempotency)
-  const location = [data.listing.venue_name, data.listing.venue_address]
-    .filter(Boolean)
-    .join(' — ')
-
   const { data: event, error: eventError } = await phase1
     .from('events')
-    .upsert(
-      {
-        prereg_feis_listing_id: data.listing.id,
-        name: data.listing.name,
-        start_date: data.listing.feis_date,
-        end_date: data.listing.end_date,
-        location: location || null,
-        status: 'draft',
-        import_status: 'importing',
-        import_error: null,
-      },
-      { onConflict: 'prereg_feis_listing_id' }
-    )
+    .upsert(buildEventRow(data.listing), { onConflict: 'prereg_feis_listing_id' })
     .select('id')
     .single()
 
@@ -86,15 +114,7 @@ export async function executeBridge(data: PreRegData): Promise<BridgeResult> {
 
   try {
     // 2. Create competitions with external IDs (upsert for idempotency)
-    const competitionRows = data.competitions.map((comp) => ({
-      event_id: event.id,
-      prereg_feis_competition_id: comp.id,
-      name: comp.display_name,
-      code: comp.display_code ?? comp.display_name,
-      age_group: comp.age_group_label ?? comp.age_group_key,
-      level: comp.level_label ?? comp.level_key,
-      status: 'imported',
-    }))
+    const competitionRows = data.competitions.map((comp) => buildCompetitionRow(event.id, comp))
 
     const { data: createdComps, error: compsError } = await phase1
       .from('competitions')
@@ -134,13 +154,7 @@ export async function executeBridge(data: PreRegData): Promise<BridgeResult> {
       const normalizedSchool = entry.dancer_school_name || ''
       const key = `${entry.dancer_first_name}|${entry.dancer_last_name}|${normalizedSchool}|${entry.dancer_date_of_birth ?? ''}`
       if (!uniqueDancers.has(key)) {
-        uniqueDancers.set(key, {
-          first_name: entry.dancer_first_name,
-          last_name: entry.dancer_last_name,
-          date_of_birth: entry.dancer_date_of_birth,
-          school_name: entry.dancer_school_name,
-          prereg_dancer_id: entry.dancer_id,
-        })
+        uniqueDancers.set(key, buildDancerRow(entry))
       }
     }
 
@@ -152,13 +166,7 @@ export async function executeBridge(data: PreRegData): Promise<BridgeResult> {
       const { data: upserted, error: upsertErr } = await phase1
         .from('dancers')
         .upsert(
-          {
-            prereg_dancer_id: dancer.prereg_dancer_id,
-            first_name: dancer.first_name,
-            last_name: dancer.last_name,
-            date_of_birth: dancer.date_of_birth,
-            school_name: dancer.school_name,
-          },
+          dancer,
           { onConflict: 'prereg_dancer_id' }
         )
         .select('id')
@@ -300,14 +308,13 @@ export async function executeBridge(data: PreRegData): Promise<BridgeResult> {
         const phase1CompId = compMap.get(entry.feis_competition_id)
         const phase1DancerId = dancerMap.get(entry.dancer_id)
         if (!phase1CompId || !phase1DancerId) return null
-        return {
-          event_id: event.id,
-          dancer_id: phase1DancerId,
-          competition_id: phase1CompId,
-          status: 'registered',
-          competitor_number: numberByDancer.get(phase1DancerId) ?? null,
-          prereg_registration_entry_id: entry.id,
-        }
+        return buildRegistrationRow(
+          event.id,
+          entry,
+          phase1CompId,
+          phase1DancerId,
+          numberByDancer.get(phase1DancerId) ?? null
+        )
       })
       .filter((r): r is NonNullable<typeof r> => r !== null)
 
@@ -359,7 +366,7 @@ export async function executeBridge(data: PreRegData): Promise<BridgeResult> {
     }
   } catch (err) {
     // Mark import as failed on the event (if it was created)
-    const errorMessage = err instanceof Error ? err.message : 'unknown error'
+    const errorMessage = safeErrorMessage(err)
     const { error: markError } = await phase1
       .from('events')
       .update({ import_status: 'partial_failed', import_error: errorMessage })
@@ -371,6 +378,6 @@ export async function executeBridge(data: PreRegData): Promise<BridgeResult> {
         `AND failed to mark event ${event.id} as partial_failed: ${markError.message}`
       )
     }
-    throw err
+    throw new Error(errorMessage)
   }
 }
