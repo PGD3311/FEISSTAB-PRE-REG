@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 
 import { formatDate } from '@/lib/format'
 import { localDateString } from '@/lib/timezone'
+import { hasReviewStep } from '@/lib/approval-gate'
 import type { FeisListing } from '@/lib/types/feis-listing'
 import { saveDeadlines } from '@/app/organiser/feiseanna/actions'
 
@@ -238,7 +239,7 @@ export function FeisWizardStep4({ listing, onNext, onBack }: FeisWizardStep4Prop
           disabled={isPending || validationErrors.length > 0}
           className="feis-btn feis-btn-primary"
         >
-          {isPending ? 'Saving…' : 'Save and continue'}
+          {isPending ? 'Saving…' : hasReviewStep(listing.status) ? 'Save and continue' : 'Save'}
         </button>
       </div>
     </form>
