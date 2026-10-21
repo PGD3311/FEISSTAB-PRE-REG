@@ -12,6 +12,7 @@ import { listingSubmittedEmail } from '@/lib/email/templates'
 import { isRegion } from '@/lib/regions'
 import {
   canTransitionListing,
+  getFeeBlockReasons,
   getListingTransitionBlockReasons,
 } from '@/lib/feis-listing-states'
 import type {
@@ -439,7 +440,7 @@ export async function saveFeeSchedule(
   // Verify ownership
   const { data: owned } = await supabase
     .from('feis_listings')
-    .select('id, timezone')
+    .select('id, timezone, status')
     .eq('id', listingId)
     .eq('created_by', user.id)
     .single()
@@ -470,6 +471,24 @@ export async function saveFeeSchedule(
   )
   if ('error' in tiersResult) return { error: tiersResult.error }
   const late_fee_tiers = tiersResult.tiers
+
+  // A draft may hold $0 fees while it is set up (Review blocks the submit). Past draft, the fee rules
+  // that block submitting hold on every save.
+  if (owned.status !== 'draft') {
+    const { data: competitions, error: competitionsError } = await supabase
+      .from('feis_competitions')
+      .select('fee_category')
+      .eq('feis_listing_id', listingId)
+    if (competitionsError) {
+      console.error('Failed to read competitions for the fee check:', competitionsError)
+      return { error: 'Failed to save fee schedule' }
+    }
+    const feeBlocks = getFeeBlockReasons(
+      { solo_fee_cents, prelim_champ_fee_cents, open_champ_fee_cents },
+      competitions ?? []
+    )
+    if (feeBlocks.length > 0) return { error: [...new Set(feeBlocks)].join('. ') }
+  }
 
   // Check if fee schedule already exists
   const { data: existing } = await supabase

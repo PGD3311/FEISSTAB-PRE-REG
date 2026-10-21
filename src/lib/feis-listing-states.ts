@@ -1,4 +1,6 @@
 import type {
+  FeeCategoryType,
+  FeeSchedule,
   ListingStatus,
   ListingTransitionContext,
   PublishValidation,
@@ -57,6 +59,30 @@ export function getNextListingStates(
 /** True when a text field has something other than spaces in it */
 function filled(value: string | null): boolean {
   return value !== null && value.trim() !== ''
+}
+
+/**
+ * The fee rules: a fee of $0 is refused for a kind of competition the feis offers. Part of the
+ * submit check, and enforced again when an organiser saves fees on a feis past draft (the
+ * database mirrors it: guard_fee_schedule_amounts in 022).
+ */
+export function getFeeBlockReasons(
+  feeSchedule: Pick<FeeSchedule, 'solo_fee_cents' | 'prelim_champ_fee_cents' | 'open_champ_fee_cents'>,
+  competitions: { fee_category: FeeCategoryType }[]
+): string[] {
+  const blocks: string[] = []
+  const offers = (category: FeeCategoryType) => competitions.some((c) => c.fee_category === category)
+
+  if (offers('solo') && feeSchedule.solo_fee_cents === 0) {
+    blocks.push('Solo fee must be greater than $0 when solo competitions exist')
+  }
+  if (offers('prelim_champ') && feeSchedule.prelim_champ_fee_cents === 0) {
+    blocks.push('Championship fee must be greater than $0 when championship competitions exist')
+  }
+  if (offers('open_champ') && feeSchedule.open_champ_fee_cents === 0) {
+    blocks.push('Championship fee must be greater than $0 when championship competitions exist')
+  }
+  return blocks
 }
 
 /**
@@ -146,32 +172,7 @@ export function getListingTransitionBlockReasons(
   if (!feeSchedule) {
     blocks.push('Fee schedule is required')
   } else {
-    const hasSolo = enabledCompetitions.some(
-      (c) => c.fee_category === 'solo'
-    )
-    if (hasSolo && feeSchedule.solo_fee_cents === 0) {
-      blocks.push(
-        'Solo fee must be greater than $0 when solo competitions exist'
-      )
-    }
-
-    const hasPrelimChamp = enabledCompetitions.some(
-      (c) => c.fee_category === 'prelim_champ'
-    )
-    if (hasPrelimChamp && feeSchedule.prelim_champ_fee_cents === 0) {
-      blocks.push(
-        'Championship fee must be greater than $0 when championship competitions exist'
-      )
-    }
-
-    const hasOpenChamp = enabledCompetitions.some(
-      (c) => c.fee_category === 'open_champ'
-    )
-    if (hasOpenChamp && feeSchedule.open_champ_fee_cents === 0) {
-      blocks.push(
-        'Championship fee must be greater than $0 when championship competitions exist'
-      )
-    }
+    blocks.push(...getFeeBlockReasons(feeSchedule, enabledCompetitions))
   }
 
   // ─── Hard blocks: registration dates ───

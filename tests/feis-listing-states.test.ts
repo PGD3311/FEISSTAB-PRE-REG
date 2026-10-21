@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   canTransitionListing,
+  getFeeBlockReasons,
   getNextListingStates,
   getListingTransitionBlockReasons,
 } from '@/lib/feis-listing-states'
@@ -640,5 +641,31 @@ describe('getListingTransitionBlockReasons', () => {
         'Registration open date is in the past'
       )
     })
+  })
+})
+
+describe('getFeeBlockReasons', () => {
+  const fees = { solo_fee_cents: 1300, prelim_champ_fee_cents: 5500, open_champ_fee_cents: 6000 }
+
+  it('passes when every offered category has a fee', () => {
+    const offered = [{ fee_category: 'solo' as const }, { fee_category: 'open_champ' as const }]
+    expect(getFeeBlockReasons(fees, offered)).toEqual([])
+  })
+
+  it('blocks a $0 solo fee when solo competitions exist', () => {
+    expect(getFeeBlockReasons({ ...fees, solo_fee_cents: 0 }, [{ fee_category: 'solo' }])).toEqual([
+      'Solo fee must be greater than $0 when solo competitions exist'
+    ])
+  })
+
+  it('blocks a $0 championship fee for the championships offered', () => {
+    const zero = { ...fees, prelim_champ_fee_cents: 0, open_champ_fee_cents: 0 }
+    expect(getFeeBlockReasons(zero, [{ fee_category: 'prelim_champ' }])).toHaveLength(1)
+    expect(getFeeBlockReasons(zero, [{ fee_category: 'open_champ' }])).toHaveLength(1)
+  })
+
+  it('allows $0 for a category the feis does not offer', () => {
+    const zero = { solo_fee_cents: 0, prelim_champ_fee_cents: 0, open_champ_fee_cents: 0 }
+    expect(getFeeBlockReasons(zero, [])).toEqual([])
   })
 })
