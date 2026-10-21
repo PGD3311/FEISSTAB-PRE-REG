@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { notFound, redirect } from 'next/navigation'
 
 import { createClient, getSignedInUser } from '@/lib/supabase/server'
+import { feisDayEventUrl } from '@/lib/feis-day-url'
 import { formatDate, formatDateTime } from '@/lib/format'
 import type { FeisListing } from '@/lib/types/feis-listing'
 import { LaunchButton } from '@/components/organiser/launch-button'
@@ -109,10 +110,17 @@ export default async function LaunchPage({ params }: { params: Promise<{ id: str
             feis can no longer be changed here.
           </p>
           {typedListing.launched_event_id && (
-            <p className="mt-2 text-[13px] text-muted-foreground">
-              Feis-day event ID{' '}
-              <code className="font-mono text-xs">{typedListing.launched_event_id}</code>
-            </p>
+            <div className="mt-3">
+              <a
+                href={feisDayEventUrl(typedListing.launched_event_id)}
+                className="feis-btn feis-btn-primary"
+              >
+                Open feis day
+              </a>
+              <p className="mt-2 text-xs text-muted-foreground">
+                Event ID <code className="font-mono">{typedListing.launched_event_id}</code>
+              </p>
+            </div>
           )}
         </div>
       </div>

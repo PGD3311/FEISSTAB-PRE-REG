@@ -4,6 +4,7 @@ import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 
 import { launchFeisDay } from '@/app/organiser/feiseanna/actions'
+import { feisDayEventUrl } from '@/lib/feis-day-url'
 
 interface LaunchButtonProps {
   listingId: string
@@ -62,9 +63,14 @@ export function LaunchButton({ listingId, disabled }: LaunchButtonProps) {
         <CountLine label="Competitions" value={result.competitionsCreated} />
         <CountLine label="Dancers" value={result.dancersCreated} />
         <CountLine label="Entries" value={result.registrationsCreated} />
-        <p className="mt-3 border-t border-[#E2DCCD] pt-2.5 text-[13px] text-muted-foreground">
-          Feis-day event ID <code className="font-mono text-xs">{result.eventId}</code>
-        </p>
+        <div className="mt-3 border-t border-[#E2DCCD] pt-3">
+          <a href={feisDayEventUrl(result.eventId)} className="feis-btn feis-btn-primary">
+            Open feis day
+          </a>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Event ID <code className="font-mono">{result.eventId}</code>
+          </p>
+        </div>
       </section>
     )
   }

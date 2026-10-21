@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 
 import { isAwaitingApproval, sentBackMessage } from '@/lib/approval-gate'
+import { feisDayEventUrl } from '@/lib/feis-day-url'
 import { createClient, getSignedInUser } from '@/lib/supabase/server'
 import type { FeisListing, FeeSchedule, LateFeeTier } from '@/lib/types/feis-listing'
 import {
@@ -138,10 +139,17 @@ function OverviewTab({
               can no longer be changed here.
             </p>
             {listing.launched_event_id && (
-              <p className="mt-2 text-[13px] text-muted-foreground">
-                Feis-day event ID{' '}
-                <code className="font-mono text-xs">{listing.launched_event_id}</code>
-              </p>
+              <div className="mt-3">
+                <a
+                  href={feisDayEventUrl(listing.launched_event_id)}
+                  className="feis-btn feis-btn-primary"
+                >
+                  Open feis day
+                </a>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Event ID <code className="font-mono">{listing.launched_event_id}</code>
+                </p>
+              </div>
             )}
           </div>
         )}
