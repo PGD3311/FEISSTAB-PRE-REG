@@ -2,9 +2,14 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 
-import { sentBackMessage } from '@/lib/approval-gate'
-import type { FeisListing, FeeSchedule } from '@/lib/types/feis-listing'
+import { hasReviewStep, sentBackMessage } from '@/lib/approval-gate'
+import type {
+  FeisListing,
+  FeeSchedule,
+  ListingTransitionContext
+} from '@/lib/types/feis-listing'
 import { FeisWizardStep1 } from '@/components/organiser/feis-wizard-step1'
 import { FeisWizardStep2 } from '@/components/organiser/feis-wizard-step2'
 import { FeisWizardStep3 } from '@/components/organiser/feis-wizard-step3'
@@ -20,10 +25,15 @@ const STEPS = [
   { number: 5, label: 'Review' }
 ] as const
 
+const STEP_HINT = 'You can go back to any step you have reached.'
+
+/** What setup needs of each competition: its type, for the Review step's counts and checks */
+export type SetupCompetition = ListingTransitionContext['enabledCompetitions'][number]
+
 interface FeisWizardProps {
   listing: FeisListing
   feeSchedule: FeeSchedule | null
-  competitionsCount: number
+  competitions: SetupCompetition[]
 }
 
 function getCompletedStep(
@@ -54,10 +64,16 @@ function getCompletedStep(
   return 4
 }
 
-export function FeisWizard({ listing, feeSchedule, competitionsCount }: FeisWizardProps) {
+export function FeisWizard({ listing, feeSchedule, competitions }: FeisWizardProps) {
+  const router = useRouter()
+  const competitionsCount = competitions.length
+  // Review holds "Submit for approval"; once RunFeis has approved the feis, setup ends at Deadlines
+  const reviewStep = hasReviewStep(listing.status)
+  const steps = reviewStep ? STEPS : STEPS.filter((step) => step.number !== 5)
+  const lastStep = steps.length
   const completedStep = getCompletedStep(listing, feeSchedule, competitionsCount)
   const sentBack = sentBackMessage(listing)
-  const [currentStep, setCurrentStep] = useState(Math.min(completedStep + 1, 5))
+  const [currentStep, setCurrentStep] = useState(Math.min(completedStep + 1, lastStep))
 
   function handleStepClick(stepNumber: number) {
     if (stepNumber <= completedStep + 1) {
@@ -66,8 +82,10 @@ export function FeisWizard({ listing, feeSchedule, competitionsCount }: FeisWiza
   }
 
   function handleNext() {
-    if (currentStep < 5) {
+    if (currentStep < lastStep) {
       setCurrentStep(currentStep + 1)
+    } else {
+      router.push(`/organiser/feiseanna/${listing.id}`)
     }
   }
 
@@ -88,7 +106,7 @@ export function FeisWizard({ listing, feeSchedule, competitionsCount }: FeisWiza
       <div className="mt-3">
         <PageTitle
           title={listing.name || 'New feis'}
-          intro="Set up your feis in five steps. You can go back to any step you have reached."
+          intro={`Set up your feis in ${reviewStep ? 'five' : 'four'} steps. ${STEP_HINT}`}
         />
       </div>
 
@@ -103,8 +121,12 @@ export function FeisWizard({ listing, feeSchedule, competitionsCount }: FeisWiza
 
       {/* Step indicator */}
       <nav aria-label="Setup steps" className="mb-8">
-        <ol className="grid grid-cols-5 border-b-[1.5px] border-[var(--color-feis-charcoal)]">
-          {STEPS.map((step) => {
+        <ol
+          className={`grid border-b-[1.5px] border-[var(--color-feis-charcoal)] ${
+            reviewStep ? 'grid-cols-5' : 'grid-cols-4'
+          }`}
+        >
+          {steps.map((step) => {
             const isAccessible = step.number <= completedStep + 1
             const isActive = step.number === currentStep
             const isDone = step.number <= completedStep && !isActive
@@ -179,11 +201,11 @@ export function FeisWizard({ listing, feeSchedule, competitionsCount }: FeisWiza
         {currentStep === 4 && (
           <FeisWizardStep4 listing={listing} onNext={handleNext} onBack={handleBack} />
         )}
-        {currentStep === 5 && (
+        {reviewStep && currentStep === 5 && (
           <FeisWizardStep5
             listing={listing}
             feeSchedule={feeSchedule}
-            competitionsCount={competitionsCount}
+            competitions={competitions}
             onBack={handleBack}
           />
         )}

@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation'
 import type { FeisListing, FeeSchedule, ListingTransitionContext } from '@/lib/types/feis-listing'
 import { checklistLinkFor } from '@/lib/approval-gate'
 import { getListingTransitionBlockReasons } from '@/lib/feis-listing-states'
+import { competitionTypeCounts } from '@/lib/syllabus-summary'
 import {
   formatTimezone,
   formatCentsOrNull,
@@ -18,24 +19,17 @@ import { useSupabase } from '@/hooks/use-supabase'
 import { transitionListingStatus } from '@/app/organiser/feiseanna/actions'
 import { PublishChecklist } from '@/components/organiser/publish-checklist'
 
-interface CompetitionSummary {
-  total: number
-  solos: number
-  championships: number
-  specials: number
-}
-
 interface FeisWizardStep5Props {
   listing: FeisListing
   feeSchedule: FeeSchedule | null
-  competitionsCount: number
+  competitions: ListingTransitionContext['enabledCompetitions']
   onBack: () => void
 }
 
 export function FeisWizardStep5({
   listing,
   feeSchedule,
-  competitionsCount,
+  competitions,
   onBack
 }: FeisWizardStep5Props) {
   const router = useRouter()
@@ -43,15 +37,7 @@ export function FeisWizardStep5({
   const [isPending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
   const [stripeSimulated, setStripeSimulated] = useState(listing.stripe_charges_enabled)
-  const [competitionSummary, setCompetitionSummary] = useState<CompetitionSummary>({
-    total: competitionsCount,
-    solos: 0,
-    championships: 0,
-    specials: 0
-  })
-  const [enabledCompetitions, setEnabledCompetitions] = useState<
-    ListingTransitionContext['enabledCompetitions']
-  >([])
+  const competitionSummary = useMemo(() => competitionTypeCounts(competitions), [competitions])
   const [hasOrganiserProfile, setHasOrganiserProfile] = useState(false)
 
   // Whether the organiser has filled in their details, which submitting for approval needs
@@ -75,32 +61,6 @@ export function FeisWizardStep5({
     fetchOrganiserProfile()
   }, [supabase])
 
-  // Fetch competition breakdown on mount
-  useEffect(() => {
-    async function fetchCompetitions() {
-      const { data } = await supabase
-        .from('feis_competitions')
-        .select('competition_type, championship_key, fee_category')
-        .eq('feis_listing_id', listing.id)
-
-      if (data) {
-        setEnabledCompetitions(data)
-        const solos = data.filter((c) => c.competition_type === 'solo').length
-        const championships = data.filter((c) => c.competition_type === 'championship').length
-        const specials = data.filter(
-          (c) => c.competition_type === 'special' || c.competition_type === 'custom'
-        ).length
-        setCompetitionSummary({
-          total: data.length,
-          solos,
-          championships,
-          specials
-        })
-      }
-    }
-    fetchCompetitions()
-  }, [supabase, listing.id])
-
   // Build the effective listing state (with simulated stripe)
   const effectiveListing = useMemo(
     () => ({
@@ -115,11 +75,11 @@ export function FeisWizardStep5({
     const context: ListingTransitionContext = {
       listing: effectiveListing,
       feeSchedule,
-      enabledCompetitions,
+      enabledCompetitions: competitions,
       hasOrganiserProfile
     }
     return getListingTransitionBlockReasons('draft', 'pending_review', context)
-  }, [effectiveListing, feeSchedule, enabledCompetitions, hasOrganiserProfile])
+  }, [effectiveListing, feeSchedule, competitions, hasOrganiserProfile])
 
   // Compute positive checks for the checklist
   const passed = useMemo(() => {

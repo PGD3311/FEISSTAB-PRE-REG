@@ -39,3 +39,29 @@ export function joinWithAnd(items: string[]): string {
   if (items.length <= 1) return items.join('')
   return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`
 }
+
+export interface CompetitionTypeCounts {
+  total: number
+  solos: number
+  championships: number
+  /** Specials and custom competitions */
+  specials: number
+}
+
+/** How many competitions of each kind a feis has, for the setup Review step */
+export function competitionTypeCounts(
+  competitions: Pick<FeisCompetition, 'competition_type'>[]
+): CompetitionTypeCounts {
+  const counts: CompetitionTypeCounts = {
+    total: competitions.length,
+    solos: 0,
+    championships: 0,
+    specials: 0
+  }
+  for (const comp of competitions) {
+    if (comp.competition_type === 'solo') counts.solos++
+    else if (comp.competition_type === 'championship') counts.championships++
+    else counts.specials++
+  }
+  return counts
+}

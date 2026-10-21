@@ -1,9 +1,10 @@
 import { notFound, redirect } from 'next/navigation'
 
 import { isAwaitingApproval } from '@/lib/approval-gate'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { createClient, getSignedInUser } from '@/lib/supabase/server'
-import { FeisWizard } from '@/components/organiser/feis-wizard'
 import type { FeisListing, FeeSchedule } from '@/lib/types/feis-listing'
+import { FeisWizard, type SetupCompetition } from '@/components/organiser/feis-wizard'
 
 export const dynamic = 'force-dynamic'
 
@@ -41,18 +42,23 @@ export default async function FeisSetupPage({
     .eq('feis_listing_id', id)
     .single()
 
-  // Fetch competitions count
-  const { count: competitionsCount } = await supabase
-    .from('feis_competitions')
-    .select('*', { count: 'exact', head: true })
-    .eq('feis_listing_id', id)
+  // Every competition's type, read in pages (PostgREST returns at most 1000 rows per request):
+  // the Review step counts them and checks them before submitting
+  const competitions = await fetchAllRows<SetupCompetition>((from, to) =>
+    supabase
+      .from('feis_competitions')
+      .select('competition_type, championship_key, fee_category', { count: 'exact' })
+      .eq('feis_listing_id', id)
+      .order('id', { ascending: true })
+      .range(from, to)
+  )
 
   return (
     <div>
       <FeisWizard
         listing={listing as FeisListing}
         feeSchedule={(feeSchedule as FeeSchedule) ?? null}
-        competitionsCount={competitionsCount ?? 0}
+        competitions={competitions}
       />
     </div>
   )

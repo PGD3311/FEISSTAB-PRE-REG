@@ -7,6 +7,7 @@ import {
   WAITING_FOR_APPROVAL_ERROR,
   ownerSaveError,
   checklistLinkFor,
+  hasReviewStep,
   isAwaitingApproval,
   parseOrganiserProfile,
   sentBackMessage
@@ -196,5 +197,17 @@ describe('ownerSaveError', () => {
     expect(ownerSaveError({ message: 'x' }, 'Failed to update listing')).toBe(
       'Failed to update listing'
     )
+  })
+})
+
+describe('hasReviewStep', () => {
+  it('keeps Review for a draft, which submits from there', () => {
+    expect(hasReviewStep('draft')).toBe(true)
+  })
+
+  it('skips Review once RunFeis has approved the feis', () => {
+    expect(hasReviewStep('open')).toBe(false)
+    expect(hasReviewStep('closed')).toBe(false)
+    expect(hasReviewStep('launched')).toBe(false)
   })
 })

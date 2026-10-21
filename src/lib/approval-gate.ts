@@ -12,6 +12,14 @@ export function isAwaitingApproval(status: ListingStatus): boolean {
   return status === 'pending_review'
 }
 
+/**
+ * Whether setup ends with the Review step. It holds "Submit for approval", so only a draft (new or
+ * sent back) has it; once RunFeis has approved a feis, setup ends at Deadlines.
+ */
+export function hasReviewStep(status: ListingStatus): boolean {
+  return status === 'draft'
+}
+
 /** The banner on a draft RunFeis sent back, or null when there is nothing to say */
 export function sentBackMessage(
   listing: Pick<FeisListing, 'status' | 'review_note'>

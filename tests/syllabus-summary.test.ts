@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { joinWithAnd, syllabusOutline } from '@/lib/syllabus-summary'
+import { competitionTypeCounts, joinWithAnd, syllabusOutline } from '@/lib/syllabus-summary'
 
 const solo = (level: string, age: string) => ({
   competition_type: 'solo' as const,
@@ -46,5 +46,28 @@ describe('joinWithAnd', () => {
     expect(joinWithAnd(['A'])).toBe('A')
     expect(joinWithAnd(['A', 'B'])).toBe('A and B')
     expect(joinWithAnd(['A', 'B', 'C'])).toBe('A, B and C')
+  })
+})
+
+describe('competitionTypeCounts', () => {
+  it('counts solos, championships and specials (custom ones included)', () => {
+    expect(
+      competitionTypeCounts([
+        { competition_type: 'solo' },
+        { competition_type: 'solo' },
+        { competition_type: 'championship' },
+        { competition_type: 'special' },
+        { competition_type: 'custom' }
+      ])
+    ).toEqual({ total: 5, solos: 2, championships: 1, specials: 2 })
+  })
+
+  it('is all zeros for no competitions', () => {
+    expect(competitionTypeCounts([])).toEqual({
+      total: 0,
+      solos: 0,
+      championships: 0,
+      specials: 0
+    })
   })
 })
