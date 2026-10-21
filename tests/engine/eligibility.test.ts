@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import { getEligibleCompetitions, calculateAgeOnDate } from '@/lib/engine/eligibility'
+import {
+  getEligibleCompetitions,
+  calculateAgeOnDate,
+  competitionAge
+} from '@/lib/engine/eligibility'
 import type { DancerProfile, FeisCompetition, Level } from '@/lib/types/feis-listing'
 
 function makeCompetition(overrides: Partial<FeisCompetition> = {}): FeisCompetition {
@@ -53,6 +57,23 @@ describe('calculateAgeOnDate', () => {
   })
   it('handles same date as DOB (age is 0)', () => {
     expect(calculateAgeOnDate(new Date('2020-06-15'), new Date('2020-06-15'))).toBe(0)
+  })
+})
+
+// MAR Feis Rules §2.1: a birthday on 1 January counts as the younger age
+describe('competitionAge', () => {
+  it('counts a dancer born on the cutoff date as the younger age', () => {
+    expect(competitionAge(new Date(2017, 0, 1), new Date(2027, 0, 1))).toBe(9)
+  })
+  it('counts a dancer born the day after the cutoff as the younger age', () => {
+    expect(competitionAge(new Date(2017, 0, 2), new Date(2027, 0, 1))).toBe(9)
+  })
+  it('counts a dancer born the day before the cutoff as the older age', () => {
+    expect(competitionAge(new Date(2016, 11, 31), new Date(2027, 0, 1))).toBe(10)
+  })
+  it('follows a cutoff the organiser moved off 1 January', () => {
+    expect(competitionAge(new Date(2017, 8, 1), new Date(2027, 8, 1))).toBe(9)
+    expect(competitionAge(new Date(2017, 7, 31), new Date(2027, 8, 1))).toBe(10)
   })
 })
 
@@ -132,6 +153,34 @@ describe('getEligibleCompetitions', () => {
     const comp = makeCompetition({ age_group_key: 'O18', age_max_jan1: null, age_min_jan1: 18 })
     const result = getEligibleCompetitions(youngDancer, [comp], ageCutoff, LEVELS)
     expect(result[0].eligible).toBe(false)
+  })
+
+  // MAR Feis Rules §2.14: championship dancers may not enter grade competitions
+  it.each(['prelim', 'open'] as const)('keeps a %s champion out of grade solos', (status) => {
+    const champion: DancerProfile = { ...noviceDancer, championshipStatus: status }
+    const result = getEligibleCompetitions(champion, [makeCompetition()], ageCutoff, LEVELS)
+    expect(result[0].eligible).toBe(false)
+    expect(result[0].reason).toBe('Prelim and Open champions do not enter grade competitions')
+  })
+
+  it('still lets a champion enter specials and custom competitions', () => {
+    const champion: DancerProfile = { ...noviceDancer, championshipStatus: 'prelim' }
+    const comps = [
+      makeCompetition({ id: 'sp', competition_type: 'special' }),
+      makeCompetition({ id: 'cu', competition_type: 'custom' })
+    ]
+    const result = getEligibleCompetitions(champion, comps, ageCutoff, LEVELS)
+    expect(result.map((r) => r.eligible)).toEqual([true, true])
+  })
+
+  it('puts a dancer born on 1 January in the younger age group', () => {
+    const newYear: DancerProfile = { ...noviceDancer, dob: new Date(2015, 0, 1) }
+    const u11 = makeCompetition({ id: 'u11', age_max_jan1: 10 })
+    const u12 = makeCompetition({ id: 'u12', age_max_jan1: 11 })
+    const eligible = getEligibleCompetitions(newYear, [u11, u12], new Date(2026, 0, 1), LEVELS)
+      .filter((r) => r.eligible)
+      .map((r) => r.competition.id)
+    expect(eligible).toEqual(['u11'])
   })
 
   it('marks prelim championship as eligible when dancer has prelim status', () => {

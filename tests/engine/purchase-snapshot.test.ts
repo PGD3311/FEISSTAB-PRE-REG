@@ -115,10 +115,10 @@ describe('priceOrder', () => {
     expect(priceOrder(input()).snapshot.rules.feis_terms_url).toBeNull()
   })
 
-  it('counts a birthday on the cutoff date as the older age, the same as the cart', () => {
+  it('counts a birthday on the cutoff date as the younger age (MAR §2.1), the same as the cart', () => {
     const born = { ...aoife, date_of_birth: '2017-01-01' }
     const { snapshot } = priceOrder(input({ dancers: [born] }))
-    expect(snapshot.dancers[0].competition_age).toBe(10)
+    expect(snapshot.dancers[0].competition_age).toBe(9)
   })
 
   it('keeps each entry with its own fees when a late tier applies', () => {

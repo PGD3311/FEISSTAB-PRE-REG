@@ -1,4 +1,4 @@
-import { calculateAgeOnDate } from '@/lib/engine/eligibility'
+import { competitionAge } from '@/lib/engine/eligibility'
 import { calculateFees, compareIds, summarisePaidOrders } from '@/lib/engine/fee-calculator'
 import {
   toDancerProfile,
@@ -331,7 +331,7 @@ export function priceOrder(input: PriceOrderInput): PricedOrder {
         gender: dancer.gender,
         championship_status: dancer.championship_status,
         dance_levels: profile.danceLevels,
-        competition_age: calculateAgeOnDate(profile.dob, input.ageCutoffDate)
+        competition_age: competitionAge(profile.dob, input.ageCutoffDate)
       }
     }),
     competitions: competitionIds.map((id) => {

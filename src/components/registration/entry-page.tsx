@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { formatCents, parseLocalDate } from '@/lib/format'
 import { calculateFees, getActiveLateTier, summarisePaidOrders } from '@/lib/engine/fee-calculator'
-import { calculateAgeOnDate, getEligibleCompetitions } from '@/lib/engine/eligibility'
+import { competitionAge, getEligibleCompetitions } from '@/lib/engine/eligibility'
 import {
   ageCutoffDateFor,
   canStartOrder,
@@ -418,7 +418,7 @@ export function EntryPage({ data, feisId }: { data: EntryPageData; feisId: strin
           ) : (
             <div className="grid gap-5">
               {dancers.map((dancer) => {
-                const age = calculateAgeOnDate(parseLocalDate(dancer.date_of_birth), ageCutoffDate)
+                const age = competitionAge(parseLocalDate(dancer.date_of_birth), ageCutoffDate)
                 const level = dancerLevelSummary(
                   dancer.dance_levels,
                   levels,

@@ -14,6 +14,18 @@ export function calculateAgeOnDate(dob: Date, referenceDate: Date): number {
   return age
 }
 
+/**
+ * A dancer's age for entering competitions: their age on the cutoff date (normally January 1),
+ * except that a dancer whose birthday falls on the cutoff date counts as the younger age
+ * (MAR Feis Rules §2.1).
+ */
+export function competitionAge(dob: Date, cutoff: Date): number {
+  const age = calculateAgeOnDate(dob, cutoff)
+  const birthdayOnCutoff =
+    dob.getMonth() === cutoff.getMonth() && dob.getDate() === cutoff.getDate()
+  return birthdayOnCutoff ? age - 1 : age
+}
+
 function ageMatches(
   dancerAge: number,
   ageMaxJan1: number | null,
@@ -85,7 +97,7 @@ function checkEachCompetition(
   ageCutoffDate: Date,
   levels: Level[]
 ): EligibleCompetition[] {
-  const dancerAge = calculateAgeOnDate(dancer.dob, ageCutoffDate)
+  const dancerAge = competitionAge(dancer.dob, ageCutoffDate)
 
   const levelRankMap: Record<string, number> = {}
   for (const level of levels) {
@@ -115,6 +127,15 @@ function checkEachCompetition(
 
     switch (comp.competition_type) {
       case 'solo': {
+        // MAR Feis Rules §2.14: championship dancers may not enter grade competitions
+        if (dancer.championshipStatus !== 'none') {
+          return {
+            competition: comp,
+            eligible: false,
+            reason: 'Prelim and Open champions do not enter grade competitions'
+          }
+        }
+
         if (!comp.dance_key || !comp.level_key) {
           return { competition: comp, eligible: true, reason: 'Age matches' }
         }
