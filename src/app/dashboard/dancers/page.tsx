@@ -47,7 +47,7 @@ export default async function DancersPage() {
 
   const { data: dancers, error } = await supabase
     .from('dancers')
-    .select('*, dance_levels:dancer_dance_levels(level_key)')
+    .select('*, dance_levels:dancer_dance_levels(dance_key, level_key)')
     .eq('household_id', household.id)
     .eq('is_active', true)
     .order('first_name', { ascending: true })
@@ -56,7 +56,9 @@ export default async function DancersPage() {
     console.error('Failed to load dancers:', error)
   }
 
-  const activeDancers = (dancers ?? []) as (Dancer & { dance_levels: { level_key: string }[] })[]
+  const activeDancers = (dancers ?? []) as (Dancer & {
+    dance_levels: { dance_key: string; level_key: string }[]
+  })[]
   const dancerIds = activeDancers.map((d) => d.id)
   const [entered, moves] = await Promise.all([
     loadEnteredFeiseanna(supabase, dancerIds),

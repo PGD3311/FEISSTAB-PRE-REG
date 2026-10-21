@@ -21,7 +21,8 @@ import type {
 
 const LEVELS: Level[] = [
   { key: 'BG', label: 'Beginner', rank: 1 },
-  { key: 'NOV', label: 'Novice', rank: 3 }
+  { key: 'NOV', label: 'Novice', rank: 3 },
+  { key: 'PW', label: 'Prizewinner', rank: 4 }
 ]
 
 function comp(overrides: Partial<FeisCompetition>): EligibleCompetition {
@@ -55,26 +56,80 @@ function comp(overrides: Partial<FeisCompetition>): EligibleCompetition {
 }
 
 describe('dancerLevelSummary', () => {
+  const at = (dance_key: string, level_key: string) => ({ dance_key, level_key })
+
   it('names the level when every dance is at the same level', () => {
-    expect(dancerLevelSummary([{ level_key: 'NOV' }, { level_key: 'NOV' }], LEVELS, 'none')).toBe(
+    expect(dancerLevelSummary([at('reel', 'NOV'), at('slip_jig', 'NOV')], LEVELS, 'none')).toBe(
       'Novice'
     )
   })
 
-  it('says mixed levels when dances differ', () => {
-    expect(dancerLevelSummary([{ level_key: 'NOV' }, { level_key: 'BG' }], LEVELS, 'none')).toBe(
-      'Mixed levels'
+  it('names the level most dances are at, then the one exception', () => {
+    expect(
+      dancerLevelSummary(
+        [at('reel', 'PW'), at('light_jig', 'NOV'), at('slip_jig', 'NOV'), at('hornpipe', 'NOV')],
+        LEVELS,
+        'none'
+      )
+    ).toBe('Novice, Prizewinner Reel')
+  })
+
+  it('lists several exception dances in dance order', () => {
+    expect(
+      dancerLevelSummary(
+        [
+          at('slip_jig', 'PW'),
+          at('light_jig', 'NOV'),
+          at('reel', 'PW'),
+          at('treble_jig', 'NOV'),
+          at('hornpipe', 'NOV')
+        ],
+        LEVELS,
+        'none'
+      )
+    ).toBe('Novice, Prizewinner Reel and Slip Jig')
+  })
+
+  it('lists exceptions at more than one level, lowest level first', () => {
+    expect(
+      dancerLevelSummary(
+        [
+          at('reel', 'NOV'),
+          at('light_jig', 'NOV'),
+          at('single_jig', 'NOV'),
+          at('hornpipe', 'PW'),
+          at('slip_jig', 'BG')
+        ],
+        LEVELS,
+        'none'
+      )
+    ).toBe('Novice, Beginner Slip Jig, Prizewinner Hornpipe')
+  })
+
+  it('gives a tie to the lower level', () => {
+    expect(dancerLevelSummary([at('reel', 'NOV'), at('light_jig', 'BG')], LEVELS, 'none')).toBe(
+      'Beginner, Novice Reel'
     )
   })
 
+  it('spells out a dance key it does not know', () => {
+    expect(
+      dancerLevelSummary(
+        [at('reel', 'NOV'), at('slip_jig', 'NOV'), at('hop_jig', 'BG')],
+        LEVELS,
+        'none'
+      )
+    ).toBe('Novice, Beginner Hop Jig')
+  })
+
   it('puts championship status first', () => {
-    expect(dancerLevelSummary([{ level_key: 'NOV' }], LEVELS, 'prelim')).toBe('Prelim champion')
+    expect(dancerLevelSummary([at('reel', 'NOV')], LEVELS, 'prelim')).toBe('Prelim champion')
     expect(dancerLevelSummary([], LEVELS, 'open')).toBe('Open champion')
   })
 
   it('handles a dancer with no levels and an unknown level key', () => {
     expect(dancerLevelSummary([], LEVELS, 'none')).toBe('No levels set')
-    expect(dancerLevelSummary([{ level_key: 'XX' }], LEVELS, 'none')).toBe('XX')
+    expect(dancerLevelSummary([at('reel', 'XX')], LEVELS, 'none')).toBe('XX')
   })
 })
 

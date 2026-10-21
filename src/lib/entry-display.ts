@@ -1,6 +1,7 @@
 import { canStartOrder, type OrderStartInput } from '@/lib/engine/order-validation'
 import { formatCents } from '@/lib/format'
 import { openMessageAFor, type PaymentReview } from '@/lib/payment-review-messages'
+import { joinWithAnd } from '@/lib/syllabus-summary'
 import type {
   ChampionshipStatus,
   DancerDanceLevel,
@@ -11,19 +12,72 @@ import type {
   RegistrationStatus
 } from '@/lib/types/feis-listing'
 
-/** One line describing a dancer's level, e.g. "Novice", "Mixed levels", "Prelim champion". */
+/** How a standard solo dance is named to parents */
+export const DANCE_LABELS: Record<string, string> = {
+  reel: 'Reel',
+  light_jig: 'Light Jig',
+  slip_jig: 'Slip Jig',
+  single_jig: 'Single Jig',
+  treble_jig: 'Treble Jig',
+  hornpipe: 'Hornpipe'
+}
+
+const DANCE_ORDER = Object.keys(DANCE_LABELS)
+
+/** "Slip Jig" for slip_jig; a dance key it doesn't know is spelled out from the key */
+export function danceLabel(danceKey: string): string {
+  return (
+    DANCE_LABELS[danceKey] ??
+    danceKey
+      .split('_')
+      .filter(Boolean)
+      .map((word) => word[0].toUpperCase() + word.slice(1))
+      .join(' ')
+  )
+}
+
+function danceOrder(danceKey: string): number {
+  const index = DANCE_ORDER.indexOf(danceKey)
+  return index === -1 ? DANCE_ORDER.length : index
+}
+
+/**
+ * One line describing a dancer's level, e.g. "Novice", "Prelim champion", or, when the dances are
+ * at different levels, the level most dances are at and then the others:
+ * "Novice, Prizewinner Reel and Slip Jig". A tie goes to the lower level.
+ */
 export function dancerLevelSummary(
-  danceLevels: Pick<DancerDanceLevel, 'level_key'>[],
+  danceLevels: Pick<DancerDanceLevel, 'dance_key' | 'level_key'>[],
   levels: Level[],
   championshipStatus: ChampionshipStatus
 ): string {
   if (championshipStatus === 'prelim') return 'Prelim champion'
   if (championshipStatus === 'open') return 'Open champion'
+  if (danceLevels.length === 0) return 'No levels set'
 
-  const keys = [...new Set(danceLevels.map((dl) => dl.level_key))]
-  if (keys.length === 0) return 'No levels set'
-  if (keys.length > 1) return 'Mixed levels'
-  return levels.find((l) => l.key === keys[0])?.label ?? keys[0]
+  const labelOf = (key: string) => levels.find((l) => l.key === key)?.label ?? key
+  const rankOf = (key: string) => levels.find((l) => l.key === key)?.rank ?? Infinity
+
+  const dancesByLevel = new Map<string, string[]>()
+  for (const { dance_key, level_key } of danceLevels) {
+    dancesByLevel.set(level_key, [...(dancesByLevel.get(level_key) ?? []), dance_key])
+  }
+
+  // Most dances first, then the lower level
+  const byLevel = [...dancesByLevel.entries()].sort(
+    ([keyA, dancesA], [keyB, dancesB]) =>
+      dancesB.length - dancesA.length || rankOf(keyA) - rankOf(keyB)
+  )
+  const [[mainKey], ...others] = byLevel
+  const exceptions = others
+    .sort(([keyA], [keyB]) => rankOf(keyA) - rankOf(keyB))
+    .map(([key, dances]) => {
+      const names = [...new Set(dances)]
+        .sort((a, b) => danceOrder(a) - danceOrder(b))
+        .map(danceLabel)
+      return `${labelOf(key)} ${joinWithAnd(names)}`
+    })
+  return [labelOf(mainKey), ...exceptions].join(', ')
 }
 
 export interface CompetitionGroup {
