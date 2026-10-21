@@ -6,7 +6,9 @@ import { dancerLevelSummary } from '@/lib/entry-display'
 import type { Dancer, Level } from '@/lib/types/feis-listing'
 import { PageTitle } from '@/components/page-title'
 import { NumberTags } from '@/components/registration/entered-feiseanna'
+import { LevelMoveNotice } from '@/components/registration/level-move-notice'
 import { loadEnteredFeiseanna } from './entered-feiseanna'
+import { loadLevelMoves } from './level-moves'
 
 export const dynamic = 'force-dynamic'
 
@@ -55,10 +57,11 @@ export default async function DancersPage() {
   }
 
   const activeDancers = (dancers ?? []) as (Dancer & { dance_levels: { level_key: string }[] })[]
-  const entered = await loadEnteredFeiseanna(
-    supabase,
-    activeDancers.map((d) => d.id)
-  )
+  const dancerIds = activeDancers.map((d) => d.id)
+  const [entered, moves] = await Promise.all([
+    loadEnteredFeiseanna(supabase, dancerIds),
+    loadLevelMoves(supabase, dancerIds)
+  ])
 
   return (
     <div>
@@ -72,6 +75,12 @@ export default async function DancersPage() {
             </Link>
           ) : undefined
         }
+      />
+
+      <LevelMoveNotice
+        moves={moves}
+        dancerNames={Object.fromEntries(activeDancers.map((d) => [d.id, d.first_name]))}
+        levelLabels={Object.fromEntries(LEVELS.map((l) => [l.key, l.label]))}
       />
 
       {activeDancers.length === 0 ? (

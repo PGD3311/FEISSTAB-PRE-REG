@@ -2,7 +2,9 @@ import { createClient } from '@/lib/supabase/server'
 import { redirect, notFound } from 'next/navigation'
 import type { Dancer, DancerDanceLevel } from '@/lib/types/feis-listing'
 import { EnteredFeiseanna } from '@/components/registration/entered-feiseanna'
+import { LevelMoveNotice } from '@/components/registration/level-move-notice'
 import { loadEnteredFeiseanna } from '../entered-feiseanna'
+import { GRADE_LEVELS, loadLevelMoves } from '../level-moves'
 import { EditDancerForm } from './edit-dancer-form'
 
 export const dynamic = 'force-dynamic'
@@ -58,17 +60,29 @@ export default async function EditDancerPage({ params }: Props) {
     levelMap[row.dance_key] = row.level_key
   }
 
-  const entered = await loadEnteredFeiseanna(supabase, [dancerTyped.id])
+  const [entered, moves] = await Promise.all([
+    loadEnteredFeiseanna(supabase, [dancerTyped.id]),
+    loadLevelMoves(supabase, [dancerTyped.id])
+  ])
 
   return (
     <EditDancerForm
+      // A level changed elsewhere (a move up) resets the form to the saved levels
+      key={JSON.stringify(levelMap)}
       dancer={dancerTyped}
       initialLevels={levelMap}
       numbers={
-        <EnteredFeiseanna
-          dancerName={`${dancerTyped.first_name} ${dancerTyped.last_name}`}
-          entries={entered[dancerTyped.id] ?? []}
-        />
+        <>
+          <LevelMoveNotice
+            moves={moves}
+            dancerNames={{ [dancerTyped.id]: dancerTyped.first_name }}
+            levelLabels={Object.fromEntries(GRADE_LEVELS.map((l) => [l.key, l.label]))}
+          />
+          <EnteredFeiseanna
+            dancerName={`${dancerTyped.first_name} ${dancerTyped.last_name}`}
+            entries={entered[dancerTyped.id] ?? []}
+          />
+        </>
       }
     />
   )

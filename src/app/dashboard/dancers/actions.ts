@@ -1,6 +1,8 @@
 'use server'
 
+import { revalidatePath } from 'next/cache'
 import { createClient } from '@/lib/supabase/server'
+import { loadLevelMoves } from './level-moves'
 
 // Standard CLRG dances for populating default levels
 const STANDARD_DANCES = ['reel', 'light_jig', 'slip_jig', 'single_jig', 'treble_jig', 'hornpipe']
@@ -297,4 +299,50 @@ export async function addSchool(
 
   console.error('Failed to add school:', error)
   return { error: 'The school could not be added. Try again.' }
+}
+
+/**
+ * Moves a dancer up in one dance after a win. The move is worked out again here from the
+ * published results, so a family can only accept a move their results actually earned.
+ */
+export async function acceptLevelMove(dancerId: string, danceKey: string) {
+  const supabase = await createClient()
+  const {
+    data: { user }
+  } = await supabase.auth.getUser()
+  if (!user) return { error: 'Not authenticated' }
+
+  const { data: household, error: householdError } = await supabase
+    .from('households')
+    .select('id')
+    .eq('user_id', user.id)
+    .single()
+  if (householdError || !household) return { error: 'Household not found' }
+
+  const { data: dancer, error: dancerError } = await supabase
+    .from('dancers')
+    .select('id')
+    .eq('id', dancerId)
+    .eq('household_id', household.id)
+    .single()
+  if (dancerError || !dancer) return { error: 'Dancer not found' }
+
+  const moves = await loadLevelMoves(supabase, [dancerId])
+  const move = moves.find((m) => m.danceKey === danceKey)
+  if (!move) return { error: 'This level is already up to date.' }
+
+  const { error } = await supabase
+    .from('dancer_dance_levels')
+    .upsert(
+      { dancer_id: dancerId, dance_key: danceKey, level_key: move.toLevel, source: 'result' },
+      { onConflict: 'dancer_id,dance_key' }
+    )
+  if (error) {
+    console.error('Failed to accept level move:', error)
+    return { error: 'The level could not be updated. Try again.' }
+  }
+
+  revalidatePath('/dashboard/dancers')
+  revalidatePath(`/dashboard/dancers/${dancerId}`)
+  return { ok: true as const }
 }
